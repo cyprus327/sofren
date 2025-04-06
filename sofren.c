@@ -25,6 +25,9 @@ SFR_NO_STD - whether or not 'stdio.h' and 'stdlib.h' are allowed to be included
 SFR_NO_MATH - whether or not 'math.h' is allowed to be included
             - there are fallbacks for functions but they're probably worse than math.h's
 
+SFR_NO_STRING - whether or not 'string.h' is allowed to be included
+              - will use custom memset / memmove when defined
+
 SFR_USE_DOUBLE - whether or not to use double precision floats, default is single
 
 SFR_SQRT_ACCURACY - only applicable when SFR_NO_MATH defined, defaults to 20 if not defined
@@ -99,7 +102,7 @@ SFR_FUNC sfrmat_t sfr_mat_look_at(sfrvec_t pos, sfrvec_t target, sfrvec_t up);
 SFR_FUNC void sfr_init( // initialize matrices and set buffers
     sfrcol_t* pixelBuf, sfrflt_t* depthBuf, int w, int h, sfrflt_t fovDeg);
 
-SFR_FUNC void sfr_reset(void);                                   // reset model matrix to identity
+SFR_FUNC void sfr_reset(void);                                   // reset model matrix to identity and lighting to {0}
 SFR_FUNC void sfr_rotate_x(sfrflt_t theta);                      // rotate model matrix about x by theta radians
 SFR_FUNC void sfr_rotate_y(sfrflt_t theta);                      // rotate model matrix about y by theta radians
 SFR_FUNC void sfr_rotate_z(sfrflt_t theta);                      // rotate model matrix about z by theta radians
@@ -107,7 +110,7 @@ SFR_FUNC void sfr_translate(sfrflt_t x, sfrflt_t y, sfrflt_t z); // translate mo
 SFR_FUNC void sfr_scale(sfrflt_t x, sfrflt_t y, sfrflt_t z);     // scale model matrix by x y z
 SFR_FUNC void sfr_look_at(sfrflt_t x, sfrflt_t y, sfrflt_t z);   // set view matrix to look at x y z
 
-SFR_FUNC void sfr_clear(void); // reset depth and pixel buffers, and reset lighting to {0}
+SFR_FUNC void sfr_clear(void); // reset depth and pixel buffers
 SFR_FUNC void sfr_triangle(    // using current matrices, draw specified triangle
     sfrflt_t ax, sfrflt_t ay, sfrflt_t az,
     sfrflt_t bx, sfrflt_t by, sfrflt_t bz,
