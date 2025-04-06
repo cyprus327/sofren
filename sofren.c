@@ -46,7 +46,7 @@ typedef struct sfrmesh sfrmesh_t;
 
 // colors are currently ARGB8888, e.g. red = 0xFF0000, blue = 0x0000FF
 // TODO support for other formats
-typedef unsigned sfrcol_t;
+typedef int sfrcol_t;
 
 #ifdef SFR_USE_DOUBLE
     typedef double sfrflt_t;
@@ -617,13 +617,13 @@ SFR_FUNC void sfr_rasterize(
 ) {
     sfrRasterCount += 1;
 
-    ax = sfr_floorf(ax);
-    ay = sfr_floorf(ay);
-    bx = sfr_floorf(bx);
-    by = sfr_floorf(by);
-    cx = sfr_floorf(cx);
-    cy = sfr_floorf(cy);
-    
+    ax = (sfrflt_t)((int)ax);
+    ay = (sfrflt_t)((int)ay);
+    bx = (sfrflt_t)((int)bx);
+    by = (sfrflt_t)((int)by);
+    cx = (sfrflt_t)((int)cx);
+    cy = (sfrflt_t)((int)cy);
+
     if (ay > by) {
         SFR_SWAPF(ax, bx);
         SFR_SWAPF(ay, by);
@@ -640,50 +640,79 @@ SFR_FUNC void sfr_rasterize(
         SFR_SWAPF(bz, cz);
     }
 
-    sfrflt_t alpha = 0.f, alphaStep = ((cy - ay) > 0.f) ? 1.f / (cy - ay) : 0.f;
-    sfrflt_t beta = 0.f, betaStep = ((by - ay) > 0.f) ? 1.f / (by - ay) : 0.f;
-    for (int y = (int)ay; y < (int)by; y += 1, alpha += alphaStep, beta += betaStep) {
-        sfrflt_t sx = ax + (cx - ax) * alpha;
-        sfrflt_t sz = az + (cz - az) * alpha;
-        sfrflt_t ex = ax + (bx - ax) * beta;
-        sfrflt_t ez = az + (bz - az) * beta;
+    const sfrflt_t deltaACX = cx - ax, deltaACZ = cz - az;
+    const sfrflt_t deltaABX = bx - ax, delta_ab_z = bz - az;
+    const sfrflt_t invHeightAC = (cy != ay) ? 1.0 / (cy - ay) : 0.0;
+    const sfrflt_t invHeightAB = (by != ay) ? 1.0 / (by - ay) : 0.0;
+
+    int y0 = ((int)ay < 0) ? 0 : (int)ay, y1 = ((int)by >= sfrHeight) ? sfrHeight : (int)by;
+    for (int y = y0; y < y1; y += 1) {
+        const sfrflt_t dy = (sfrflt_t)y - ay;
+        const sfrflt_t alpha = dy * invHeightAC;
+        const sfrflt_t beta = dy * invHeightAB;
+
+        sfrflt_t sx = ax + deltaACX * alpha, sz = az + deltaACZ * alpha;
+        sfrflt_t ex = ax + deltaABX * beta, ez = az + delta_ab_z * beta;
+
         if (sx > ex) {
             SFR_SWAPF(sx, ex);
             SFR_SWAPF(sz, ez);
         }
-        
-        const sfrflt_t depthStep = (0.f != (ex - sx)) ? (ez - sz) / (ex - sx) : 0.f;
-        sfrflt_t depth = sz;
-        for (int x = (int)sx, i = y * sfrWidth + (int)sx; x < (int)ex; x += 1, i += 1, depth += depthStep) {
-            if (x >= 0 && x < sfrWidth && y >= 0 && y < sfrHeight) {
-                if (depth < sfrDepthBuf[i]) {
-                    sfrDepthBuf[i] = depth;
-                    sfrPixelBuf[i] = col;
-                }
+
+        int sxi = (int)sx, exi = (int)ex;
+        sxi = (sxi < 0) ? 0 : ((sxi >= sfrWidth) ? sfrWidth : sxi);
+        exi = (exi < 0) ? 0 : ((exi >= sfrWidth) ? sfrWidth : exi);
+        if (sxi >= exi) {
+            continue;
+        }
+
+        const sfrflt_t dxScan = ex - sx;
+        const sfrflt_t depthStep = (0.0 != dxScan) ? (ez - sz) / dxScan : 0.0;
+        sfrflt_t depth = sz + (sxi - sx) * depthStep;
+
+        int i = y * sfrWidth + sxi;
+        for (int x = sxi; x < exi; x += 1, i += 1, depth += depthStep) {
+            if (depth < sfrDepthBuf[i]) {
+                sfrDepthBuf[i] = depth;
+                sfrPixelBuf[i] = col;
             }
         }
     }
 
-    beta = 0.f;
-    betaStep = ((cy - by) > 0.f) ? 1.f / (cy - by) : 0.f;
-    for (int y = by; y < cy; y += 1, alpha += alphaStep, beta += betaStep) {
-        sfrflt_t sx = ax + (cx - ax) * alpha;
-        sfrflt_t sz = az + (cz - az) * alpha;
-        sfrflt_t ex = bx + (cx - bx) * beta;
-        sfrflt_t ez = bz + (cz - bz) * beta;
+    const sfrflt_t deltaBCX = cx - bx, deltaBCZ = cz - bz;
+    const sfrflt_t invHeightBC = (cy != by) ? 1.0 / (cy - by) : 0.0;
+
+    y0 = ((int)by < 0) ? 0 : (int)by, y1 = ((int)cy >= sfrHeight) ? sfrHeight : (int)cy;
+    for (int y = y0; y < y1; y += 1) {
+        const sfrflt_t dyAlpha = (sfrflt_t)y - ay;
+        const sfrflt_t dyBeta  = (sfrflt_t)y - by;
+        const sfrflt_t alpha = dyAlpha * invHeightAC;
+        const sfrflt_t beta  = dyBeta * invHeightBC;
+
+        sfrflt_t sx = ax + deltaACX * alpha, sz = az + deltaACZ * alpha;
+        sfrflt_t ex = bx + deltaBCX * beta, ez = bz + deltaBCZ * beta;
+
         if (sx > ex) {
             SFR_SWAPF(sx, ex);
             SFR_SWAPF(sz, ez);
         }
 
-        const sfrflt_t depthStep = (0.f != (ex - sx)) ? (ez - sz) / (ex - sx) : 0.f;
-        sfrflt_t depth = sz;
-        for (int x = (int)sx, i = y * sfrWidth + (int)sx; x < (int)ex; x += 1, i += 1, depth += depthStep) {
-            if (x >= 0 && x < sfrWidth && y >= 0 && y < sfrHeight) {
-                if (depth < sfrDepthBuf[i]) {
-                    sfrDepthBuf[i] = depth;
-                    sfrPixelBuf[i] = col;
-                }
+        int sxi = (int)sx, exi = (int)ex;
+        sxi = (sxi < 0) ? 0 : ((sxi >= sfrWidth) ? sfrWidth : sxi);
+        exi = (exi < 0) ? 0 : ((exi >= sfrWidth) ? sfrWidth : exi);
+        if (sxi >= exi) {
+            continue;
+        }
+
+        const sfrflt_t dxScan = ex - sx;
+        const sfrflt_t depthStep = (0.0 != dxScan) ? (ez - sz) / dxScan : 0.0;
+        sfrflt_t depth = sz + (sxi - sx) * depthStep;
+
+        int i = y * sfrWidth + sxi;
+        for (int x = sxi; x < exi; x += 1, i += 1, depth += depthStep) {
+            if (depth < sfrDepthBuf[i]) {
+                sfrDepthBuf[i] = depth;
+                sfrPixelBuf[i] = col;
             }
         }
     }
@@ -764,10 +793,6 @@ SFR_FUNC sfrcol_t sfr_adjust_color_u32(sfrcol_t col, sfrflt_t intensity) {
 
 // helper for updating normal mat used for shading
 SFR_FUNC void sfr_update_normal_mat(void) {
-    if (!sfrIsNormalDirty) {
-        return;
-    }
-
     const sfrflt_t* m = &sfrMatModel.m[0][0];
     
     const sfrflt_t a = m[0], b = m[4], c = m[8];
@@ -794,7 +819,9 @@ SFR_FUNC void sfr_triangle(
     sfrcol_t col
 ) {
     if (sfrLightingState.on) {
-        sfr_update_normal_mat();
+        if (sfrIsNormalDirty) {
+            sfr_update_normal_mat();
+        }
 
         sfrvec_t normal = sfr_vec_face_normal(
             (sfrvec_t){ax, ay, az},
@@ -1063,9 +1090,10 @@ SFR_FUNC void sfr_release_mesh(sfrmesh_t** mesh) {
 }
 #endif
 
+#endif // SFR_IMPL
+
 #ifdef __cplusplus
 }
 #endif
 
-#endif // SFR_IMPL
 #endif // SFR_H
