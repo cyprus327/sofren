@@ -11,22 +11,30 @@ extern "C" {
 
 /*          pre processing settings:
 
-))  the default values are the opposite of the define,
-    e.g. functions aren't inline by default
+        the default values are the opposite of the define unless otherwise stated,
+        e.g. functions aren't inline by default
 
 SFR_USE_INLINE - whether functions should be defined as 'static inline' or 'static'
-SFR_FUNC - SFR_USE_INLINE control this, however you can't turn off 'static'
-         - buf if you define this as nothing, SFR_FUNC will be nothing
+
+SFR_FUNC - SFR_USE_INLINE controls this, however you can't turn off 'static'
+         - if you define this as nothing, SFR_FUNC will be nothing, i.e. no 'static'
 
 SFR_NO_STD - whether or not 'stdio.h' and 'stdlib.h' are allowed to be included
            - they're only used in 'sfr_load_mesh' and 'sfr_unload_mesh'
 
-))  TODO the following should be changed to normal variables at some point
+SFR_NO_MATH - whether or not 'math.h' is allowed to be included
+            - there are fallbacks for functions but they're probably worse than math.h's
+
+SFR_USE_DOUBLE - whether or not to use double precision floats, default is single
+
+SFR_SQRT_ACCURACY - only applicable when SFR_NO_MATH defined, defaults to 20 if not defined
+
+SFR_TRIG_ACCURACY - only applicable when SFR_NO_MATH defined, defaults to 10 if not defined
+
+
+        TODO the following should be changed to a normal variable at some point
 
 SFR_NO_CULLING - whether or not to cull triangles
-
-SFR_NEAR_DIST - the near clipping plane distance
-SFR_FAR_DIST  - the far clipping plane distance
 */
 
 typedef struct sfrvec  sfrvec_t;
@@ -37,16 +45,23 @@ typedef struct sfrmesh sfrmesh_t;
 // TODO support for other formats
 typedef unsigned sfrcol_t;
 
+#ifdef SFR_USE_DOUBLE
+    typedef double sfrflt_t;
+#else
+    typedef float sfrflt_t;
+#endif
+
 // global variables below can be managed by you, however
 // there is probably a function that will do what you want
 extern int sfrWidth, sfrHeight;
 extern sfrcol_t* sfrPixelBuf;
-extern float* sfrDepthBuf;
+extern sfrflt_t* sfrDepthBuf;
 extern int sfrRasterCount; // how many triangles have been rasterized since the last call to clear
+
 extern sfrmat_t sfrMatModel, sfrMatView, sfrMatProj;
 extern sfrvec_t sfrCamPos;
-extern float sfrCamFov;
-
+extern sfrflt_t sfrCamFov;
+extern sfrflt_t sfrNearDist, sfrFarDist;
 
 #ifndef SFR_FUNC
     #ifdef SFR_USE_INLINE
@@ -59,22 +74,22 @@ extern float sfrCamFov;
 // math functions
 SFR_FUNC sfrvec_t sfr_vec_add(sfrvec_t a, sfrvec_t b);
 SFR_FUNC sfrvec_t sfr_vec_sub(sfrvec_t a, sfrvec_t b);
-SFR_FUNC sfrvec_t sfr_vec_mul(sfrvec_t a, float b);
-SFR_FUNC sfrvec_t sfr_vec_div(sfrvec_t a, float b);
-SFR_FUNC float    sfr_vec_dot(sfrvec_t a, sfrvec_t b);
-SFR_FUNC float    sfr_vec_length(sfrvec_t v);
-SFR_FUNC float    sfr_vec_length2(sfrvec_t v);
+SFR_FUNC sfrvec_t sfr_vec_mul(sfrvec_t a, sfrflt_t b);
+SFR_FUNC sfrvec_t sfr_vec_div(sfrvec_t a, sfrflt_t b);
+SFR_FUNC sfrflt_t sfr_vec_dot(sfrvec_t a, sfrvec_t b);
+SFR_FUNC sfrflt_t sfr_vec_length(sfrvec_t v);
+SFR_FUNC sfrflt_t sfr_vec_length2(sfrvec_t v);
 SFR_FUNC sfrvec_t sfr_vec_cross(sfrvec_t a, sfrvec_t b);
 SFR_FUNC sfrvec_t sfr_vec_norm(sfrvec_t v);
-SFR_FUNC sfrvec_t sfr_vec_normf(float a, float b, float c);
+SFR_FUNC sfrvec_t sfr_vec_normf(sfrflt_t a, sfrflt_t b, sfrflt_t c);
 SFR_FUNC sfrvec_t sfr_vec_face_normal(sfrvec_t a, sfrvec_t b, sfrvec_t c);
 SFR_FUNC sfrmat_t sfr_mat_identity();
-SFR_FUNC sfrmat_t sfr_mat_rot_x(float a);
-SFR_FUNC sfrmat_t sfr_mat_rot_y(float a);
-SFR_FUNC sfrmat_t sfr_mat_rot_z(float a);
-SFR_FUNC sfrmat_t sfr_mat_translate(float x, float y, float z);
-SFR_FUNC sfrmat_t sfr_mat_scale(float x, float y, float z);
-SFR_FUNC sfrmat_t sfr_mat_proj(float fovDev, float aspect, float near, float far);
+SFR_FUNC sfrmat_t sfr_mat_rot_x(sfrflt_t a);
+SFR_FUNC sfrmat_t sfr_mat_rot_y(sfrflt_t a);
+SFR_FUNC sfrmat_t sfr_mat_rot_z(sfrflt_t a);
+SFR_FUNC sfrmat_t sfr_mat_translate(sfrflt_t x, sfrflt_t y, sfrflt_t z);
+SFR_FUNC sfrmat_t sfr_mat_scale(sfrflt_t x, sfrflt_t y, sfrflt_t z);
+SFR_FUNC sfrmat_t sfr_mat_proj(sfrflt_t fovDev, sfrflt_t aspect, sfrflt_t near, sfrflt_t far);
 SFR_FUNC sfrmat_t sfr_mat_mul(sfrmat_t a, sfrmat_t b);
 SFR_FUNC sfrvec_t sfr_mat_mul_vec(sfrmat_t m, sfrvec_t v);
 SFR_FUNC sfrmat_t sfr_mat_qinv(sfrmat_t m);
@@ -82,39 +97,39 @@ SFR_FUNC sfrmat_t sfr_mat_look_at(sfrvec_t pos, sfrvec_t target, sfrvec_t up);
 
 // core functions
 SFR_FUNC void sfr_init( // initialize matrices and set buffers
-    sfrcol_t* pixelBuf, float* depthBuf, int w, int h, float fovDeg);
+    sfrcol_t* pixelBuf, sfrflt_t* depthBuf, int w, int h, sfrflt_t fovDeg);
 
-SFR_FUNC void sfr_reset(void);                          // reset model matrix to identity
-SFR_FUNC void sfr_rotate_x(float theta);                // rotate model matrix about x by theta radians
-SFR_FUNC void sfr_rotate_y(float theta);                // rotate model matrix about y by theta radians
-SFR_FUNC void sfr_rotate_z(float theta);                // rotate model matrix about z by theta radians
-SFR_FUNC void sfr_translate(float x, float y, float z); // translate model matrix by x y z
-SFR_FUNC void sfr_scale(float x, float y, float z);     // scale model matrix by x y z
-SFR_FUNC void sfr_look_at(float x, float y, float z);   // set view matrix to look at x y z
+SFR_FUNC void sfr_reset(void);                                   // reset model matrix to identity
+SFR_FUNC void sfr_rotate_x(sfrflt_t theta);                      // rotate model matrix about x by theta radians
+SFR_FUNC void sfr_rotate_y(sfrflt_t theta);                      // rotate model matrix about y by theta radians
+SFR_FUNC void sfr_rotate_z(sfrflt_t theta);                      // rotate model matrix about z by theta radians
+SFR_FUNC void sfr_translate(sfrflt_t x, sfrflt_t y, sfrflt_t z); // translate model matrix by x y z
+SFR_FUNC void sfr_scale(sfrflt_t x, sfrflt_t y, sfrflt_t z);     // scale model matrix by x y z
+SFR_FUNC void sfr_look_at(sfrflt_t x, sfrflt_t y, sfrflt_t z);   // set view matrix to look at x y z
 
 SFR_FUNC void sfr_clear(void); // reset depth and pixel buffers, and reset lighting to {0}
 SFR_FUNC void sfr_triangle(    // using current matrices, draw specified triangle
-    float ax, float ay, float az,
-    float bx, float by, float bz,
-    float cx, float cy, float cz,
+    sfrflt_t ax, sfrflt_t ay, sfrflt_t az,
+    sfrflt_t bx, sfrflt_t by, sfrflt_t bz,
+    sfrflt_t cx, sfrflt_t cy, sfrflt_t cz,
     sfrcol_t col);
 SFR_FUNC void sfr_cube(sfrcol_t col);          // using current matrices, draw a cube
 SFR_FUNC void sfr_mesh(const sfrmesh_t* mesh); // draw specified mesh, changing matrices based on 'mesh'
 
 SFR_FUNC int sfr_world_to_screen( // project the world position specified to screen coordinates
-    float x, float y, float z, int* screenX, int* screenY);    
+    sfrflt_t x, sfrflt_t y, sfrflt_t z, int* screenX, int* screenY);    
 
-    SFR_FUNC void sfr_set_camera( // update the camera with the new position and view
-    float x, float y, float z, float yaw, float pitch, float roll);
-SFR_FUNC void sfr_set_fov(float fovDeg); // update projection matrix with new fov
-SFR_FUNC void sfr_set_lighting(          // update internal lighting state for simple shading on triangles
-    int on, sfrvec_t dir, float ambientIntensity);
+SFR_FUNC void sfr_set_camera( // update the camera with the new position and view
+    sfrflt_t x, sfrflt_t y, sfrflt_t z, sfrflt_t yaw, sfrflt_t pitch, sfrflt_t roll);
+SFR_FUNC void sfr_set_fov(sfrflt_t fovDeg); // update projection matrix with new fov
+SFR_FUNC void sfr_set_lighting( // update internal lighting state for simple shading on triangles
+    int on, sfrvec_t dir, sfrflt_t ambientIntensity);
 
 #ifndef SFR_NO_STD
-#include <stdio.h>
-#include <stdlib.h>
-SFR_FUNC sfrmesh_t* sfr_load_mesh(const char* filename);
-SFR_FUNC void sfr_release_mesh(sfrmesh_t** mesh);
+    #include <stdio.h>
+    #include <stdlib.h>
+    SFR_FUNC sfrmesh_t* sfr_load_mesh(const char* filename);
+    SFR_FUNC void sfr_release_mesh(sfrmesh_t** mesh);
 #endif
 
 
@@ -125,31 +140,64 @@ SFR_FUNC void sfr_release_mesh(sfrmesh_t** mesh);
 #define SFR_IMPL
 #ifdef SFR_IMPL
 
-#include <string.h> // for 'memset' and 'memmove'
-#include <math.h>   // for various math function, e.g. 'sqrtf' and 'tanf'
+#ifndef SFR_NO_STRING
+    #include <string.h> // for 'memset' and 'memmove'
+    #define sfr_memset memset
+    #define sfr_memmove memmove
+#else
+    SFR_FUNC void* sfr_memset(void* dest, char c, int count) {
+        char* p = (char*)dest;
+        while (count--) {
+            *p++ = c;
+        }
+        return dest;
+    }
+    
+    SFR_FUNC void* sfr_memmove(void* dest, const void* src, int count) {
+        char* d = (char*)dest;
+        const char* s = (const char*)src;
+        
+        if (d == s) {
+            return dest;
+        }
+        
+        // check for overlapping regions
+        if (s < d && d < s + count) {
+            // copy backwards from end to handle overlap
+            d += count;
+            s += count;
+            while (count--) {
+                *--d = *--s;
+            }
+        } else {
+            // copy forwards
+            while (count--) {
+                *d++ = *s++;
+            }
+        }
 
-
-//================================================
-//:         PRE PROCESSING OPTIONS
-//================================================
-
-#ifndef SFR_NEAR_DIST
-    #define SFR_NEAR_DIST 0.1f
+        return dest;
+    }
 #endif
-#ifndef SFR_FAR_DIST
-    #define SFR_FAR_DIST 100.f
+
+#ifndef SFR_SQRT_ACCURACY
+    #define SFR_SQRT_ACCURACY 20
 #endif
+#ifndef SFR_TRIG_ACCURACY
+    #define SFR_TRIG_ACCURACY 10
+#endif
+
 
 //================================================
 //:         TYPES
 //================================================
 
 typedef struct sfrvec {
-    float x, y, z, w;
+    sfrflt_t x, y, z, w;
 } sfrvec_t;
 
 typedef struct sfrmat {
-    float m[4][4];
+    sfrflt_t m[4][4];
 } sfrmat_t;
 
 typedef struct sfrtri {
@@ -159,11 +207,11 @@ typedef struct sfrtri {
 typedef struct sfrLightingState {
     int on;
     sfrvec_t dir;
-    float ambient;
+    sfrflt_t ambient;
 } SfrLightingState;
 
 typedef struct sfrmesh {
-    float* tris;
+    sfrflt_t* tris;
     int vertCount;
     sfrvec_t pos, scale, rot;
     sfrcol_t col;
@@ -176,12 +224,13 @@ typedef struct sfrmesh {
 
 int sfrWidth, sfrHeight;
 sfrcol_t* sfrPixelBuf;
-float* sfrDepthBuf;
+sfrflt_t* sfrDepthBuf;
 int sfrRasterCount;
 
 sfrmat_t sfrMatModel, sfrMatView, sfrMatProj;
 sfrvec_t sfrCamPos;
-float sfrCamFov;
+sfrflt_t sfrCamFov;
+sfrflt_t sfrNearDist = 0.1f, sfrFarDist = 100.f;
 
 SfrLightingState sfrLightingState = {0};
 sfrmat_t sfrMatNormal; // only used for shading
@@ -192,14 +241,85 @@ int sfrIsNormalDirty;  // only used for shading
 //:         MISC HELPER MACROS
 //================================================
 
-#define SFR_PI 3.14159265358979323846f
-#define SFR_SWAP(a, b) { typeof(a) _swapTemp = (a); (a) = (b); (b) = _swapTemp; }
+#define SFR_PI ((sfrflt_t)3.14159265358979323846)
+#define SFR_EPSILON ((sfrflt_t)1e-10)
+
+#define SFR_SWAPF(a, b) { sfrflt_t _swapTemp = (a); (a) = (b); (b) = _swapTemp; }
 #define SFR_VEC0 ((sfrvec_t){0.f, 0.f, 0.f, 0.f})
 
 
 //================================================
 //:         MATH
 //================================================
+
+#ifndef SFR_NO_MATH
+    #include <math.h>
+    #ifdef SFR_USE_DOUBLE
+        #define sfr_floorf floor
+        #define sfr_fmaxf fmax
+        #define sfr_sqrtf sqrt
+        #define sfr_cosf cos
+        #define sfr_sinf sin
+        #define sfr_tanf tan
+    #else
+        #define sfr_floorf floorf
+        #define sfr_fmaxf fmaxf
+        #define sfr_sqrtf sqrtf
+        #define sfr_cosf cosf
+        #define sfr_sinf sinf
+        #define sfr_tanf tanf
+    #endif
+#else
+    SFR_FUNC sfrflt_t sfr_floorf(sfrflt_t x) {
+        const int ix = (int)x;
+        return (x < ix) ? ix - 1 : ix;
+    }
+
+    SFR_FUNC sfrflt_t sfr_fmaxf(sfrflt_t a, sfrflt_t b) {
+        return (a > b) ? a : b;
+    }
+
+    SFR_FUNC sfrflt_t sfr_sqrtf(sfrflt_t x) { // newton-raphson method
+        if (x <= 0.f) {
+            return 0.f;
+        }
+
+        sfrflt_t g = x;
+        for (int i = 0; i < SFR_SQRT_ACCURACY; i += 1) {
+            g = 0.5f * (g + x / g);
+        }
+        return g;
+    }
+
+    SFR_FUNC sfrflt_t sfr_cosf(sfrflt_t x) { // taylor series approximation
+        x -= (2 * SFR_PI) * sfr_floorf((x + SFR_PI) / (2.f * SFR_PI));
+        const sfrflt_t x2 = x * x;
+        sfrflt_t term = 1.f, sum = 1.f;
+        for (int i = 1, n = 0; i < SFR_TRIG_ACCURACY; i += 1) {
+            n += 2;
+            term *= -x2 / (n * (n - 1));
+            sum += term;
+        }
+        return sum;
+    }
+
+    SFR_FUNC sfrflt_t sfr_sinf(sfrflt_t x) { // taylor series approximation
+        x -= (2 * SFR_PI) * sfr_floorf((x + SFR_PI) / (2.f * SFR_PI));
+        const sfrflt_t x2 = x * x;
+        sfrflt_t term = x, sum = x;
+        for (int i = 1, n = 1; i < SFR_TRIG_ACCURACY; i += 1) {
+            n += 2;
+            term *= -x2 / (n * (n - 1));
+            sum += term;
+        }
+        return sum;
+    }
+
+    SFR_FUNC sfrflt_t sfr_tanf(sfrflt_t x) {
+        const sfrflt_t c = sfr_cosf(x);
+        return (c < SFR_EPSILON && c > -SFR_EPSILON) ? 0.f : sfr_sinf(x) / c;
+    }
+#endif
 
 SFR_FUNC sfrvec_t sfr_vec_add(sfrvec_t a, sfrvec_t b) {
     sfrvec_t r;
@@ -219,7 +339,7 @@ SFR_FUNC sfrvec_t sfr_vec_sub(sfrvec_t a, sfrvec_t b) {
     return r;
 }
 
-SFR_FUNC sfrvec_t sfr_vec_mul(sfrvec_t a, float b) {
+SFR_FUNC sfrvec_t sfr_vec_mul(sfrvec_t a, sfrflt_t b) {
     sfrvec_t r;
     r.x = a.x * b;
     r.y = a.y * b;
@@ -229,7 +349,7 @@ SFR_FUNC sfrvec_t sfr_vec_mul(sfrvec_t a, float b) {
 }
 
 
-SFR_FUNC sfrvec_t sfr_vec_div(sfrvec_t a, float b) {
+SFR_FUNC sfrvec_t sfr_vec_div(sfrvec_t a, sfrflt_t b) {
     sfrvec_t r;
     r.x = a.x / b;
     r.y = a.y / b;
@@ -238,15 +358,15 @@ SFR_FUNC sfrvec_t sfr_vec_div(sfrvec_t a, float b) {
     return r;
 }
 
-SFR_FUNC float sfr_vec_dot(sfrvec_t a, sfrvec_t b) {
+SFR_FUNC sfrflt_t sfr_vec_dot(sfrvec_t a, sfrvec_t b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-SFR_FUNC float sfr_vec_length(sfrvec_t v) {
-    return sqrtf(sfr_vec_dot(v, v));
+SFR_FUNC sfrflt_t sfr_vec_length(sfrvec_t v) {
+    return sfr_sqrtf(sfr_vec_dot(v, v));
 }
 
-SFR_FUNC float sfr_vec_length2(sfrvec_t v) {
+SFR_FUNC sfrflt_t sfr_vec_length2(sfrvec_t v) {
     return sfr_vec_dot(v, v);
 }
 
@@ -261,7 +381,7 @@ SFR_FUNC sfrvec_t sfr_vec_cross(sfrvec_t a, sfrvec_t b) {
 
 
 SFR_FUNC sfrvec_t sfr_vec_norm(sfrvec_t v) {
-    const float l = sfr_vec_length(v);
+    const sfrflt_t l = sfr_vec_length(v);
     sfrvec_t r;
     r.x = v.x / l;
     r.y = v.y / l;
@@ -270,7 +390,7 @@ SFR_FUNC sfrvec_t sfr_vec_norm(sfrvec_t v) {
     return r;
 }
 
-SFR_FUNC sfrvec_t sfr_vec_normf(float x, float y, float z) {
+SFR_FUNC sfrvec_t sfr_vec_normf(sfrflt_t x, sfrflt_t y, sfrflt_t z) {
     return sfr_vec_norm((sfrvec_t){x, y, z, 1.f});
 }
 
@@ -289,40 +409,40 @@ SFR_FUNC sfrmat_t sfr_mat_identity() {
     return r;
 }
 
-SFR_FUNC sfrmat_t sfr_mat_rot_x(float a) {
+SFR_FUNC sfrmat_t sfr_mat_rot_x(sfrflt_t a) {
     sfrmat_t r = {0};
     r.m[0][0] = 1.f;
-    r.m[1][1] = cosf(a);
-    r.m[1][2] = sinf(a);
-    r.m[2][1] = -sinf(a);
-    r.m[2][2] = cosf(a);
+    r.m[1][1] = sfr_cosf(a);
+    r.m[1][2] = sfr_sinf(a);
+    r.m[2][1] = -sfr_sinf(a);
+    r.m[2][2] = sfr_cosf(a);
     r.m[3][3] = 1.f;
     return r;
 }
 
-SFR_FUNC sfrmat_t sfr_mat_rot_y(float a) {
+SFR_FUNC sfrmat_t sfr_mat_rot_y(sfrflt_t a) {
     sfrmat_t r = {0};
-    r.m[0][0] = cosf(a);
-    r.m[0][2] = sinf(a);
+    r.m[0][0] = sfr_cosf(a);
+    r.m[0][2] = sfr_sinf(a);
     r.m[1][1] = 1.f;
-    r.m[2][0] = -sinf(a);
-    r.m[2][2] = cosf(a);
+    r.m[2][0] = -sfr_sinf(a);
+    r.m[2][2] = sfr_cosf(a);
     r.m[3][3] = 1.f;
     return r;
 }
 
-SFR_FUNC sfrmat_t sfr_mat_rot_z(float a) {
+SFR_FUNC sfrmat_t sfr_mat_rot_z(sfrflt_t a) {
     sfrmat_t r = {0};
-    r.m[0][0] = cosf(a);
-    r.m[0][1] = sinf(a);
-    r.m[1][0] = -sinf(a);
-    r.m[1][1] = cosf(a);
+    r.m[0][0] = sfr_cosf(a);
+    r.m[0][1] = sfr_sinf(a);
+    r.m[1][0] = -sfr_sinf(a);
+    r.m[1][1] = sfr_cosf(a);
     r.m[2][2] = 1.f;
     r.m[3][3] = 1.f;
     return r;
 }
 
-SFR_FUNC sfrmat_t sfr_mat_translate(float x, float y, float z) {
+SFR_FUNC sfrmat_t sfr_mat_translate(sfrflt_t x, sfrflt_t y, sfrflt_t z) {
     sfrmat_t r = {0};
     r.m[0][0] = 1.f;
     r.m[1][1] = 1.f;
@@ -334,7 +454,7 @@ SFR_FUNC sfrmat_t sfr_mat_translate(float x, float y, float z) {
     return r;
 }
 
-SFR_FUNC sfrmat_t sfr_mat_scale(float x, float y, float z) {
+SFR_FUNC sfrmat_t sfr_mat_scale(sfrflt_t x, sfrflt_t y, sfrflt_t z) {
     sfrmat_t r = {0};
     r.m[0][0] = x;
     r.m[1][1] = y;
@@ -343,8 +463,8 @@ SFR_FUNC sfrmat_t sfr_mat_scale(float x, float y, float z) {
     return r;
 }
 
-SFR_FUNC sfrmat_t sfr_mat_proj(float fovDev, float aspect, float near, float far) {
-    const float fov = 1.0f / tanf(fovDev * 0.5f / 180.0f * 3.1415926536f);
+SFR_FUNC sfrmat_t sfr_mat_proj(sfrflt_t fovDev, sfrflt_t aspect, sfrflt_t near, sfrflt_t far) {
+    const sfrflt_t fov = 1.0 / sfr_tanf(fovDev * 0.5 / 180.0 * SFR_PI);
     sfrmat_t r = {0};
     r.m[0][0] = aspect * fov;
     r.m[1][1] = fov;
@@ -357,8 +477,8 @@ SFR_FUNC sfrmat_t sfr_mat_proj(float fovDev, float aspect, float near, float far
 
 SFR_FUNC sfrmat_t sfr_mat_mul(sfrmat_t a, sfrmat_t b) {
     sfrmat_t matrix;
-    for (int c = 0; c < 4; c++) {
-        for (int r = 0; r < 4; r++) {
+    for (int c = 0; c < 4; c += 1) {
+        for (int r = 0; r < 4; r += 1) {
             matrix.m[r][c] =
                 a.m[r][0] * b.m[0][c] +
                 a.m[r][1] * b.m[1][c] +
@@ -431,10 +551,10 @@ SFR_FUNC sfrmat_t sfr_mat_look_at(sfrvec_t pos, sfrvec_t target, sfrvec_t up) {
 
 SFR_FUNC sfrvec_t sfr_intersect_plane(sfrvec_t plane, sfrvec_t norm, sfrvec_t start, sfrvec_t end) {
     norm = sfr_vec_norm(norm);
-    const float delta = -sfr_vec_dot(norm, plane);
-    const float ad = sfr_vec_dot(start, norm);
-    const float bd = sfr_vec_dot(end, norm);
-    const float t = (-delta - ad) / (bd - ad);
+    const sfrflt_t delta = -sfr_vec_dot(norm, plane);
+    const sfrflt_t ad = sfr_vec_dot(start, norm);
+    const sfrflt_t bd = sfr_vec_dot(end, norm);
+    const sfrflt_t t = (-delta - ad) / (bd - ad);
     
     const sfrvec_t startToEnd = sfr_vec_sub(end, start);
     const sfrvec_t segment = sfr_vec_mul(startToEnd, t);
@@ -449,9 +569,9 @@ SFR_FUNC int sfr_clip_against_plane(sfrtri out[2], sfrvec_t plane, sfrvec_t norm
     sfrvec_t* outside[3];
     int insideCount = 0, outsideCount = 0;
 
-    const float ndotp = sfr_vec_dot(norm, plane);
+    const sfrflt_t ndotp = sfr_vec_dot(norm, plane);
     for (int i = 0; i < 3; i += 1) {
-        const float d = norm.x * in.p[i].x + norm.y * in.p[i].y + norm.z * in.p[i].z - ndotp;
+        const sfrflt_t d = norm.x * in.p[i].x + norm.y * in.p[i].y + norm.z * in.p[i].z - ndotp;
         if (d >= 0.f) {
             inside[insideCount] = &in.p[i];
             insideCount += 1;
@@ -487,50 +607,50 @@ SFR_FUNC int sfr_clip_against_plane(sfrtri out[2], sfrvec_t plane, sfrvec_t norm
 }
 
 SFR_FUNC void sfr_rasterize(
-    float ax, float ay, float az,
-    float bx, float by, float bz,
-    float cx, float cy, float cz,
+    sfrflt_t ax, sfrflt_t ay, sfrflt_t az,
+    sfrflt_t bx, sfrflt_t by, sfrflt_t bz,
+    sfrflt_t cx, sfrflt_t cy, sfrflt_t cz,
     sfrcol_t col
 ) {
     sfrRasterCount += 1;
 
-    ax = floorf(ax);
-    ay = floorf(ay);
-    bx = floorf(bx);
-    by = floorf(by);
-    cx = floorf(cx);
-    cy = floorf(cy);
+    ax = sfr_floorf(ax);
+    ay = sfr_floorf(ay);
+    bx = sfr_floorf(bx);
+    by = sfr_floorf(by);
+    cx = sfr_floorf(cx);
+    cy = sfr_floorf(cy);
     
     if (ay > by) {
-        SFR_SWAP(ax, bx);
-        SFR_SWAP(ay, by);
-        SFR_SWAP(az, bz);
+        SFR_SWAPF(ax, bx);
+        SFR_SWAPF(ay, by);
+        SFR_SWAPF(az, bz);
     }
     if (ay > cy) {
-        SFR_SWAP(ax, cx);
-        SFR_SWAP(ay, cy);
-        SFR_SWAP(az, cz);
+        SFR_SWAPF(ax, cx);
+        SFR_SWAPF(ay, cy);
+        SFR_SWAPF(az, cz);
     }
     if (by > cy) {
-        SFR_SWAP(bx, cx);
-        SFR_SWAP(by, cy);
-        SFR_SWAP(bz, cz);
+        SFR_SWAPF(bx, cx);
+        SFR_SWAPF(by, cy);
+        SFR_SWAPF(bz, cz);
     }
 
-    float alpha = 0.f, alphaStep = (cy - ay) > 0.f ? 1.f / (cy - ay) : 0.f;
-    float beta = 0.f, betaStep = (by - ay) > 0.f ? 1.f / (by - ay) : 0.f;
-    for (int y = (int)ay; y < (int)by; y++, alpha += alphaStep, beta += betaStep) {
-        float sx = ax + (cx - ax) * alpha;
-        float sz = az + (cz - az) * alpha;
-        float ex = ax + (bx - ax) * beta;
-        float ez = az + (bz - az) * beta;
+    sfrflt_t alpha = 0.f, alphaStep = ((cy - ay) > 0.f) ? 1.f / (cy - ay) : 0.f;
+    sfrflt_t beta = 0.f, betaStep = ((by - ay) > 0.f) ? 1.f / (by - ay) : 0.f;
+    for (int y = (int)ay; y < (int)by; y += 1, alpha += alphaStep, beta += betaStep) {
+        sfrflt_t sx = ax + (cx - ax) * alpha;
+        sfrflt_t sz = az + (cz - az) * alpha;
+        sfrflt_t ex = ax + (bx - ax) * beta;
+        sfrflt_t ez = az + (bz - az) * beta;
         if (sx > ex) {
-            SFR_SWAP(sx, ex);
-            SFR_SWAP(sz, ez);
+            SFR_SWAPF(sx, ex);
+            SFR_SWAPF(sz, ez);
         }
         
-        const float depthStep = 0.f != (ex - sx) ? (ez - sz) / (ex - sx) : 0.f;
-        float depth = sz;
+        const sfrflt_t depthStep = (0.f != (ex - sx)) ? (ez - sz) / (ex - sx) : 0.f;
+        sfrflt_t depth = sz;
         for (int x = (int)sx, i = y * sfrWidth + (int)sx; x < (int)ex; x += 1, i += 1, depth += depthStep) {
             if (x >= 0 && x < sfrWidth && y >= 0 && y < sfrHeight) {
                 if (depth < sfrDepthBuf[i]) {
@@ -542,19 +662,19 @@ SFR_FUNC void sfr_rasterize(
     }
 
     beta = 0.f;
-    betaStep = (cy - by) > 0.f ? 1.f / (cy - by) : 0.f;
+    betaStep = ((cy - by) > 0.f) ? 1.f / (cy - by) : 0.f;
     for (int y = by; y < cy; y += 1, alpha += alphaStep, beta += betaStep) {
-        float sx = ax + (cx - ax) * alpha;
-        float sz = az + (cz - az) * alpha;
-        float ex = bx + (cx - bx) * beta;
-        float ez = bz + (cz - bz) * beta;
+        sfrflt_t sx = ax + (cx - ax) * alpha;
+        sfrflt_t sz = az + (cz - az) * alpha;
+        sfrflt_t ex = bx + (cx - bx) * beta;
+        sfrflt_t ez = bz + (cz - bz) * beta;
         if (sx > ex) {
-            SFR_SWAP(sx, ex);
-            SFR_SWAP(sz, ez);
+            SFR_SWAPF(sx, ex);
+            SFR_SWAPF(sz, ez);
         }
 
-        const float depthStep = (ex - sx) != 0.f ? (ez - sz) / (ex - sx) : 0.f;
-        float depth = sz;
+        const sfrflt_t depthStep = (0.f != (ex - sx)) ? (ez - sz) / (ex - sx) : 0.f;
+        sfrflt_t depth = sz;
         for (int x = (int)sx, i = y * sfrWidth + (int)sx; x < (int)ex; x += 1, i += 1, depth += depthStep) {
             if (x >= 0 && x < sfrWidth && y >= 0 && y < sfrHeight) {
                 if (depth < sfrDepthBuf[i]) {
@@ -568,7 +688,7 @@ SFR_FUNC void sfr_rasterize(
 
 //: PUBLIC API FUNCTIONS
 
-SFR_FUNC void sfr_init(sfrcol_t* pixelBuf, float* depthBuf, int w, int h, float fovDeg) {
+SFR_FUNC void sfr_init(sfrcol_t* pixelBuf, sfrflt_t* depthBuf, int w, int h, sfrflt_t fovDeg) {
     sfrWidth = w;
     sfrHeight = h;
     
@@ -578,7 +698,7 @@ SFR_FUNC void sfr_init(sfrcol_t* pixelBuf, float* depthBuf, int w, int h, float 
     sfr_clear();
     sfr_reset();
 
-    sfrMatProj = sfr_mat_proj(fovDeg, (float)h / w, SFR_NEAR_DIST, SFR_FAR_DIST);
+    sfrMatProj = sfr_mat_proj(fovDeg, (sfrflt_t)h / w, sfrNearDist, sfrFarDist);
     sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
 }
 
@@ -587,50 +707,50 @@ SFR_FUNC void sfr_reset(void) {
     sfrIsNormalDirty = 1;
 }
 
-SFR_FUNC void sfr_rotate_x(float theta) {
+SFR_FUNC void sfr_rotate_x(sfrflt_t theta) {
     const sfrmat_t rot = sfr_mat_rot_x(theta);
     sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
     sfrIsNormalDirty = 1;
 }
 
-SFR_FUNC void sfr_rotate_y(float theta) {
+SFR_FUNC void sfr_rotate_y(sfrflt_t theta) {
     const sfrmat_t rot = sfr_mat_rot_y(theta);
     sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
     sfrIsNormalDirty = 1;
 }
 
-SFR_FUNC void sfr_rotate_z(float theta) {
+SFR_FUNC void sfr_rotate_z(sfrflt_t theta) {
     const sfrmat_t rot = sfr_mat_rot_z(theta);
     sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
     sfrIsNormalDirty = 1;
 }
 
-SFR_FUNC void sfr_translate(float x, float y, float z) {
+SFR_FUNC void sfr_translate(sfrflt_t x, sfrflt_t y, sfrflt_t z) {
     const sfrmat_t trans = sfr_mat_translate(x, y, z);
     sfrMatModel = sfr_mat_mul(sfrMatModel, trans);
     sfrIsNormalDirty = 1;
 }
 
-SFR_FUNC void sfr_scale(float x, float y, float z) {
+SFR_FUNC void sfr_scale(sfrflt_t x, sfrflt_t y, sfrflt_t z) {
     const sfrmat_t scale = sfr_mat_scale(x, y, z);
     sfrMatModel = sfr_mat_mul(sfrMatModel, scale);
     sfrIsNormalDirty = 1;
 }
 
-SFR_FUNC void sfr_look_at(float x, float y, float z) {
+SFR_FUNC void sfr_look_at(sfrflt_t x, sfrflt_t y, sfrflt_t z) {
     const sfrvec_t up = {0.f, 1.f, 0.f, 1.f};
     const sfrmat_t view = sfr_mat_look_at(sfrCamPos, (sfrvec_t){x, y, z, 1.f}, up);
     sfrMatView = sfr_mat_qinv(view);
 }
 
 SFR_FUNC void sfr_clear(void) {
-    memset(sfrPixelBuf, 0, sizeof(sfrcol_t) * sfrWidth * sfrHeight);
-    memset(sfrDepthBuf, 0x7f, sizeof(float) * sfrWidth * sfrHeight);
+    sfr_memset(sfrPixelBuf, 0, sizeof(sfrcol_t) * sfrWidth * sfrHeight);
+    sfr_memset(sfrDepthBuf, 0x7f, sizeof(sfrflt_t) * sfrWidth * sfrHeight);
     sfrRasterCount = 0;
 }
 
 // helper for when lighting is enabled
-SFR_FUNC sfrcol_t sfr_adjust_color_u32(sfrcol_t col, float intensity) {
+SFR_FUNC sfrcol_t sfr_adjust_color_u32(sfrcol_t col, sfrflt_t intensity) {
     const unsigned char r = (col >> 16) & 0xFF;
     const unsigned char g = (col >> 8)  & 0xFF;
     const unsigned char b = (col >> 0)  & 0xFF;
@@ -645,14 +765,14 @@ SFR_FUNC void sfr_update_normal_mat(void) {
         return;
     }
 
-    const float* m = &sfrMatModel.m[0][0];
+    const sfrflt_t* m = &sfrMatModel.m[0][0];
     
-    const float a = m[0], b = m[4], c = m[8];
-    const float d = m[1], e = m[5], f = m[9];
-    const float g = m[2], h = m[6], i = m[10];
+    const sfrflt_t a = m[0], b = m[4], c = m[8];
+    const sfrflt_t d = m[1], e = m[5], f = m[9];
+    const sfrflt_t g = m[2], h = m[6], i = m[10];
 
-    const float det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-    const float invDet = 0 != det ? 1.f / det : 0.f;
+    const sfrflt_t det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    const sfrflt_t invDet = (0 != det) ? 1.f / det : 0.f;
 
     sfrMatNormal = (sfrmat_t){{
         { (e * i - f * h) * invDet, (c * h - b * i) * invDet, (b * f - c * e) * invDet, 0.f },
@@ -665,9 +785,9 @@ SFR_FUNC void sfr_update_normal_mat(void) {
 }
 
 SFR_FUNC void sfr_triangle(
-    float ax, float ay, float az,
-    float bx, float by, float bz,
-    float cx, float cy, float cz,
+    sfrflt_t ax, sfrflt_t ay, sfrflt_t az,
+    sfrflt_t bx, sfrflt_t by, sfrflt_t bz,
+    sfrflt_t cx, sfrflt_t cy, sfrflt_t cz,
     sfrcol_t col
 ) {
     if (sfrLightingState.on) {
@@ -681,7 +801,7 @@ SFR_FUNC void sfr_triangle(
         normal = sfr_mat_mul_vec(sfrMatNormal, normal);
         normal = sfr_vec_norm(normal);
 
-        const float intensity = fmaxf(
+        const sfrflt_t intensity = sfr_fmaxf(
             sfrLightingState.ambient, 
             sfr_vec_dot(normal, sfrLightingState.dir));
         
@@ -703,7 +823,7 @@ SFR_FUNC void sfr_triangle(
         const sfrvec_t line1 = sfr_vec_sub(tri.p[2], tri.p[0]);
         const sfrvec_t normal = sfr_vec_cross(line0, line1);
         const sfrvec_t camRay = sfr_vec_sub(tri.p[0], sfrCamPos);
-        if (sfr_vec_dot(normal, camRay) > 0.0001f) {
+        if (sfr_vec_dot(normal, camRay) > 0.f) {
             return;
         }
     #endif
@@ -714,7 +834,7 @@ SFR_FUNC void sfr_triangle(
 
     sfrtri clipped[2];
     const int clippedCount = sfr_clip_against_plane(clipped,
-        (sfrvec_t){0.f, 0.f, SFR_NEAR_DIST, 1.f},
+        (sfrvec_t){0.f, 0.f, sfrNearDist, 1.f},
         (sfrvec_t){0.f, 0.f, 1.f, 1.f},
         tri);
 
@@ -728,7 +848,7 @@ SFR_FUNC void sfr_triangle(
         tri.p[1] = sfr_vec_div(tri.p[1], tri.p[1].w);
         tri.p[2] = sfr_vec_div(tri.p[2], tri.p[2].w);
 
-        const float w2 = sfrWidth / 2.f, h2 = sfrHeight / 2.f;
+        const sfrflt_t w2 = sfrWidth / 2.f, h2 = sfrHeight / 2.f;
         for (int i = 0; i < 3; i += 1) {
             tri.p[i].x =  (tri.p[i].x + 1.f) * w2;
             tri.p[i].y = (-tri.p[i].y + 1.f) * h2;
@@ -738,10 +858,10 @@ SFR_FUNC void sfr_triangle(
     }
 
     const sfrvec_t clipPlanes[4][2] = {
-        {{0.f, 0.5f, 0.f, 1.f}, {0.f, 1.f, 0.f, 1.f}},              // top
-        {{0.f, (float)sfrHeight, 0.f, 1.f}, {0.f, -1.f, 0.f, 1.f}}, // bottom 
-        {{0.5f, 0.f, 0.f, 1.f}, {1.f, 0.f, 0.f, 1.f}},              // left
-        {{(float)sfrWidth, 0.f, 0.f, 1.f}, {-1.f, 0.f, 0.f, 1.f}},  // right
+        {{0.f, 0.5f, 0.f, 1.f}, {0.f, 1.f, 0.f, 1.f}},                 // top
+        {{0.f, (sfrflt_t)sfrHeight, 0.f, 1.f}, {0.f, -1.f, 0.f, 1.f}}, // bottom 
+        {{0.5f, 0.f, 0.f, 1.f}, {1.f, 0.f, 0.f, 1.f}},                 // left
+        {{(sfrflt_t)sfrWidth, 0.f, 0.f, 1.f}, {-1.f, 0.f, 0.f, 1.f}},  // right
     };
 
     int queueCount = clippedCount, trisToClip = clippedCount;
@@ -751,7 +871,7 @@ SFR_FUNC void sfr_triangle(
             const sfrtri test = queue[0];
             queueCount -= 1;
             trisToClip -= 1;
-            memmove(queue, queue + 1, (int)sizeof(sfrtri) * queueCount);
+            sfr_memmove(queue, queue + 1, (int)sizeof(sfrtri) * queueCount);
             c = sfr_clip_against_plane(clipped, clipPlanes[p][0], clipPlanes[p][1], test);
 
             for (int i = 0; i < c; i += 1) {
@@ -810,7 +930,7 @@ SFR_FUNC void sfr_mesh(const sfrmesh_t* mesh) {
     }
 }
 
-SFR_FUNC int sfr_world_to_screen(float x, float y, float z, int* screenX, int* screenY) {
+SFR_FUNC int sfr_world_to_screen(sfrflt_t x, sfrflt_t y, sfrflt_t z, int* screenX, int* screenY) {
     sfrvec_t p = {x, y, z, 1.f};
     p = sfr_mat_mul_vec(sfrMatView, p);
     p = sfr_mat_mul_vec(sfrMatProj, p);
@@ -830,7 +950,7 @@ SFR_FUNC int sfr_world_to_screen(float x, float y, float z, int* screenX, int* s
     return 1;
 }
 
-SFR_FUNC void sfr_set_camera(float x, float y, float z, float yaw, float pitch, float roll) {
+SFR_FUNC void sfr_set_camera(sfrflt_t x, sfrflt_t y, sfrflt_t z, sfrflt_t yaw, sfrflt_t pitch, sfrflt_t roll) {
     sfrCamPos = (sfrvec_t){x, y, z, 1.f};
     sfrvec_t up = {0.f, 1.f, 0.f, 1.f};
     sfrvec_t target = {0.f, 0.f, 1.f, 1.f};
@@ -847,13 +967,13 @@ SFR_FUNC void sfr_set_camera(float x, float y, float z, float yaw, float pitch, 
     sfrMatView = sfr_mat_qinv(sfr_mat_look_at(sfrCamPos, target, up));
 }
 
-SFR_FUNC void sfr_set_fov(float fovDeg) {
-    const float aspect = (float)sfrHeight / sfrWidth;
-    sfrMatProj = sfr_mat_proj(fovDeg, aspect, SFR_NEAR_DIST, SFR_FAR_DIST);
+SFR_FUNC void sfr_set_fov(sfrflt_t fovDeg) {
+    const sfrflt_t aspect = (sfrflt_t)sfrHeight / sfrWidth;
+    sfrMatProj = sfr_mat_proj(fovDeg, aspect, sfrNearDist, sfrFarDist);
     sfrCamFov = fovDeg;
 }
 
-SFR_FUNC void sfr_set_lighting(int on, sfrvec_t dir, float ambientIntensity) {
+SFR_FUNC void sfr_set_lighting(int on, sfrvec_t dir, sfrflt_t ambientIntensity) {
     sfrLightingState.on = on;
     sfrLightingState.dir = dir;
     sfrLightingState.ambient = ambientIntensity;
@@ -873,7 +993,6 @@ SFR_FUNC sfrmesh_t* sfr_load_mesh(const char* filename) {
         return 0;
     }
 
-
     int vi, ti = 0;
     float* verts = (float*)malloc(sizeof(float) * 3);
     char line[128];
@@ -889,7 +1008,7 @@ SFR_FUNC sfrmesh_t* sfr_load_mesh(const char* filename) {
 
     rewind(objFile);
 
-    mesh->tris = (float*)malloc(sizeof(float) * 3);
+    mesh->tris = (sfrflt_t*)malloc(sizeof(sfrflt_t) * 3);
     int a, b, c;
     while (fgets(line, 128, objFile)) {
         if ('f' != line[0]) {
@@ -908,16 +1027,16 @@ SFR_FUNC sfrmesh_t* sfr_load_mesh(const char* filename) {
             a -= 1;
             b -= 1;
             c -= 1;
-            mesh->tris = realloc(mesh->tris, (ti + 9) * sizeof(float));
-            mesh->tris[ti++] = verts[(a * 3) + 0];
-            mesh->tris[ti++] = verts[(a * 3) + 1];
-            mesh->tris[ti++] = verts[(a * 3) + 2];
-            mesh->tris[ti++] = verts[(b * 3) + 0];
-            mesh->tris[ti++] = verts[(b * 3) + 1];
-            mesh->tris[ti++] = verts[(b * 3) + 2];
-            mesh->tris[ti++] = verts[(c * 3) + 0];
-            mesh->tris[ti++] = verts[(c * 3) + 1];
-            mesh->tris[ti++] = verts[(c * 3) + 2];
+            mesh->tris = realloc(mesh->tris, (ti + 9) * sizeof(sfrflt_t));
+            mesh->tris[ti++] = (sfrflt_t)verts[(a * 3) + 0];
+            mesh->tris[ti++] = (sfrflt_t)verts[(a * 3) + 1];
+            mesh->tris[ti++] = (sfrflt_t)verts[(a * 3) + 2];
+            mesh->tris[ti++] = (sfrflt_t)verts[(b * 3) + 0];
+            mesh->tris[ti++] = (sfrflt_t)verts[(b * 3) + 1];
+            mesh->tris[ti++] = (sfrflt_t)verts[(b * 3) + 2];
+            mesh->tris[ti++] = (sfrflt_t)verts[(c * 3) + 0];
+            mesh->tris[ti++] = (sfrflt_t)verts[(c * 3) + 1];
+            mesh->tris[ti++] = (sfrflt_t)verts[(c * 3) + 2];
         }
     }
 
