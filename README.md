@@ -17,19 +17,46 @@ For a fairly featureful example project using SDL2 for rendering, see `examples/
 
 ## Pre Processing Configuration 
 ```c
-SFR_IMPL       // indicate declaration of functions
-SFR_NO_STD     // disable 'stdio' and 'stdlib.h'
-SFR_NO_MATH    // disable 'math.h' and use bundled math
-SFR_NO_STRING  // disable 'string.h'
-SFR_NO_CULLING // disable backface culling
-SFR_USE_DOUBLE // use double precision floats
-SFR_USE_INLINE // force inline functions
+#define SFR_IMPL       // indicate declaration of functions
+#define SFR_NO_STD     // disable 'stdio' and 'stdlib.h'
+#define SFR_NO_MATH    // disable 'math.h' and use bundled math
+#define SFR_NO_STRING  // disable 'string.h'
+#define SFR_NO_CULLING // disable backface culling
+#define SFR_USE_DOUBLE // use double precision floats
+#define SFR_USE_INLINE // force inline functions
 
 // only applicable when SFR_NO_MATH is defined, their values
 // dictate the accuracy of the bundled math functions
-SFR_SQRT_ACCURACY // defaults to 20 if not defined
-SFR_TRIG_ACCURACY // defaults to 10 if not defined
-``` 
+#define SFR_SQRT_ACCURACY // defaults to 20 if not defined
+#define SFR_TRIG_ACCURACY // defaults to 10 if not defined
+```
+
+## Global Variables
+
+There are some global variables in sofren.c, those in the public API are:
+
+```c
+// pixel and depth buffer's dimensions
+// set on init but can be changed if your window resizes or something,
+// just remember to call realloc on sfrPixelBuf and sfrDepthBuf
+extern int sfrWidth, sfrHeight;
+
+// the pixel and depth buffers, used interally but managed by you
+extern sfrcol_t* sfrPixelBuf;
+extern sfrflt_t* sfrDepthBuf;
+
+// how many triangles have been rasterized since the last call to clear
+extern int sfrRasterCount;
+
+// current matrices being used for rendering,
+// use all the provided functions when changing
+extern sfrmat_t sfrMatModel, sfrMatView, sfrMatProj;
+
+extern sfrvec_t sfrCamPos; // use 'sfr_set_camera' when changing
+extern sfrflt_t sfrCamFov; // use 'sfr_set_fov' when changing
+extern sfrflt_t sfrNearDist, sfrFarDist; // these can be freely set
+```
+
 
 ## Setup
 ```c
@@ -40,7 +67,9 @@ SFR_TRIG_ACCURACY // defaults to 10 if not defined
 ```
 
 ## Examples
+
 **For more in depth examples, see the examples folder**
+
 ### Rotating Shaded Cube
 ```c
 sfr_set_lighting(1, sfr_vec_normf(1.0, 1.0, 0.0), 0.2);
