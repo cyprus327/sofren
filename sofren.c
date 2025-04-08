@@ -48,6 +48,9 @@ typedef struct sfrmesh sfrmesh_t;
 // TODO support for other formats
 typedef int sfrcol_t;
 
+#define SFR_DEPTH_SCALE 65536
+typedef int sfrfix_t; // 16.16 fixed point
+
 #ifdef SFR_USE_DOUBLE
     typedef double sfrflt_t;
 #else
@@ -58,7 +61,7 @@ typedef int sfrcol_t;
 // there is probably a function that will do what you want
 extern int sfrWidth, sfrHeight;
 extern sfrcol_t* sfrPixelBuf;
-extern sfrflt_t* sfrDepthBuf;
+extern sfrfix_t* sfrDepthBuf;
 extern int sfrRasterCount; // how many triangles have been rasterized since the last call to clear
 
 extern sfrmat_t sfrMatModel, sfrMatView, sfrMatProj;
@@ -100,7 +103,7 @@ SFR_FUNC sfrmat_t sfr_mat_look_at(sfrvec_t pos, sfrvec_t target, sfrvec_t up);
 
 // core functions
 SFR_FUNC void sfr_init( // initialize matrices and set buffers
-    sfrcol_t* pixelBuf, sfrflt_t* depthBuf, int w, int h, sfrflt_t fovDeg);
+    sfrcol_t* pixelBuf, sfrfix_t* depthBuf, int w, int h, sfrflt_t fovDeg);
 
 SFR_FUNC void sfr_reset(void);                                   // reset model matrix to identity and lighting to {0}
 SFR_FUNC void sfr_rotate_x(sfrflt_t theta);                      // rotate model matrix about x by theta radians
@@ -227,7 +230,7 @@ typedef struct sfrmesh {
 
 int sfrWidth, sfrHeight;
 sfrcol_t* sfrPixelBuf;
-sfrflt_t* sfrDepthBuf;
+sfrfix_t* sfrDepthBuf;
 int sfrRasterCount;
 
 sfrmat_t sfrMatModel, sfrMatView, sfrMatProj;
@@ -672,8 +675,9 @@ SFR_FUNC void sfr_rasterize(
 
         int i = y * sfrWidth + sxi;
         for (int x = sxi; x < exi; x += 1, i += 1, depth += depthStep) {
-            if (depth < sfrDepthBuf[i]) {
-                sfrDepthBuf[i] = depth;
+            const sfrfix_t depthVal = (sfrfix_t)(depth * SFR_DEPTH_SCALE);
+            if (depthVal < sfrDepthBuf[i]) {
+                sfrDepthBuf[i] = depthVal;
                 sfrPixelBuf[i] = col;
             }
         }
@@ -710,8 +714,9 @@ SFR_FUNC void sfr_rasterize(
 
         int i = y * sfrWidth + sxi;
         for (int x = sxi; x < exi; x += 1, i += 1, depth += depthStep) {
-            if (depth < sfrDepthBuf[i]) {
-                sfrDepthBuf[i] = depth;
+            const sfrfix_t depthVal = (sfrfix_t)(depth * SFR_DEPTH_SCALE);
+            if (depthVal < sfrDepthBuf[i]) {
+                sfrDepthBuf[i] = depthVal;
                 sfrPixelBuf[i] = col;
             }
         }
@@ -720,7 +725,7 @@ SFR_FUNC void sfr_rasterize(
 
 //: PUBLIC API FUNCTIONS
 
-SFR_FUNC void sfr_init(sfrcol_t* pixelBuf, sfrflt_t* depthBuf, int w, int h, sfrflt_t fovDeg) {
+SFR_FUNC void sfr_init(sfrcol_t* pixelBuf, sfrfix_t* depthBuf, int w, int h, sfrflt_t fovDeg) {
     sfrWidth = w;
     sfrHeight = h;
     
@@ -818,26 +823,6 @@ SFR_FUNC void sfr_triangle(
     sfrflt_t cx, sfrflt_t cy, sfrflt_t cz,
     sfrcol_t col
 ) {
-    if (sfrLightingState.on) {
-        if (sfrIsNormalDirty) {
-            sfr_update_normal_mat();
-        }
-
-        sfrvec_t normal = sfr_vec_face_normal(
-            (sfrvec_t){ax, ay, az},
-            (sfrvec_t){bx, by, bz},
-            (sfrvec_t){cx, cy, cz});
-        
-        normal = sfr_mat_mul_vec(sfrMatNormal, normal);
-        normal = sfr_vec_norm(normal);
-
-        const sfrflt_t intensity = sfr_fmaxf(
-            sfrLightingState.ambient, 
-            sfr_vec_dot(normal, sfrLightingState.dir));
-        
-        col = sfr_adjust_color_u32(col, intensity);
-    }
-
     sfrtri tri = {{
         {ax, ay, az, 1.f},
         {bx, by, bz, 1.f},
@@ -868,6 +853,7 @@ SFR_FUNC void sfr_triangle(
         (sfrvec_t){0.f, 0.f, 1.f, 1.f},
         tri);
 
+    const sfrflt_t w2 = sfrWidth / 2.f, h2 = sfrHeight / 2.f;
     sfrtri queue[16];
     for (int c = 0; c < clippedCount; c += 1) {
         tri.p[0] = sfr_mat_mul_vec(sfrMatProj, clipped[c].p[0]);
@@ -878,7 +864,6 @@ SFR_FUNC void sfr_triangle(
         tri.p[1] = sfr_vec_div(tri.p[1], tri.p[1].w);
         tri.p[2] = sfr_vec_div(tri.p[2], tri.p[2].w);
 
-        const sfrflt_t w2 = sfrWidth / 2.f, h2 = sfrHeight / 2.f;
         for (int i = 0; i < 3; i += 1) {
             tri.p[i].x =  (tri.p[i].x + 1.f) * w2;
             tri.p[i].y = (-tri.p[i].y + 1.f) * h2;
@@ -894,30 +879,59 @@ SFR_FUNC void sfr_triangle(
         {{(sfrflt_t)sfrWidth, 0.f, 0.f, 1.f}, {-1.f, 0.f, 0.f, 1.f}},  // right
     };
 
-    int queueCount = clippedCount, trisToClip = clippedCount;
-    for (int p = 0; p < 4; p += 1) {
-        int c = 0;
-        while (trisToClip > 0) {
-            const sfrtri test = queue[0];
-            queueCount -= 1;
-            trisToClip -= 1;
-            sfr_memmove(queue, queue + 1, (int)sizeof(sfrtri) * queueCount);
-            c = sfr_clip_against_plane(clipped, clipPlanes[p][0], clipPlanes[p][1], test);
+    sfrtri bufferA[sizeof(queue) / sizeof(queue[0])], bufferB[sizeof(queue) / sizeof(queue[0])];
+    sfrtri* inputBuffer = bufferA;
+    sfrtri* outputBuffer = bufferB;
+    int inputCount = clippedCount, outputCount;
 
-            for (int i = 0; i < c; i += 1) {
-                queue[queueCount] = clipped[i];
-                queueCount += 1;
-            }
-        }
-
-        trisToClip = queueCount;
+    for (int i = 0; i < clippedCount; i += 1) {
+        inputBuffer[i] = queue[i];
     }
 
-    for (int i = 0; i < queueCount; i += 1) {
+    for (int p = 0; p < 4; p += 1) {
+        outputCount = 0;
+        for (int i = 0; i < inputCount; i += 1) {
+            const sfrtri test = inputBuffer[i];
+            const int c = sfr_clip_against_plane(clipped, clipPlanes[p][0], clipPlanes[p][1], test);
+            for (int j = 0; j < c; j += 1) {
+                // if (outputCount < sizeof(queue) / sizeof(queue[0])) {
+                outputBuffer[outputCount] = clipped[j];
+                outputCount += 1;
+                // }
+            }
+        }
+        
+        sfrtri* temp = inputBuffer;
+        inputBuffer = outputBuffer, outputBuffer = temp;
+        inputCount = outputCount, outputCount = 0;
+    }
+
+    if (sfrLightingState.on) {
+        if (sfrIsNormalDirty) {
+            sfr_update_normal_mat();
+        }
+
+        sfrvec_t normal = sfr_vec_face_normal(
+            (sfrvec_t){ax, ay, az},
+            (sfrvec_t){bx, by, bz},
+            (sfrvec_t){cx, cy, cz});
+        
+        normal = sfr_mat_mul_vec(sfrMatNormal, normal);
+        normal = sfr_vec_norm(normal);
+
+        const sfrflt_t intensity = sfr_fmaxf(
+            sfrLightingState.ambient, 
+            sfr_vec_dot(normal, sfrLightingState.dir));
+        
+        col = sfr_adjust_color_u32(col, intensity);
+    }
+
+    for (int i = 0; i < inputCount; i += 1) {
+        const sfrtri* tri = &inputBuffer[i];
         sfr_rasterize(
-            queue[i].p[0].x, queue[i].p[0].y, queue[i].p[0].z,
-            queue[i].p[1].x, queue[i].p[1].y, queue[i].p[1].z,
-            queue[i].p[2].x, queue[i].p[2].y, queue[i].p[2].z,
+            tri->p[0].x, tri->p[0].y, tri->p[0].z,
+            tri->p[1].x, tri->p[1].y, tri->p[1].z,
+            tri->p[2].x, tri->p[2].y, tri->p[2].z,
             col
         );
     }
