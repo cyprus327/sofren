@@ -1,8 +1,8 @@
 #define SFR_IMPL
-#define SFR_NO_STD
-#define SFR_NO_MATH
-#define SFR_NO_STRING
-#define SFR_NO_STDINT
+// #define SFR_NO_STD
+// #define SFR_NO_MATH
+// #define SFR_NO_STRING
+// #define SFR_NO_STDINT
 #include "../sofren.c"
 
 #ifndef SFR_NO_STD // cant load obj file without stdio
@@ -11,19 +11,15 @@
 
 #include <SDL2/SDL.h>
 
-#define RES_SCALE ((sfrflt_t)0.7)
+#define RES_SCALE 0.7f
 #define USE_VSYNC 1
 
-static inline sfrflt_t rand01(void) {
-    return rand() / (sfrflt_t)(0x7FFFFFFF);
-}
-
-sfrint_t main(void) {
+i32 main(void) {
     { // use sfrPixelBuf and sfrDepthBuf later for clarity
-        const sfrint_t w = 1280 * RES_SCALE, h = 720 * RES_SCALE;
-        sfrcol_t* pixelBuf = (sfrcol_t*)malloc(sizeof(sfrcol_t) * w * h);
-        sfrfix_t* depthBuf = (sfrfix_t*)malloc(sizeof(sfrfix_t) * w * h);
-        sfr_init(pixelBuf, depthBuf, w,  h, 80.0);
+        const i32 w = 1280 * RES_SCALE, h = 720 * RES_SCALE;
+        i32* pixelBuf = (i32*)malloc(sizeof(i32) * w * h);
+        i32* depthBuf = (i32*)malloc(sizeof(i32) * w * h);
+        sfr_init(pixelBuf, depthBuf, w,  h, 80.f);
     }
 
     // using sfrWidth and sfrHeight
@@ -38,37 +34,37 @@ sfrint_t main(void) {
 
     // load rock obj and set it up
     #ifndef SFR_NO_STD
-        sfrmesh_t* mesh = sfr_load_mesh(ROCK_PATH);
-        mesh->col = 0xfada80;
-        mesh->scale = (sfrvec_t){0.0025, 0.0025, 0.0025};
+        Mesh* mesh = sfr_load_mesh(ROCK_PATH);
+        mesh->col = 0xFADA80;
+        mesh->scale = (Vec){0.0025f, 0.0025f, 0.0025f};
     #endif
 
     // player controller variables
-    const sfrflt_t playerCrouchHeight = 0.5, playerStandHeight = 1.0;
-    sfrflt_t playerX = -1.0, playerZ = -3.0, playerY = 1.0;
-    sfrflt_t playerYaw = 1.0, playerPitch = 0.0;
-    sfrflt_t playerForwardSpeed = 0.0;
-    sfrflt_t playerStrafeSpeed = 0.0;
+    const f32 playerCrouchHeight = 0.5f, playerStandHeight = 1.f;
+    f32 playerX = -1.f, playerZ = -3.f, playerY = 1.f;
+    f32 playerYaw = 1.f, playerPitch = 0.f;
+    f32 playerForwardSpeed = 0.f;
+    f32 playerStrafeSpeed = 0.f;
 
     // input flags
-    sfrint_t up = 0, down = 0, left = 0, right = 0, crouch = 0, sprint = 0;
-    sfrint_t turnUp = 0, turnDown = 0, turnLeft = 0, turnRight = 0;
+    i32 up = 0, down = 0, left = 0, right = 0, crouch = 0, sprint = 0;
+    i32 turnUp = 0, turnDown = 0, turnLeft = 0, turnRight = 0;
 
     // world variables
-    const sfrint_t worldSize = 30;
-    const sfrflt_t boundary = 2.2f;
+    const i32 worldSize = 30;
+    const f32 boundary = 2.2f;
 
     // srand is called throughout the program so save seed
     // seed isn't time(NULL) so time.h doesn't have to be included
-    const sfrint_t seed = 0;
-    srand(seed);
+    const u32 seed = 0;
+    sfr_rand_seed(seed);
 
     // main game loop
-    sfrint_t shouldQuit = 0;
+    i32 shouldQuit = 0;
     while (!shouldQuit) {
-        static sfrflt_t prevTime = 0.0;
-        const sfrflt_t time = SDL_GetTicks() / 1000.0;
-        const sfrflt_t delta = time - prevTime;
+        static f32 prevTime = 0.f;
+        const f32 time = SDL_GetTicks() / 1000.f;
+        const f32 delta = time - prevTime;
         prevTime = time;
 
         char titleBuf[64];
@@ -108,8 +104,8 @@ sfrint_t main(void) {
                 // update sfr internals
                 sfrWidth = width;
                 sfrHeight = height;
-                sfrPixelBuf = (sfrcol_t*)realloc(sfrPixelBuf, sizeof(sfrcol_t) * width * height);
-                sfrDepthBuf = (sfrfix_t*)realloc(sfrDepthBuf, sizeof(sfrfix_t) * width * height);
+                sfrPixelBuf = (i32*)realloc(sfrPixelBuf, sizeof(i32) * width * height);
+                sfrDepthBuf = (i32*)realloc(sfrDepthBuf, sizeof(i32) * width * height);
                 
                 // update projection matrix
                 sfr_set_fov(sfrCamFov);
@@ -124,18 +120,18 @@ sfrint_t main(void) {
         // clear pixel and depth buffers
         sfr_clear();
 
-        { // update player, TODO fix things that don't use delta
-            const sfrflt_t moveMult = sprint ? 3.0 : 1.0;
-            const sfrflt_t turnMult = 2.75;
+        { // update player, TODO time independent things (marked with '<--')
+            const f32 moveMult = sprint ? 3.f : 1.f;
+            const f32 turnMult = 2.75f;
 
-            if (up)    playerForwardSpeed = 2.5 * delta * moveMult;
-            if (down)  playerForwardSpeed = -2.5 * delta * moveMult;
-            if (left)  playerStrafeSpeed = 2.5 * delta * moveMult;
-            if (right) playerStrafeSpeed = -2.5 * delta * moveMult;
-            playerY += ((crouch ? playerCrouchHeight : playerStandHeight) - playerY) * 0.1; // <--
+            if (up)    playerForwardSpeed = 2.5f * delta * moveMult;
+            if (down)  playerForwardSpeed = -2.5f * delta * moveMult;
+            if (left)  playerStrafeSpeed = 2.5f * delta * moveMult;
+            if (right) playerStrafeSpeed = -2.5f * delta * moveMult;
+            playerY += ((crouch ? playerCrouchHeight : playerStandHeight) - playerY) * 0.1f; // <--
             
-            playerX -= cosf(playerYaw - SFR_PI / 2.0) * playerForwardSpeed;
-            playerZ -= sinf(playerYaw - SFR_PI / 2.0) * playerForwardSpeed;
+            playerX -= cosf(playerYaw - SFR_PI / 2.f) * playerForwardSpeed;
+            playerZ -= sinf(playerYaw - SFR_PI / 2.f) * playerForwardSpeed;
             playerX -= cosf(playerYaw) * playerStrafeSpeed;
             playerZ -= sinf(playerYaw) * playerStrafeSpeed;
             
@@ -144,45 +140,45 @@ sfrint_t main(void) {
             if      (playerZ < -worldSize + boundary) playerZ = -worldSize + boundary;
             else if (playerZ >  worldSize - boundary) playerZ =  worldSize - boundary;
 
-            playerForwardSpeed *= 0.9; // <--
-            playerStrafeSpeed *= 0.9; // <--
+            playerForwardSpeed *= 0.9f; // <--
+            playerStrafeSpeed *= 0.9f; // <--
     
-            if (turnUp)    playerPitch -= delta * turnMult * 0.7;
-            if (turnDown)  playerPitch += delta * turnMult * 0.7;
+            if (turnUp)    playerPitch -= delta * turnMult * 0.7f;
+            if (turnDown)  playerPitch += delta * turnMult * 0.7f;
             if (turnLeft)  playerYaw += delta * turnMult;
             if (turnRight) playerYaw -= delta * turnMult;
 
-            if (playerPitch < -SFR_PI / 2.0) playerPitch = -1.57;
-            if (playerPitch >  SFR_PI / 2.0) playerPitch = 1.57;    
+            if (playerPitch < -SFR_PI / 2.f) playerPitch = -1.57f;
+            if (playerPitch >  SFR_PI / 2.f) playerPitch = 1.57f;    
         
-            sfr_set_camera(playerX, playerY, playerZ, playerYaw, playerPitch, 0.0);
+            sfr_set_camera(playerX, playerY, playerZ, playerYaw, playerPitch, 0.f);
         }
 
-        { // draw wavy checkerboard floor
-            const sfrflt_t amp = 0.3f;   // wave height
-            const sfrflt_t freq = 0.6f;  // wave density
-            const sfrflt_t speed = 1.5f; // animation speed
-            const sfrflt_t size = 0.75f; // square size
+        { // draw wavy floor
+            const f32 amp = 0.3f;   // wave height
+            const f32 freq = 0.6f;  // wave density
+            const f32 speed = 1.5f; // animation speed
+            const f32 size = 0.75f; // grid size
             
             sfr_reset();
-            sfr_set_lighting(1, sfr_vec_norm((sfrvec_t){1.0, 1.0, 0.0}), 0.1f);
-            for (sfrflt_t z = -worldSize; z < worldSize; z += size * 2.f) {
-                for (sfrflt_t x = -worldSize; x < worldSize; x += size * 2.f) {
-                    const sfrcol_t col = (int)(x + z) % 2 ? 0x2a6f5f : 0x2d2f6f;
+            sfr_set_lighting(1, sfr_vec_norm((Vec){1.f, 1.f, 0.f}), 0.1f);
+            for (f32 z = -worldSize; z < worldSize; z += size * 2.f) {
+                for (f32 x = -worldSize; x < worldSize; x += size * 2.f) {
+                    const i32 col = (int)(x + z) % 2 ? 0x2A6F5F : 0x2D2F6F;
                     
                     // triangle's world positions calculated so no transformations needed
-                    const sfrflt_t ax = x + size;
-                    const sfrflt_t az = z + size;
-                    const sfrflt_t ay = amp * sinf((ax + az) * freq + time * speed);
-                    const sfrflt_t bx = x - size;
-                    const sfrflt_t bz = z - size;
-                    const sfrflt_t by = amp * sinf((bx + bz) * freq + time * speed);
-                    const sfrflt_t cx = x - size;
-                    const sfrflt_t cz = z + size;
-                    const sfrflt_t cy = amp * sinf((cx + cz) * freq + time * speed);
-                    const sfrflt_t dx = x + size;
-                    const sfrflt_t dz = z - size;
-                    const sfrflt_t dy = amp * sinf((dx + dz) * freq + time * speed);
+                    const f32 ax = x + size;
+                    const f32 az = z + size;
+                    const f32 ay = amp * sinf((ax + az) * freq + time * speed);
+                    const f32 bx = x - size;
+                    const f32 bz = z - size;
+                    const f32 by = amp * sinf((bx + bz) * freq + time * speed);
+                    const f32 cx = x - size;
+                    const f32 cz = z + size;
+                    const f32 cy = amp * sinf((cx + cz) * freq + time * speed);
+                    const f32 dx = x + size;
+                    const f32 dz = z - size;
+                    const f32 dy = amp * sinf((dx + dz) * freq + time * speed);
                     sfr_triangle(ax, ay, az, bx, by, bz, cx, cy, cz, col);
                     sfr_triangle(ax, ay, az, dx, dy, dz, bx, by, bz, col);
                 }
@@ -190,11 +186,11 @@ sfrint_t main(void) {
         }
 
         { // show the border using transformed cubes, with shading disabled
-            srand(seed);
-            sfr_set_lighting(0, SFR_VEC0, 0.0);
-            for (sfrint_t i = -worldSize; i < worldSize; i += 2) {
-                for (sfrint_t j = 0; j < 4; j += 1) {
-                    sfrflt_t x = i, z = i;
+            sfr_rand_seed(seed);
+            sfr_set_lighting(0, SFR_VEC0, 0.f);
+            for (i32 i = -worldSize; i < worldSize; i += 2) {
+                for (i32 j = 0; j < 4; j += 1) {
+                    f32 x = i, z = i;
                     switch (j) {
                         case 0: x = -worldSize; break;
                         case 1: x =  worldSize; break;
@@ -203,15 +199,15 @@ sfrint_t main(void) {
                     }
 
                     sfr_reset();
-                    sfr_rotate_y(rand01() * SFR_PI);
-                    sfr_rotate_x(rand01() * SFR_PI);
-                    sfr_rotate_z(rand01() * SFR_PI);
-                    sfr_scale(1.0f + rand01() * 3.0, 1.0 + rand01() * 6.0, 1.0 + rand01() * 3.0);
+                    sfr_rotate_y(sfr_rand_flt(0.f, SFR_PI));
+                    sfr_rotate_x(sfr_rand_flt(0.f, SFR_PI));
+                    sfr_rotate_z(sfr_rand_flt(0.f, SFR_PI));
+                    sfr_scale(sfr_rand_flt(1.f, 4.f), sfr_rand_flt(1.f, 7.f), sfr_rand_flt(1.f, 4.f));
                     sfr_translate(x, 0.5, z);
-                    sfr_cube((sfrcol_t)(
-                        ((sfrint_t)(50.0 + rand01() * 170.0) << 16) | 
-                        ((sfrint_t)(50.0 + rand01() * 170.0) << 8)  |
-                        ((sfrint_t)(50.0 + rand01() * 170.0) << 0)
+                    sfr_cube((i32)(
+                        (sfr_rand_int(50, 210) << 16) | 
+                        (sfr_rand_int(50, 210) << 8)  |
+                        (sfr_rand_int(50, 210) << 0)
                     ));
                 }
             }
@@ -219,15 +215,16 @@ sfrint_t main(void) {
 
         #ifndef SFR_NO_STD
         { // draw objects
-            srand(seed);
-            sfr_set_lighting(1, sfr_vec_norm((sfrvec_t){1.0, 1.0, 0.0}), 0.3);
-            for (sfrint_t i = 0; i < 10; i += 1) {
-                const sfrflt_t x = (rand01() - 0.5) * 2.0 * (worldSize - boundary);
-                const sfrflt_t z = (rand01() - 0.5) * 2.0 * (worldSize - boundary);
+            sfr_rand_seed(seed);
+            sfr_set_lighting(1, sfr_vec_norm((Vec){1.f, 1.f, 0.f}), 0.3);
+            const f32 range = worldSize - boundary;
+            for (i32 i = 0; i < 10; i += 1) {
+                const f32 x = sfr_rand_flt(-range, range);
+                const f32 z = sfr_rand_flt(-range, range);
 
-                mesh->rot.y = i + time * 3.0;
+                mesh->rot.y = i + time * 3.f;
                 mesh->pos.x = x;
-                mesh->pos.y = 0.3 + sinf(i + time * 2.0) * 0.2;
+                mesh->pos.y = 0.3f + sinf(i + time * 2.f) * 0.2f;
                 mesh->pos.z = z;
 
                 sfr_reset();
@@ -236,9 +233,8 @@ sfrint_t main(void) {
         }
         #endif
 
-        SDL_Delay(1);
         SDL_RenderClear(renderer);
-        SDL_UpdateTexture(texture, NULL, sfrPixelBuf, sizeof(sfrcol_t) * sfrWidth);
+        SDL_UpdateTexture(texture, NULL, sfrPixelBuf, sizeof(i32) * sfrWidth);
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
     }
