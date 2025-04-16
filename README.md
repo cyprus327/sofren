@@ -1,8 +1,12 @@
 # sofren - Single File Software Renderer
 
-**A minimalistic, efficient, single file, cross platform software renderer**
+### A minimalistic, efficient, single file, cross platform software renderer
 
-For examples and good starting points rendering to an SDL2 window or terminal window, see the examples folder
+*examples/starter-console.c*
+
+https://github.com/user-attachments/assets/465e6888-a0e2-4649-9ffa-780fe2615dd7
+
+For examples and good starting points rendering to an SDL2 window or console window, see the examples folder
 
 ## Features
 - As few a 0 other headers included, can be 100% standalone
