@@ -2,28 +2,45 @@
 
 **A minimalistic, efficient, single file, cross platform software renderer**
 
-For a fairly featureful example project using SDL2 for rendering, see `examples/demo1.c`
+For examples and good starting points rendering to an SDL2 window or terminal window, see the examples folder
 
 ## Features
-- As few a 0 other headers included
+- As few a 0 other headers included, can be 100% standalone
 - Single file - just `#include "sofren.c"`
 - Primitive drawing (triangles, cubes)
 - OBJ mesh loading (requires `stdio.h`)
 - Flat shading with directional lighting
-- Matrix transformations (model/view/projection)
 - Customizable math implementations (system or bundled)
+- Simplistic design, quick to learn and use
+- Matrix transformations (model/view/projection)
 - ARGB8888 color format support
 - Backface culling & depth buffering
 
 ## Pre Processing Configuration 
 ```c
-#define SFR_IMPL       // indicate declaration of functions
-#define SFR_NO_STD     // disable 'stdio' and 'stdlib.h'
-#define SFR_NO_MATH    // disable 'math.h' and use bundled math
-#define SFR_NO_STRING  // disable 'string.h'
-#define SFR_NO_CULLING // disable backface culling
-#define SFR_USE_DOUBLE // use double precision floats
-#define SFR_USE_INLINE // force inline functions
+#define SFR_IMPL // indicate declaration of functions
+
+#define SFR_NO_STD    // don't include 'stdio' and 'stdlib.h'
+#define SFR_NO_MATH   // don't include 'math.h' and use bundled math
+#define SFR_NO_STRING // don't include 'string.h'
+#define SFR_NO_STDINT // don't include 'stdint.h'
+
+#define SFR_NO_CULLING // disable culling triangles
+
+// types are defined as things like 'i32' or 'Vec' internally,
+// if this causes some issue define this for types
+// to now be defined as 'sfri32_t', 'sfrvec_t', etc.
+#define SFR_PREFIXED_TYPES
+
+// don't use #warning for reporting potential comp time problems
+#define SFR_NO_WARNINGS
+
+// if you don't want functions to be static define this
+// overwrites SFR_USE_INLINE, if it is defined
+#define SFR_FUNC
+
+// defines SFR_FUNC as either 'static inline' default is 'static'
+#define SFR_USE_INLINE
 
 // only applicable when SFR_NO_MATH is defined, their values
 // dictate the accuracy of the bundled math functions
@@ -39,55 +56,48 @@ There are some global variables in sofren.c, those in the public API are:
 // pixel and depth buffer's dimensions
 // set on init but can be changed if your window resizes or something,
 // just remember to call realloc on sfrPixelBuf and sfrDepthBuf
-extern int sfrWidth, sfrHeight;
+extern i32 sfrWidth, sfrHeight;
 
-// the pixel and depth buffers, used interally but managed by you
-extern sfrcol_t* sfrPixelBuf;
-extern sfrflt_t* sfrDepthBuf;
+// the pixel and depth buffers, used interally but memory managed by you
+extern u32* sfrPixelBuf; // ARGB8888, i.e. 0xFF0000 == RED, 0x0000FF == BLUE
+extern f32* sfrDepthBuf;
 
 // how many triangles have been rasterized since the last call to clear
-extern int sfrRasterCount;
+extern i32 sfrRasterCount;
 
 // current matrices being used for rendering,
 // use all the provided functions when changing
-extern sfrmat_t sfrMatModel, sfrMatView, sfrMatProj;
+extern Mat sfrMatModel, sfrMatView, sfrMatProj;
 
-extern sfrvec_t sfrCamPos; // use 'sfr_set_camera' when changing
-extern sfrflt_t sfrCamFov; // use 'sfr_set_fov' when changing
-extern sfrflt_t sfrNearDist, sfrFarDist; // these can be freely set
-```
+extern Vec sfrCamPos; // use 'sfr_set_camera' when changing
+extern f32 sfrCamFov; // use 'sfr_set_fov' when changing
 
-
-## Setup
-```c
-#define SFR_IMPL
-// other configuration flags, e.g.
-// #define SFR_USE_DOUBLE
-#include "sofren.c"
+// can be freely changed, just call 'sfr_set_fov(sfrCamFov)' to
+// update 'sfrMatProj' to account for the change
+extern f32 sfrNearDist, sfrFarDist;
 ```
 
 ## Examples
 
 **For more in depth examples, see the examples folder**
 
-### Rotating Shaded Cube
+### Red Rotating Cube
 ```c
-sfr_set_lighting(1, sfr_vec_normf(1.0, 1.0, 0.0), 0.2);
 sfr_reset();
-sfr_rotate_y(time * 0.8);
-sfr_rotate_x(time * 0.5);
-sfr_scale(1.0, 3.0, 0.5);
-sfr_translate(0, 0, 2.5);
-sfr_cube(0xFF0000); // red cube
+sfr_rotate_y(time);
+sfr_rotate_x(time * 0.5f);
+sfr_scale(1.f, 3.f, 0.5f);
+sfr_translate(0.f, 0.f, 2.5f);
+sfr_cube(0xFF0000);
 ```
 
-### OBJ Loading  
+### OBJ Loading
 ```c
-sfrmesh_t* mesh = sfr_load_mesh("model.obj"); // allocate and load obj file
+Mesh* mesh = sfr_load_mesh("model.obj"); // allocate and load obj file
 ...
-mesh->rot.y = time; // rotate about y
-mesh->pos.y = 0.3 + sinf(time * 2.0) * 0.2; // move up and down slowly
-sfr_reset();    // reset sofren matrices
+mesh->rot.y = time; // rotate about y, radians not degrees
+mesh->pos.y = sinf(time); // move up and down
+sfr_reset(); // reset model matrix
 sfr_mesh(mesh); // draw mesh using its properties
 ...
 sfr_release_mesh(&mesh); // free mesh's memory
