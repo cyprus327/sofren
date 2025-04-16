@@ -11,14 +11,14 @@
 
 #include <SDL2/SDL.h>
 
-#define RES_SCALE 0.7f
+#define RES_SCALE 0.8f
 #define USE_VSYNC 1
 
 i32 main(void) {
     { // use sfrPixelBuf and sfrDepthBuf later for clarity
         const i32 w = 1280 * RES_SCALE, h = 720 * RES_SCALE;
-        i32* pixelBuf = (i32*)malloc(sizeof(i32) * w * h);
-        i32* depthBuf = (i32*)malloc(sizeof(i32) * w * h);
+        u32* pixelBuf = (u32*)malloc(sizeof(u32) * w * h);
+        f32* depthBuf = (f32*)malloc(sizeof(f32) * w * h);
         sfr_init(pixelBuf, depthBuf, w,  h, 80.f);
     }
 
@@ -56,12 +56,11 @@ i32 main(void) {
 
     // srand is called throughout the program so save seed
     // seed isn't time(NULL) so time.h doesn't have to be included
-    const u32 seed = 0;
+    const u32 seed = 2;
     sfr_rand_seed(seed);
 
     // main game loop
-    i32 shouldQuit = 0;
-    while (!shouldQuit) {
+    for (i32 shouldQuit = 0; !shouldQuit;) {
         static f32 prevTime = 0.f;
         const f32 time = SDL_GetTicks() / 1000.f;
         const f32 delta = time - prevTime;
@@ -104,8 +103,8 @@ i32 main(void) {
                 // update sfr internals
                 sfrWidth = width;
                 sfrHeight = height;
-                sfrPixelBuf = (i32*)realloc(sfrPixelBuf, sizeof(i32) * width * height);
-                sfrDepthBuf = (i32*)realloc(sfrDepthBuf, sizeof(i32) * width * height);
+                sfrPixelBuf = (u32*)realloc(sfrPixelBuf, sizeof(u32) * width * height);
+                sfrDepthBuf = (f32*)realloc(sfrDepthBuf, sizeof(f32) * width * height);
                 
                 // update projection matrix
                 sfr_set_fov(sfrCamFov);
@@ -154,19 +153,47 @@ i32 main(void) {
             sfr_set_camera(playerX, playerY, playerZ, playerYaw, playerPitch, 0.f);
         }
 
-        { // draw wavy floor
-            const f32 amp = 0.3f;   // wave height
-            const f32 freq = 0.6f;  // wave density
+        { // draw wavy floor and ceiling
+            const f32 amp   = 0.3f; // wave height
+            const f32 freq  = 0.6f; // wave density
             const f32 speed = 1.5f; // animation speed
-            const f32 size = 0.75f; // grid size
+            const f32 size  = 0.8f; // grid size
             
-            sfr_reset();
             sfr_set_lighting(1, sfr_vec_norm((Vec){1.f, 1.f, 0.f}), 0.1f);
+            
+            // draw floor
+            sfr_reset();
             for (f32 z = -worldSize; z < worldSize; z += size * 2.f) {
                 for (f32 x = -worldSize; x < worldSize; x += size * 2.f) {
                     const i32 col = (int)(x + z) % 2 ? 0x2A6F5F : 0x2D2F6F;
                     
                     // triangle's world positions calculated so no transformations needed
+                    const f32 ax = x + size;
+                    const f32 az = z + size;
+                    const f32 ay = amp * sinf((ax + az) * freq + time * speed);
+                    const f32 bx = x - size;
+                    const f32 bz = z - size;
+                    const f32 by = amp * sinf((bx + bz) * freq + time * speed);
+                    const f32 cx = x - size;
+                    const f32 cz = z + size;
+                    const f32 cy = amp * sinf((cx + cz) * freq + time * speed);
+                    const f32 dx = x + size;
+                    const f32 dz = z - size;
+                    const f32 dy = amp * sinf((dx + dz) * freq + time * speed);
+                    sfr_triangle(ax, ay, az, bx, by, bz, cx, cy, cz, col);
+                    sfr_triangle(ax, ay, az, dx, dy, dz, bx, by, bz, col);
+                }
+            }
+
+            sfr_set_lighting(0, SFR_VEC0, 0.f); // no shading on the ceiling
+
+            // draw ceiling
+            sfr_reset();
+            sfr_rotate_z(SFR_PI);
+            sfr_translate(0.f, 6.f, 0.f);
+            for (f32 z = -worldSize; z < worldSize; z += size * 2.f) {
+                for (f32 x = -worldSize; x < worldSize; x += size * 2.f) {
+                    const i32 col = (int)(x + z) % 2 ? 0xFA6F5F : 0xCDFB6F;
                     const f32 ax = x + size;
                     const f32 az = z + size;
                     const f32 ay = amp * sinf((ax + az) * freq + time * speed);
@@ -190,7 +217,7 @@ i32 main(void) {
             sfr_set_lighting(0, SFR_VEC0, 0.f);
             for (i32 i = -worldSize; i < worldSize; i += 2) {
                 for (i32 j = 0; j < 4; j += 1) {
-                    f32 x = i, z = i;
+                    f32 x = i, z = i, y = sfr_rand_flt(15.f, 30.f);
                     switch (j) {
                         case 0: x = -worldSize; break;
                         case 1: x =  worldSize; break;
@@ -198,17 +225,21 @@ i32 main(void) {
                         case 3: z =  worldSize; break;
                     }
 
+                    i32 cols[12];
+                    for (i32 c = 0; c < 12; c += 1) {
+                        cols[c] = (i32)(
+                            (sfr_rand_int(50, 210) << 16) | 
+                            (sfr_rand_int(50, 210) << 8)  |
+                            (sfr_rand_int(50, 210) << 0));
+                    }
+
                     sfr_reset();
                     sfr_rotate_y(sfr_rand_flt(0.f, SFR_PI));
                     sfr_rotate_x(sfr_rand_flt(0.f, SFR_PI));
                     sfr_rotate_z(sfr_rand_flt(0.f, SFR_PI));
-                    sfr_scale(sfr_rand_flt(1.f, 4.f), sfr_rand_flt(1.f, 7.f), sfr_rand_flt(1.f, 4.f));
-                    sfr_translate(x, 0.5, z);
-                    sfr_cube((i32)(
-                        (sfr_rand_int(50, 210) << 16) | 
-                        (sfr_rand_int(50, 210) << 8)  |
-                        (sfr_rand_int(50, 210) << 0)
-                    ));
+                    sfr_scale(sfr_rand_flt(8.f, 12.f), y, sfr_rand_flt(8.f, 12.f));
+                    sfr_translate(x, y / 2.f, z);
+                    sfr_cube_ex(cols);
                 }
             }
         }
@@ -233,6 +264,7 @@ i32 main(void) {
         }
         #endif
 
+        // output pixel buf to SDL window
         SDL_RenderClear(renderer);
         SDL_UpdateTexture(texture, NULL, sfrPixelBuf, sizeof(i32) * sfrWidth);
         SDL_RenderCopy(renderer, texture, NULL, NULL);

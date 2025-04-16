@@ -9,8 +9,8 @@
 i32 main() {
     { // initialize sofren
         const i32 w = 1280 * RES_SCALE, h = 720 * RES_SCALE;
-        i32* pixelBuf = malloc(w * h * sizeof(i32));
-        i32* depthBuf = malloc(w * h * sizeof(i32));
+        u32* pixelBuf = (u32*)malloc(sizeof(u32) * w * h);
+        f32* depthBuf = (f32*)malloc(sizeof(f32) * w * h);
         sfr_init(pixelBuf, depthBuf, w, h, 50.f);
 
         // super cheap function, can be set before rendering every individual
@@ -55,8 +55,8 @@ i32 main() {
                 // update sfr internals
                 sfrWidth = width;
                 sfrHeight = height;
-                sfrPixelBuf = (i32*)realloc(sfrPixelBuf, sizeof(i32) * width * height);
-                sfrDepthBuf = (i32*)realloc(sfrDepthBuf, sizeof(i32) * width * height);
+                sfrPixelBuf = (u32*)realloc(sfrPixelBuf, sizeof(u32) * width * height);
+                sfrDepthBuf = (f32*)realloc(sfrDepthBuf, sizeof(f32) * width * height);
                 
                 // update projection matrix
                 sfr_set_fov(sfrCamFov);
