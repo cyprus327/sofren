@@ -48,10 +48,11 @@ SFR_NO_CULLING - whether or not to cull triangles
 
 //: types
 #ifdef SFR_PREFIXED_TYPES
-    #define Vec  sfrvec_t
-    #define Mat  sfrmat_t
-    #define Tri  sfrtri_t
-    #define Mesh sfrmesh_t
+    #define Vec     sfrvec_t
+    #define Mat     sfrmat_t
+    #define Tri     sfrtri_t
+    #define Mesh    sfrmesh_t
+    #define Texture sfrtexture_t
     
     #define i8  sfri8_t
     #define u8  sfru8_t
@@ -85,14 +86,15 @@ SFR_NO_CULLING - whether or not to cull triangles
 typedef float  f32;
 typedef double f64;
 
-typedef struct sfrvec  Vec;
-typedef struct sfrmat  Mat;
-typedef struct sfrmesh Mesh;
+typedef struct sfrvec     Vec;
+typedef struct sfrmat     Mat;
+typedef struct sfrmesh    Mesh;
+typedef struct sfrtexture Texture;
 
 //: extern variables
 extern i32 sfrWidth, sfrHeight;
-extern i32* sfrPixelBuf; // ARGB8888 colors, TODO add more formats
-extern i32* sfrDepthBuf;
+extern u32* sfrPixelBuf; // ARGB8888 colors, TODO add more formats
+extern f32* sfrDepthBuf;
 
 // global variables below can be managed by you, however
 // there is probably a function that will do what you want
@@ -144,7 +146,7 @@ SFR_FUNC Mat sfr_mat_look_at(Vec pos, Vec target, Vec up);
 
 //: core functions
 SFR_FUNC void sfr_init( // initialize matrices and set buffers
-    i32* pixelBuf, i32* depthBuf, i32 w, i32 h, f32 fovDeg);
+    u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg);
 
 SFR_FUNC void sfr_reset(void);                    // reset model matrix to identity and lighting to {0}
 SFR_FUNC void sfr_rotate_x(f32 theta);            // rotate model matrix about x by theta radians
@@ -160,7 +162,8 @@ SFR_FUNC void sfr_triangle(    // using current matrices, draw specified triangl
     f32 bx, f32 by, f32 bz,
     f32 cx, f32 cy, f32 cz,
     i32 col);
-SFR_FUNC void sfr_cube(i32 col);          // using current matrices, draw a cube
+SFR_FUNC void sfr_cube(i32 col);          // using current matrices, draw a cube with a solid color
+SFR_FUNC void sfr_cube_ex(i32 col[12]);   // using current matrices, draw a cube with triangles of specified colors
 SFR_FUNC void sfr_mesh(const Mesh* mesh); // draw specified mesh, using matrices based on 'mesh'
 
 SFR_FUNC i32 sfr_world_to_screen( // project the world position specified to screen coordinates
@@ -173,12 +176,14 @@ SFR_FUNC void sfr_set_lighting( // update internal lighting state for simple sha
     i32 on, Vec dir, f32 ambientIntensity);
 
 #ifndef SFR_NO_STD
-    #ifdef SFR_IMPL
-        #include <stdio.h>
-        #include <stdlib.h>
-    #endif
-    SFR_FUNC Mesh* sfr_load_mesh(const char* filename);
-    SFR_FUNC void sfr_release_mesh(Mesh** mesh);
+    #include <stdio.h>
+    #include <stdlib.h>
+
+    SFR_FUNC Mesh* sfr_load_mesh(const char* filename); // load an obj file into a struct that sofren can use
+    SFR_FUNC void sfr_release_mesh(Mesh** mesh);        // release loaded mesh's memory
+
+    SFR_FUNC Texture* sfr_load_texture(const char* filename); // load a BMP texture
+    SFR_FUNC void sfr_release_texture(Texture** texture);     // release loaded texture's memory
 #endif
 
 SFR_FUNC void sfr_rand_seed(u32 seed);       // seed random number generator
@@ -191,6 +196,7 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max]
 //:         IMPLEMENTATION
 //================================================
 
+#define SFR_IMPL
 #ifdef SFR_IMPL
 
 #ifndef SFR_NO_STRING
@@ -255,6 +261,10 @@ typedef struct sfrmat {
 
 typedef struct sfrtri {
     Vec p[3];
+
+    // below currently unused
+    const Texture* tex;
+    u32 col;
 } Tri;
 
 typedef struct sfrmesh {
@@ -263,6 +273,11 @@ typedef struct sfrmesh {
     Vec pos, scale, rot;
     i32 col;
 } Mesh;
+
+typedef struct sfrtexture { // currently unused
+    u32* pixels;
+    i32 w, h;
+} Texture;
 
 // prefixed with '_' => don't freely modify
 typedef struct strState {
@@ -282,8 +297,8 @@ typedef struct strState {
 //================================================
 
 i32 sfrWidth, sfrHeight;
-i32* sfrPixelBuf;
-i32* sfrDepthBuf;
+u32* sfrPixelBuf;
+f32* sfrDepthBuf;
 i32 sfrRasterCount;
 
 Mat sfrMatModel, sfrMatView, sfrMatProj;
@@ -294,6 +309,7 @@ f32 sfrNearDist = 0.1f, sfrFarDist = 100.f;
 // not extern
 SfrState sfrState = {0};
 
+
 //================================================
 //:         MISC HELPER MACROS
 //================================================
@@ -303,8 +319,6 @@ SfrState sfrState = {0};
 
 #define SFR_SWAPF(a, b) { f32 _swapTemp = (a); (a) = (b); (b) = _swapTemp; }
 #define SFR_VEC0 ((Vec){0.f, 0.f, 0.f, 0.f})
-
-#define SFR_DEPTH_SCALE 65536 // 16.16 fixed point
 
 #ifndef SFR_NO_STD
     #define SFR_ERR_EXIT(...) { \
@@ -738,9 +752,8 @@ SFR_FUNC void sfr_rasterize(
 
         i32 i = y * sfrWidth + sxi;
         for (i32 x = sxi; x < exi; x += 1, i += 1, depth += depthStep) {
-            const i32 depthVal = (i32)(depth * SFR_DEPTH_SCALE);
-            if (depthVal < sfrDepthBuf[i]) {
-                sfrDepthBuf[i] = depthVal;
+            if (depth < sfrDepthBuf[i]) {
+                sfrDepthBuf[i] = depth;
                 sfrPixelBuf[i] = col;
             }
         }
@@ -777,9 +790,8 @@ SFR_FUNC void sfr_rasterize(
 
         i32 i = y * sfrWidth + sxi;
         for (i32 x = sxi; x < exi; x += 1, i += 1, depth += depthStep) {
-            const i32 depthVal = (i32)(depth * SFR_DEPTH_SCALE);
-            if (depthVal < sfrDepthBuf[i]) {
-                sfrDepthBuf[i] = depthVal;
+            if (depth < sfrDepthBuf[i]) {
+                sfrDepthBuf[i] = depth;
                 sfrPixelBuf[i] = col;
             }
         }
@@ -788,7 +800,7 @@ SFR_FUNC void sfr_rasterize(
 
 //: PUBLIC API FUNCTIONS
 
-SFR_FUNC void sfr_init(i32* pixelBuf, i32* depthBuf, i32 w, i32 h, f32 fovDeg) {
+SFR_FUNC void sfr_init(u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
     sfrWidth = w;
     sfrHeight = h;
     
@@ -1015,6 +1027,21 @@ SFR_FUNC void sfr_cube(i32 col) {
     sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5,-0.5,  0.5,-0.5,-0.5, col);
 }
 
+SFR_FUNC void sfr_cube_ex(i32 col[12]) {
+    sfr_triangle(-0.5,-0.5,-0.5, -0.5, 0.5,-0.5,  0.5, 0.5,-0.5, col[0]);
+    sfr_triangle(-0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5,-0.5,-0.5, col[1]);
+    sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5, 0.5, 0.5, col[2]);
+    sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5, 0.5,  0.5,-0.5, 0.5, col[3]);
+    sfr_triangle( 0.5,-0.5, 0.5,  0.5, 0.5, 0.5, -0.5, 0.5, 0.5, col[4]);
+    sfr_triangle( 0.5,-0.5, 0.5, -0.5, 0.5, 0.5, -0.5,-0.5, 0.5, col[5]);
+    sfr_triangle(-0.5,-0.5, 0.5, -0.5, 0.5, 0.5, -0.5, 0.5,-0.5, col[6]);
+    sfr_triangle(-0.5,-0.5, 0.5, -0.5, 0.5,-0.5, -0.5,-0.5,-0.5, col[7]);
+    sfr_triangle(-0.5, 0.5,-0.5, -0.5, 0.5, 0.5,  0.5, 0.5, 0.5, col[8]);
+    sfr_triangle(-0.5, 0.5,-0.5,  0.5, 0.5, 0.5,  0.5, 0.5,-0.5, col[9]);
+    sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5, 0.5, -0.5,-0.5,-0.5, col[10]);
+    sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5,-0.5,  0.5,-0.5,-0.5, col[11]);
+}
+
 SFR_FUNC void sfr_mesh(const Mesh* mesh) {
     if (0.f != mesh->rot.y) {
         sfr_rotate_y(mesh->rot.y);
@@ -1171,6 +1198,90 @@ SFR_FUNC void sfr_release_mesh(Mesh** mesh) {
     free(*mesh);
     *mesh = NULL;
 }
+
+SFR_FUNC Texture* sfr_load_texture(const char* filename) {
+    FILE* file = fopen(filename, "rb");
+    if (!file) return NULL;
+
+    u8 header[54];
+    if (54 != fread(header, 1, 54, file)) {
+        fclose(file);
+        SFR_ERR_RET(NULL, "sfr_load_texture: only BMP (.bmp) images are currently supported");
+    }
+
+    if ('B' != header[0] || 'M' != header[1]) {
+        fclose(file);
+        SFR_ERR_RET(NULL, "sfr_load_texture: only BMP (.bmp) images are currently supported");
+    }
+
+    i32 dataOffset = *(i32*)&header[0x0A];
+    i32 width = *(i32*)&header[0x12];
+    i32 height = *(i32*)&header[0x16];
+    i32 imageSize = *(i32*)&header[0x22];
+
+    if (0 == imageSize) {
+        imageSize = width * height * 3;
+    }
+    if (0 == dataOffset) {
+        dataOffset = 54;
+    }
+
+    u8* data = (u8*)malloc(imageSize);
+    if (!data) {
+        fclose(file);
+        SFR_ERR_RET(NULL, "sfr_load_texture: failed to allocate memory for image");
+    }
+
+    fseek(file, dataOffset, SEEK_SET);
+    if (imageSize != fread(data, 1, imageSize, file)) {
+        free(data);
+        fclose(file);
+        SFR_ERR_RET(NULL, "sfr_load_texture: invalid bitmap image");
+    }
+    fclose(file);
+
+    Texture* tex = (Texture*)malloc(sizeof(Texture));
+    if (!tex) {
+        free(data);
+        SFR_ERR_RET(NULL, "sfr_load_texture: failed to allocate memory for Texture struct");
+    }
+
+    tex->pixels = (u32*)malloc(width * height * sizeof(u32));
+    if (!tex->pixels) {
+        free(data);
+        free(tex);
+        SFR_ERR_RET(NULL, "sfr_load_texture: failed to allocate memory for texture pixels");
+    }
+
+    tex->w = width;
+    tex->h = height;
+
+    for (i32 y = 0; y < height; y++) {
+        for (i32 x = 0; x < width; x++) {
+            const i32 i = (y * width + x) * 3;
+            u8 b = data[i + 0];
+            u8 g = data[i + 1];
+            u8 r = data[i + 2];
+            tex->pixels[(height - 1 - y) * width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+    }
+
+    free(data);
+
+    return tex;
+}
+
+SFR_FUNC void sfr_release_texture(Texture** tex) {
+    if (!tex || !(*tex)) {
+        return;
+    }
+
+    free((*tex)->pixels);
+    (*tex)->pixels = NULL;
+
+    free(*tex);
+    *tex = NULL;
+}
 #endif // !SFR_NO_STD
 
 SFR_FUNC void sfr_rand_seed(u32 seed) {
@@ -1207,6 +1318,7 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max) {
     #undef Mat
     #undef Tri
     #undef Mesh
+    #undef Texture
 
     #undef i8
     #undef u8
