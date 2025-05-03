@@ -60,6 +60,7 @@ SFR_NO_CULLING - whether or not to cull triangles
     #define u16 sfru16_t
     #define i32 sfri32_t
     #define u32 sfru32_t
+    #define i64 sfri64_t
     #define u64 sfru64_t
     #define f32 sfrf32_t
     #define f64 sfrf64_t
@@ -73,14 +74,16 @@ SFR_NO_CULLING - whether or not to cull triangles
     typedef uint16_t u16;
     typedef int32_t  i32;
     typedef uint32_t u32;
+    typedef int64_t  i64;
     typedef uint64_t u64;
 #else
-    typedef char               i8;
+    typedef signed char        i8;
     typedef unsigned char      u8;
-    typedef short              i16;
+    typedef signed short       i16;
     typedef unsigned short     u16;
-    typedef int                i32;
+    typedef signed int         i32;
     typedef unsigned int       u32;
+    typedef signed long long   i64;
     typedef unsigned long long u64;
 #endif
 typedef float  f32;
@@ -156,15 +159,22 @@ SFR_FUNC void sfr_translate(f32 x, f32 y, f32 z); // translate model matrix by x
 SFR_FUNC void sfr_scale(f32 x, f32 y, f32 z);     // scale model matrix by x y z
 SFR_FUNC void sfr_look_at(f32 x, f32 y, f32 z);   // set view matrix to look at x y z
 
+// all drawing functions below other than sfr_mesh use current matrices when drawing
 SFR_FUNC void sfr_clear(void); // reset depth and pixel buffers
-SFR_FUNC void sfr_triangle(    // using current matrices, draw specified triangle
+SFR_FUNC void sfr_triangle(    // draw specified triangle
     f32 ax, f32 ay, f32 az,
     f32 bx, f32 by, f32 bz,
     f32 cx, f32 cy, f32 cz,
-    i32 col);
-SFR_FUNC void sfr_cube(i32 col);          // using current matrices, draw a cube with a solid color
-SFR_FUNC void sfr_cube_ex(i32 col[12]);   // using current matrices, draw a cube with triangles of specified colors
-SFR_FUNC void sfr_mesh(const Mesh* mesh); // draw specified mesh, using matrices based on 'mesh'
+    u32 col);
+SFR_FUNC void sfr_triangle_tex( // draw specified triangle with 'tex' applied
+    f32 ax, f32 ay, f32 az, f32 au, f32 av,
+    f32 bx, f32 by, f32 bz, f32 bu, f32 bv,
+    f32 cx, f32 cy, f32 cz, f32 cu, f32 cv,
+    const Texture* tex);
+SFR_FUNC void sfr_cube(u32 col);                // draw a cube with a solid color
+SFR_FUNC void sfr_cube_ex(u32 col[12]);         // draw a cube with triangles of specified colors
+SFR_FUNC void sfr_cube_tex(const Texture* tex); // draw a cube with 'tex' applied
+SFR_FUNC void sfr_mesh(const Mesh* mesh);       // draw specified mesh, using matrices based on 'mesh'
 
 SFR_FUNC i32 sfr_world_to_screen( // project the world position specified to screen coordinates
     f32 x, f32 y, f32 z, i32* screenX, i32* screenY);    
@@ -261,35 +271,37 @@ typedef struct sfrmat {
 
 typedef struct sfrtri {
     Vec p[3];
-
-    // below currently unused
-    const Texture* tex;
-    u32 col;
 } Tri;
 
 typedef struct sfrmesh {
     f32* tris;
     i32 vertCount;
     Vec pos, scale, rot;
-    i32 col;
+    u32 col;
 } Mesh;
 
-typedef struct sfrtexture { // currently unused
+typedef struct sfrtexture {
     u32* pixels;
     i32 w, h;
 } Texture;
 
-// prefixed with '_' => don't freely modify
 typedef struct strState {
     i32 lightingEnabled;
     Vec lightingDir;
     f32 lightingAmbient;
 
-    Mat _matNormal;
-    i32 _normalMatDirty;
+    Mat matNormal;
+    i32 normalMatDirty;
 
     u32 randState;
 } SfrState;
+
+// helper to track vertex attributes during clipping of textured triangles
+typedef struct {
+    Vec pos;   // position in view space
+    f32 u, v;  // texture coords
+    f32 viewZ; // z in view space for perspective correction
+} SfrTexVert;
 
 
 //================================================
@@ -306,7 +318,7 @@ Vec sfrCamPos;
 f32 sfrCamFov;
 f32 sfrNearDist = 0.1f, sfrFarDist = 100.f;
 
-// not extern
+// not extern, internal state
 SfrState sfrState = {0};
 
 
@@ -317,8 +329,14 @@ SfrState sfrState = {0};
 #define SFR_PI ((f32)3.14159265358979323846)
 #define SFR_EPSILON ((f32)1e-10)
 
-#define SFR_SWAPF(a, b) { f32 _swapTemp = (a); (a) = (b); (b) = _swapTemp; }
+#define SFR_SWAPF(_a, _b) { f32 _swapTemp = (_a); (_a) = (_b); (_b) = _swapTemp; }
 #define SFR_VEC0 ((Vec){0.f, 0.f, 0.f, 0.f})
+
+#define SFR_ARRLEN(_arr)  (sizeof(_arr) / sizeof((_arr)[0]))
+
+#define SFR_MIN(_a, _b) ((_a) < (_b) ? (_a) : (_b))
+#define SFR_MAX(_a, _b) ((_a) > (_b) ? (_a) : (_b))
+#define SFR_CLAMP(_x, _min, _max) ((_x) < (_min) ? (_min) : ((_x) > (_max) ? (_max) : (_x)))
 
 #ifndef SFR_NO_STD
     #define SFR_ERR_EXIT(...) { \
@@ -431,7 +449,6 @@ SFR_FUNC Vec sfr_vec_mul(Vec a, f32 b) {
     return r;
 }
 
-
 SFR_FUNC Vec sfr_vec_div(Vec a, f32 b) {
     Vec r;
     r.x = a.x / b;
@@ -461,7 +478,6 @@ SFR_FUNC Vec sfr_vec_cross(Vec a, Vec b) {
     r.w = 1.f;
     return r;
 }
-
 
 SFR_FUNC Vec sfr_vec_norm(Vec v) {
     const f32 l = sfr_vec_length(v);
@@ -689,11 +705,109 @@ SFR_FUNC i32 sfr_clip_against_plane(Tri out[2], Vec plane, Vec norm, Tri in) {
     return 0;
 }
 
+SFR_FUNC i32 sfr_clip_tex_tri_against_plane(SfrTexVert out[2][3], Vec plane, Vec norm, const SfrTexVert in[3]) {
+    norm = sfr_vec_norm(norm);
+    
+    SfrTexVert inside[3];
+    SfrTexVert outside[3];
+    i32 insideCount = 0, outsideCount = 0;
+    const f32 ndotp = sfr_vec_dot(norm, plane);
+
+    // classify points
+    for (i32 i = 0; i < 3; i += 1) {
+        const f32 dist = sfr_vec_dot(norm, in[i].pos) - ndotp;
+        if (dist >= 0) {
+            inside[insideCount] = in[i];
+            insideCount += 1;
+        } else {
+            outside[outsideCount] = in[i];
+            outsideCount += 1;
+        }
+    }
+
+    if (3 == insideCount) {
+        out[0][0] = in[0];
+        out[0][1] = in[1];
+        out[0][2] = in[2];
+        return 1;
+    }
+
+    if (1 == insideCount && 2 == outsideCount) {
+        // interpolate between inside outside pairs
+        const SfrTexVert A = inside[0];
+        const SfrTexVert B = outside[0];
+        const SfrTexVert C = outside[1];
+
+        // intersection values
+        const f32 tAB = (-ndotp - sfr_vec_dot(norm, A.pos)) / 
+                       (sfr_vec_dot(norm, sfr_vec_sub(B.pos, A.pos)));
+        const f32 tAC = (-ndotp - sfr_vec_dot(norm, A.pos)) / 
+                       (sfr_vec_dot(norm, sfr_vec_sub(C.pos, A.pos)));
+
+        // interpolate vertices
+        SfrTexVert newB = {
+            .pos = sfr_intersect_plane(plane, norm, A.pos, B.pos),
+            .u = A.u + tAB * (B.u - A.u),
+            .v = A.v + tAB * (B.v - A.v),
+            .viewZ = A.viewZ + tAB * (B.viewZ - A.viewZ)
+        };
+        
+        SfrTexVert newC = {
+            .pos = sfr_intersect_plane(plane, norm, A.pos, C.pos),
+            .u = A.u + tAC * (C.u - A.u),
+            .v = A.v + tAC * (C.v - A.v),
+            .viewZ = A.viewZ + tAC * (C.viewZ - A.viewZ)
+        };
+
+        out[0][0] = A;
+        out[0][1] = newB;
+        out[0][2] = newC;
+        return 1;
+    }
+
+    if (2 == insideCount && 1 == outsideCount) {
+        const SfrTexVert A = inside[0];
+        const SfrTexVert B = inside[1];
+        const SfrTexVert C = outside[0];
+
+        const f32 tAC = (-ndotp - sfr_vec_dot(norm, A.pos)) / 
+                       (sfr_vec_dot(norm, sfr_vec_sub(C.pos, A.pos)));
+        const f32 tBC = (-ndotp - sfr_vec_dot(norm, B.pos)) / 
+                       (sfr_vec_dot(norm, sfr_vec_sub(C.pos, B.pos)));
+
+        SfrTexVert newAC = {
+            .pos = sfr_intersect_plane(plane, norm, A.pos, C.pos),
+            .u = A.u + tAC * (C.u - A.u),
+            .v = A.v + tAC * (C.v - A.v),
+            .viewZ = A.viewZ + tAC * (C.viewZ - A.viewZ)
+        };
+
+        SfrTexVert newBC = {
+            .pos = sfr_intersect_plane(plane, norm, B.pos, C.pos),
+            .u = B.u + tBC * (C.u - B.u),
+            .v = B.v + tBC * (C.v - B.v),
+            .viewZ = B.viewZ + tBC * (C.viewZ - B.viewZ)
+        };
+
+        out[0][0] = A;
+        out[0][1] = B;
+        out[0][2] = newAC;
+        
+        out[1][0] = B;
+        out[1][1] = newAC;
+        out[1][2] = newBC;
+        
+        return 2;
+    }
+
+    return 0;
+}
+
 SFR_FUNC void sfr_rasterize(
     f32 ax, f32 ay, f32 az,
     f32 bx, f32 by, f32 bz,
     f32 cx, f32 cy, f32 cz,
-    i32 col
+    u32 col
 ) {
     sfrRasterCount += 1;
 
@@ -798,67 +912,208 @@ SFR_FUNC void sfr_rasterize(
     }
 }
 
-//: PUBLIC API FUNCTIONS
+SFR_FUNC void sfr_rasterize_tex(
+    f32 ax, f32 ay, f32 az, f32 aInvZ, f32 auoz, f32 avoz,
+    f32 bx, f32 by, f32 bz, f32 bInvZ, f32 buoz, f32 bvoz,
+    f32 cx, f32 cy, f32 cz, f32 cInvZ, f32 cuoz, f32 cvoz,
+    const Texture* tex
+) {
+    sfrRasterCount += 1;
 
-SFR_FUNC void sfr_init(u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
-    sfrWidth = w;
-    sfrHeight = h;
+    ax = (f32)((i32)ax);
+    ay = (f32)((i32)ay);
+    bx = (f32)((i32)bx);
+    by = (f32)((i32)by);
+    cx = (f32)((i32)cx);
+    cy = (f32)((i32)cy);
+
+    // sort vertices by y coord
+    if (ay > by) {
+        SFR_SWAPF(ax, bx); SFR_SWAPF(ay, by); SFR_SWAPF(az, bz);
+        SFR_SWAPF(aInvZ, bInvZ); SFR_SWAPF(auoz, buoz); SFR_SWAPF(avoz, bvoz);
+    }
+    if (ay > cy) {
+        SFR_SWAPF(ax, cx); SFR_SWAPF(ay, cy); SFR_SWAPF(az, cz);
+        SFR_SWAPF(aInvZ, cInvZ); SFR_SWAPF(auoz, cuoz); SFR_SWAPF(avoz, cvoz);
+    }
+    if (by > cy) {
+        SFR_SWAPF(bx, cx); SFR_SWAPF(by, cy); SFR_SWAPF(bz, cz);
+        SFR_SWAPF(bInvZ, cInvZ); SFR_SWAPF(buoz, cuoz); SFR_SWAPF(bvoz, cvoz);
+    }
+
+    // edge deltas for triangle
+    const f32 deltaACX = cx - ax;
+    const f32 deltaACZ = cz - az;
+    const f32 deltaACinvZ = cInvZ - aInvZ;
+    const f32 deltaACuoz = cuoz - auoz;
+    const f32 deltaACvoz = cvoz - avoz;
+    const f32 invHeightAC = (cy != ay) ? 1.0f / (cy - ay) : 0;
+
+    { // lower triangle (A to B)
+        const f32 deltaABX = bx - ax;
+        const f32 deltaABZ = bz - az;
+        const f32 deltaABinvZ = bInvZ - aInvZ;
+        const f32 deltaAB_u_ov_z = buoz - auoz;
+        const f32 deltaAB_v_ov_z = bvoz - avoz;
+        const f32 invHeightAB = (by != ay) ? 1.0f / (by - ay) : 0;
+
+        const i32 yStart = (ay < 0) ? 0 : (i32)ay;
+        const i32 yEnd = (by >= sfrHeight) ? sfrHeight : (i32)by;
+        for (i32 y = yStart; y < yEnd; y += 1) {
+            const f32 dy = y - ay;
+            const f32 alpha = dy * invHeightAC;
+            const f32 beta = dy * invHeightAB;
     
-    sfrPixelBuf = pixelBuf;
-    sfrDepthBuf = depthBuf;
+            // interpolate along AC edge (start)
+            f32 sx = ax + deltaACX * alpha;
+            f32 sz = az + deltaACZ * alpha;
+            f32 sInvZ = aInvZ + deltaACinvZ * alpha;
+            f32 su = auoz + deltaACuoz * alpha;
+            f32 sv = avoz + deltaACvoz * alpha;
+    
+            // interpolate along BC edge (end)
+            f32 ex = ax + deltaABX * beta;
+            f32 ez = az + deltaABZ * beta;
+            f32 eInvZ = aInvZ + deltaABinvZ * beta;
+            f32 eu = auoz + deltaAB_u_ov_z * beta;
+            f32 ev = avoz + deltaAB_v_ov_z * beta;
+    
+            // swap start/end if needed
+            if (sx > ex) {
+                SFR_SWAPF(sx, ex); SFR_SWAPF(sz, ez);
+                SFR_SWAPF(sInvZ, eInvZ); SFR_SWAPF(su, eu); SFR_SWAPF(sv, ev);
+            }
+    
+            // clamp x coordinates
+            const i32 xStart = (sx < 0) ? 0 : (i32)sx;
+            const i32 xEnd = (ex >= sfrWidth) ? sfrWidth : (i32)ex;
+            if (xStart >= xEnd) {
+                continue;
+            }
+    
+            // scanline interpolation parameters
+            const f32 dx = ex - sx;
+            const f32 tStep = (0.f != dx) ? 1.f / dx : 0.f;
+            const f32 invZStep = (eInvZ - sInvZ) * tStep;
+            const f32 uStep = (eu - su) * tStep;
+            const f32 vStep = (ev - sv) * tStep;
+    
+            // initialize current values
+            f32 invZ = sInvZ + (xStart - sx) * invZStep;
+            f32 uoz = su + (xStart - sx) * uStep;
+            f32 voz = sv + (xStart - sx) * vStep;
+    
+            // rasterize scanline
+            for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1) {
+                // perspective correction
+                const f32 z = 1.f / invZ;
+                if (z < sfrDepthBuf[i]) {
+                    sfrDepthBuf[i] = z;
 
-    sfr_clear();
-    sfr_reset();
+                    // recover texture coords
+                    const f32 u = uoz * z;
+                    const f32 v = voz * z;
+                    
+                    // wrap texture coords and clamp
+                    i32 tx = (i32)(u * (tex->w - 1));
+                    i32 ty = (i32)(v * (tex->h - 1));
+                    tx = (tx < 0) ? 0 : ((tx >= tex->w) ? tex->w - 1 : tx);
+                    ty = (ty < 0) ? 0 : ((ty >= tex->h) ? tex->h - 1 : ty);
+                    
+                    sfrPixelBuf[i] = tex->pixels[ty * tex->w + tx];
+                }
+    
+                // increment interpolants
+                invZ += invZStep;
+                uoz += uStep;
+                voz += vStep;
+            }
+        }
+    }
 
-    sfr_set_fov(fovDeg);
-    sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
-}
+    { // upper triangle (B to C)
+        const f32 deltaBCX = cx - bx;
+        const f32 deltaBCZ = cz - bz;
+        const f32 deltaBCinvZ = cInvZ - bInvZ;
+        const f32 deltaBCuoz = cuoz - buoz;
+        const f32 deltaBCvoz = cvoz - bvoz;
+        const f32 invHeightBC = (cy != by) ? 1.f / (cy - by) : 0.f;
+    
+        const i32 yStart = (by < 0.f) ? 0.f : (i32)by;
+        const i32 yEnd = (cy >= sfrHeight) ? sfrHeight : (i32)cy;
+        for (i32 y = yStart; y < yEnd; y += 1) {
+            const f32 alpha = (f32)(y - ay) * invHeightAC;
+            const f32 beta = (f32)(y - by) * invHeightBC;
+    
+            // interpolate along BC edge (start)
+            f32 sx = bx + deltaBCX * beta;
+            f32 sz = bz + deltaBCZ * beta;
+            f32 sInvZ = bInvZ + deltaBCinvZ * beta;
+            f32 suoz = buoz + deltaBCuoz * beta;
+            f32 svoz = bvoz + deltaBCvoz * beta;
+    
+            // interpolate along AC edge (end)
+            f32 ex = ax + deltaACX * alpha;
+            f32 ez = az + deltaACZ * alpha;
+            f32 eInvZ = aInvZ + deltaACinvZ * alpha;
+            f32 euoz = auoz + deltaACuoz * alpha;
+            f32 evoz = avoz + deltaACvoz * alpha;
+    
+            // swap start/end if needed
+            if (sx > ex) {
+                SFR_SWAPF(sx, ex);
+                SFR_SWAPF(sz, ez);
+                SFR_SWAPF(sInvZ, eInvZ);
+                SFR_SWAPF(suoz, euoz);
+                SFR_SWAPF(svoz, evoz);
+            }
+    
+            // clamp x coordinates
+            const i32 xStart = (sx < 0) ? 0 : (i32)sx;
+            const i32 xEnd = (ex >= sfrWidth) ? sfrWidth : (i32)ex;
+            if (xStart >= xEnd) {
+                continue;
+            }
+    
+            // scanline interpolation parameters
+            const f32 dx = ex - sx;
+            const f32 tStep = (0.f != dx) ? 1.f / dx : 0.f;
+            const f32 invZStep = (eInvZ - sInvZ) * tStep;
+            const f32 uStep = (euoz - suoz) * tStep;
+            const f32 vStep = (evoz - svoz) * tStep;
+    
+            // initialize current values
+            f32 invZ = sInvZ + (xStart - sx) * invZStep;
+            f32 uoz = suoz + (xStart - sx) * uStep;
+            f32 voz = svoz + (xStart - sx) * vStep;
+    
+            // rasterize scanline
+            for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1) {
+                // perspective correction
+                const f32 z = 1.f / invZ;
+                if (z < sfrDepthBuf[i]) {
+                    sfrDepthBuf[i] = z;
+                    
+                    // recover texture coords
+                    const f32 u = uoz * z;
+                    const f32 v = voz * z;
+                    
+                    // wrap texture coords and clamp
+                    i32 tx = (i32)(u * (tex->w - 1));
+                    i32 ty = (i32)(v * (tex->h - 1));
+                    tx = (tx < 0) ? 0 : ((tx >= tex->w) ? tex->w - 1 : tx);
+                    ty = (ty < 0) ? 0 : ((ty >= tex->h) ? tex->h - 1 : ty);
+                    
+                    sfrPixelBuf[i] = tex->pixels[ty * tex->w + tx];
+                }
 
-SFR_FUNC void sfr_reset(void) {
-    sfrMatModel = sfr_mat_identity();
-    sfrState._normalMatDirty = 1;
-}
-
-SFR_FUNC void sfr_rotate_x(f32 theta) {
-    const Mat rot = sfr_mat_rot_x(theta);
-    sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
-    sfrState._normalMatDirty = 1;
-}
-
-SFR_FUNC void sfr_rotate_y(f32 theta) {
-    const Mat rot = sfr_mat_rot_y(theta);
-    sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
-    sfrState._normalMatDirty = 1;
-}
-
-SFR_FUNC void sfr_rotate_z(f32 theta) {
-    const Mat rot = sfr_mat_rot_z(theta);
-    sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
-    sfrState._normalMatDirty = 1;
-}
-
-SFR_FUNC void sfr_translate(f32 x, f32 y, f32 z) {
-    const Mat trans = sfr_mat_translate(x, y, z);
-    sfrMatModel = sfr_mat_mul(sfrMatModel, trans);
-    sfrState._normalMatDirty = 1;
-}
-
-SFR_FUNC void sfr_scale(f32 x, f32 y, f32 z) {
-    const Mat scale = sfr_mat_scale(x, y, z);
-    sfrMatModel = sfr_mat_mul(sfrMatModel, scale);
-    sfrState._normalMatDirty = 1;
-}
-
-SFR_FUNC void sfr_look_at(f32 x, f32 y, f32 z) {
-    const Vec up = {0.f, 1.f, 0.f, 1.f};
-    const Mat view = sfr_mat_look_at(sfrCamPos, (Vec){x, y, z, 1.f}, up);
-    sfrMatView = sfr_mat_qinv(view);
-}
-
-SFR_FUNC void sfr_clear(void) {
-    sfr_memset(sfrPixelBuf, 0, sizeof(i32) * sfrWidth * sfrHeight);
-    sfr_memset(sfrDepthBuf, 0x7f, sizeof(i32) * sfrWidth * sfrHeight);
-    sfrRasterCount = 0;
+                // increment interpolants
+                invZ += invZStep;
+                uoz += uStep;
+                voz += vStep;
+            }
+        }
+    }
 }
 
 // helper for when lighting is enabled
@@ -882,21 +1137,87 @@ SFR_FUNC void sfr_update_normal_mat(void) {
     const f32 det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
     const f32 invDet = (0 != det) ? 1.f / det : 0.f;
 
-    sfrState._matNormal = (Mat){{
+    sfrState.matNormal = (Mat){{
         { (e * i - f * h) * invDet, (c * h - b * i) * invDet, (b * f - c * e) * invDet, 0.f },
         { (f * g - d * i) * invDet, (a * i - c * g) * invDet, (c * d - a * f) * invDet, 0.f },
         { (d * h - e * g) * invDet, (b * g - a * h) * invDet, (a * e - b * d) * invDet, 0.f },
         { 0.f, 0.f, 0.f, 1.f }
     }};
 
-    sfrState._normalMatDirty = 0;
+    sfrState.normalMatDirty = 0;
+}
+
+
+//================================================
+//:         PUBLIC API FUNCTION DEFINITIONS
+//================================================
+
+SFR_FUNC void sfr_init(u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
+    sfrWidth = w;
+    sfrHeight = h;
+    
+    sfrPixelBuf = pixelBuf;
+    sfrDepthBuf = depthBuf;
+
+    sfr_clear();
+    sfr_reset();
+
+    sfr_set_fov(fovDeg);
+    sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
+}
+
+SFR_FUNC void sfr_reset(void) {
+    sfrMatModel = sfr_mat_identity();
+    sfrState.normalMatDirty = 1;
+}
+
+SFR_FUNC void sfr_rotate_x(f32 theta) {
+    const Mat rot = sfr_mat_rot_x(theta);
+    sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
+    sfrState.normalMatDirty = 1;
+}
+
+SFR_FUNC void sfr_rotate_y(f32 theta) {
+    const Mat rot = sfr_mat_rot_y(theta);
+    sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
+    sfrState.normalMatDirty = 1;
+}
+
+SFR_FUNC void sfr_rotate_z(f32 theta) {
+    const Mat rot = sfr_mat_rot_z(theta);
+    sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
+    sfrState.normalMatDirty = 1;
+}
+
+SFR_FUNC void sfr_translate(f32 x, f32 y, f32 z) {
+    const Mat trans = sfr_mat_translate(x, y, z);
+    sfrMatModel = sfr_mat_mul(sfrMatModel, trans);
+    sfrState.normalMatDirty = 1;
+}
+
+SFR_FUNC void sfr_scale(f32 x, f32 y, f32 z) {
+    const Mat scale = sfr_mat_scale(x, y, z);
+    sfrMatModel = sfr_mat_mul(sfrMatModel, scale);
+    sfrState.normalMatDirty = 1;
+}
+
+SFR_FUNC void sfr_look_at(f32 x, f32 y, f32 z) {
+    const Vec up = {0.f, 1.f, 0.f, 1.f};
+    const Mat view = sfr_mat_look_at(sfrCamPos, (Vec){x, y, z, 1.f}, up);
+    sfrMatView = sfr_mat_qinv(view);
+}
+
+SFR_FUNC void sfr_clear(void) {
+    sfr_memset(sfrPixelBuf, 0, sizeof(i32) * sfrWidth * sfrHeight);
+    sfr_memset(sfrDepthBuf, 0x7f, sizeof(i32) * sfrWidth * sfrHeight);
+    sfrRasterCount = 0;
 }
 
 SFR_FUNC void sfr_triangle(
     f32 ax, f32 ay, f32 az,
     f32 bx, f32 by, f32 bz,
     f32 cx, f32 cy, f32 cz,
-    i32 col
+    u32 col
 ) {
     Tri tri = {{
         {ax, ay, az, 1.f},
@@ -948,13 +1269,13 @@ SFR_FUNC void sfr_triangle(
     }
 
     const Vec clipPlanes[4][2] = {
-        {{0.f, 0.5f, 0.f, 1.f}, {0.f, 1.f, 0.f, 1.f}},                 // top
+        {{0.f, 0.5f, 0.f, 1.f}, {0.f, 1.f, 0.f, 1.f}},            // top
         {{0.f, (f32)sfrHeight, 0.f, 1.f}, {0.f, -1.f, 0.f, 1.f}}, // bottom 
-        {{0.5f, 0.f, 0.f, 1.f}, {1.f, 0.f, 0.f, 1.f}},                 // left
+        {{0.5f, 0.f, 0.f, 1.f}, {1.f, 0.f, 0.f, 1.f}},            // left
         {{(f32)sfrWidth, 0.f, 0.f, 1.f}, {-1.f, 0.f, 0.f, 1.f}},  // right
     };
 
-    Tri bufferA[sizeof(queue) / sizeof(queue[0])], bufferB[sizeof(queue) / sizeof(queue[0])];
+    Tri bufferA[SFR_ARRLEN(queue)], bufferB[SFR_ARRLEN(queue)];
     Tri* inputBuffer = bufferA;
     Tri* outputBuffer = bufferB;
     i32 inputCount = clippedCount, outputCount;
@@ -969,7 +1290,7 @@ SFR_FUNC void sfr_triangle(
             const Tri test = inputBuffer[i];
             const i32 c = sfr_clip_against_plane(clipped, clipPlanes[p][0], clipPlanes[p][1], test);
             for (i32 j = 0; j < c; j += 1) {
-                // if (outputCount < sizeof(queue) / sizeof(queue[0])) {
+                // if (outputCount < SFR_ARRLEN(queue)) {
                 outputBuffer[outputCount] = clipped[j];
                 outputCount += 1;
                 // }
@@ -982,7 +1303,7 @@ SFR_FUNC void sfr_triangle(
     }
 
     if (sfrState.lightingEnabled) {
-        if (sfrState._normalMatDirty) {
+        if (sfrState.normalMatDirty) {
             sfr_update_normal_mat();
         }
 
@@ -991,7 +1312,7 @@ SFR_FUNC void sfr_triangle(
             (Vec){bx, by, bz},
             (Vec){cx, cy, cz});
         
-        normal = sfr_mat_mul_vec(sfrState._matNormal, normal);
+        normal = sfr_mat_mul_vec(sfrState.matNormal, normal);
         normal = sfr_vec_norm(normal);
 
         const f32 intensity = sfr_fmaxf(
@@ -1012,7 +1333,102 @@ SFR_FUNC void sfr_triangle(
     }
 }
 
-SFR_FUNC void sfr_cube(i32 col) {
+SFR_FUNC void sfr_triangle_tex(
+    f32 ax, f32 ay, f32 az, f32 au, f32 av,
+    f32 bx, f32 by, f32 bz, f32 bu, f32 bv,
+    f32 cx, f32 cy, f32 cz, f32 cu, f32 cv,
+    const Texture* tex
+) {
+    // transform vertices to world space for culling
+    Vec aModel = sfr_mat_mul_vec(sfrMatModel, (Vec){ax, ay, az, 1.f});
+    Vec bModel = sfr_mat_mul_vec(sfrMatModel, (Vec){bx, by, bz, 1.f});
+    Vec cModel = sfr_mat_mul_vec(sfrMatModel, (Vec){cx, cy, cz, 1.f});
+
+    // backface culling
+    #ifndef SFR_NO_CULLING
+        Vec line0 = sfr_vec_sub(bModel, aModel);
+        Vec line1 = sfr_vec_sub(cModel, aModel);
+        Vec normal = sfr_vec_cross(line0, line1);
+        Vec camRay = sfr_vec_sub(aModel, sfrCamPos);
+        if (sfr_vec_dot(normal, camRay) > 0.f) {
+            return;
+        }
+    #endif
+
+    // to view space
+    SfrTexVert viewTri[3] = {
+        {sfr_mat_mul_vec(sfrMatView, aModel), au, av, 0},
+        {sfr_mat_mul_vec(sfrMatView, bModel), bu, bv, 0},
+        {sfr_mat_mul_vec(sfrMatView, cModel), cu, cv, 0}
+    };
+    for (int i = 0; i < 3; i += 1) {
+        viewTri[i].viewZ = viewTri[i].pos.z; // original z for perspective
+    }
+
+    // clip against near plane
+    SfrTexVert clipped[2][3];
+    const i32 clippedCount = sfr_clip_tex_tri_against_plane(
+        clipped,
+        (Vec){0.f, 0.f, sfrNearDist, 1.f},
+        (Vec){0.f, 0.f, 1.f, 1.f},
+        viewTri
+    );
+
+    // process clipped triangles
+    for (i32 c = 0; c < clippedCount; c += 1) {
+        // project to screen space
+        SfrTexVert* tri = clipped[c];
+        Vec aProj = sfr_mat_mul_vec(sfrMatProj, tri[0].pos);
+        Vec bProj = sfr_mat_mul_vec(sfrMatProj, tri[1].pos);
+        Vec cProj = sfr_mat_mul_vec(sfrMatProj, tri[2].pos);
+
+        // perspective divide and screen space conversion
+        aProj = sfr_vec_div(aProj, aProj.w);
+        bProj = sfr_vec_div(bProj, bProj.w);
+        cProj = sfr_vec_div(cProj, cProj.w);
+
+        const f32 w2 = sfrWidth / 2.f, h2 = sfrHeight / 2.f;
+        aProj.x = (aProj.x + 1.f) * w2;
+        aProj.y = (-aProj.y + 1.f) * h2;
+        bProj.x = (bProj.x + 1.f) * w2;
+        bProj.y = (-bProj.y + 1.f) * h2;
+        cProj.x = (cProj.x + 1.f) * w2;
+        cProj.y = (-cProj.y + 1.f) * h2;
+
+        // screen space vertices with perspective attributes
+        struct {
+            f32 x, y, z;
+            f32 invZ, uoz, voz;
+        } screen[3] =
+        { {
+            aProj.x, aProj.y, aProj.z, 
+            1.f / tri[0].viewZ, 
+            tri[0].u / tri[0].viewZ, 
+            tri[0].v / tri[0].viewZ
+        }, {
+            bProj.x, bProj.y, bProj.z, 
+            1.f/tri[1].viewZ, 
+            tri[1].u / tri[1].viewZ, 
+            tri[1].v / tri[1].viewZ
+        }, {
+            cProj.x, cProj.y, cProj.z, 
+            1.f / tri[2].viewZ, 
+            tri[2].u / tri[2].viewZ, 
+            tri[2].v / tri[2].viewZ
+        }};
+
+        // TODO clip against screen edges
+
+        sfr_rasterize_tex(
+            screen[0].x, screen[0].y, screen[0].z, screen[0].invZ, screen[0].uoz, screen[0].voz,
+            screen[1].x, screen[1].y, screen[1].z, screen[1].invZ, screen[1].uoz, screen[1].voz,
+            screen[2].x, screen[2].y, screen[2].z, screen[2].invZ, screen[2].uoz, screen[2].voz,
+            tex
+        );
+    }
+}
+
+SFR_FUNC void sfr_cube(u32 col) {
     sfr_triangle(-0.5,-0.5,-0.5, -0.5, 0.5,-0.5,  0.5, 0.5,-0.5, col);
     sfr_triangle(-0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5,-0.5,-0.5, col);
     sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5, 0.5, 0.5, col);
@@ -1027,7 +1443,7 @@ SFR_FUNC void sfr_cube(i32 col) {
     sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5,-0.5,  0.5,-0.5,-0.5, col);
 }
 
-SFR_FUNC void sfr_cube_ex(i32 col[12]) {
+SFR_FUNC void sfr_cube_ex(u32 col[12]) {
     sfr_triangle(-0.5,-0.5,-0.5, -0.5, 0.5,-0.5,  0.5, 0.5,-0.5, col[0]);
     sfr_triangle(-0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5,-0.5,-0.5, col[1]);
     sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5, 0.5, 0.5, col[2]);
@@ -1040,6 +1456,68 @@ SFR_FUNC void sfr_cube_ex(i32 col[12]) {
     sfr_triangle(-0.5, 0.5,-0.5,  0.5, 0.5, 0.5,  0.5, 0.5,-0.5, col[9]);
     sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5, 0.5, -0.5,-0.5,-0.5, col[10]);
     sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5,-0.5,  0.5,-0.5,-0.5, col[11]);
+}
+
+SFR_FUNC void sfr_cube_tex(const Texture* tex) {
+    // front face
+    sfr_triangle_tex(
+        -0.5f,-0.5f,-0.5f, 0.f,0.f, 
+        -0.5f, 0.5f,-0.5f, 0.f,1.f,
+         0.5f, 0.5f,-0.5f, 1.f,1.f, tex);
+    sfr_triangle_tex(
+        -0.5f,-0.5f,-0.5f, 0.f,0.f,
+         0.5f, 0.5f,-0.5f, 1.f,1.f,
+         0.5f,-0.5f,-0.5f, 1.f,0.f, tex);
+
+    // right face
+    sfr_triangle_tex(
+        0.5f,-0.5f,-0.5f, 0.f,0.f,
+        0.5f, 0.5f,-0.5f, 0.f,1.f,
+        0.5f, 0.5f, 0.5f, 1.f,1.f, tex);
+    sfr_triangle_tex(
+        0.5f,-0.5f,-0.5f, 0.f,0.f,
+        0.5f, 0.5f, 0.5f, 1.f,1.f,
+        0.5f,-0.5f, 0.5f, 1.f,0.f, tex);
+
+    // back face
+    sfr_triangle_tex(
+         0.5f,-0.5f, 0.5f, 0.f,0.f,
+         0.5f, 0.5f, 0.5f, 0.f,1.f,
+        -0.5f, 0.5f, 0.5f, 1.f,1.f, tex);
+    sfr_triangle_tex(
+         0.5f,-0.5f, 0.5f, 0.f,0.f,
+        -0.5f, 0.5f, 0.5f, 1.f,1.f,
+        -0.5f,-0.5f, 0.5f, 1.f,0.f, tex);
+
+    // left face
+    sfr_triangle_tex(
+        -0.5f,-0.5f, 0.5f, 0.f,0.f,
+        -0.5f, 0.5f, 0.5f, 0.f,1.f,
+        -0.5f, 0.5f,-0.5f, 1.f,1.f, tex);
+    sfr_triangle_tex(
+        -0.5f,-0.5f, 0.5f, 0.f,0.f,
+        -0.5f, 0.5f,-0.5f, 1.f,1.f,
+        -0.5f,-0.5f,-0.5f, 1.f,0.f, tex);
+
+    // top face
+    sfr_triangle_tex(
+        -0.5f, 0.5f,-0.5f, 0.f,0.f,
+        -0.5f, 0.5f, 0.5f, 0.f,1.f,
+         0.5f, 0.5f, 0.5f, 1.f,1.f, tex);
+    sfr_triangle_tex(
+        -0.5f, 0.5f,-0.5f, 0.f,0.f,
+         0.5f, 0.5f, 0.5f, 1.f,1.f,
+         0.5f, 0.5f,-0.5f, 1.f,0.f, tex);
+
+    // bottom face
+    sfr_triangle_tex(
+         0.5f,-0.5f, 0.5f, 0.f,0.f,
+        -0.5f,-0.5f, 0.5f, 0.f,1.f,
+        -0.5f,-0.5f,-0.5f, 1.f,1.f, tex);
+    sfr_triangle_tex(
+         0.5f,-0.5f, 0.5f, 0.f,0.f,
+        -0.5f,-0.5f,-0.5f, 1.f,1.f,
+         0.5f,-0.5f,-0.5f, 1.f,0.f, tex);
 }
 
 SFR_FUNC void sfr_mesh(const Mesh* mesh) {
@@ -1117,7 +1595,7 @@ SFR_FUNC void sfr_set_lighting(i32 on, Vec dir, f32 ambientIntensity) {
 SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
     Mesh* mesh = (Mesh*)malloc(sizeof(Mesh));
     if (!mesh) {
-        SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate mesh");
+        SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate mesh\n");
     }
     
     FILE* objFile = fopen(filename, "r");
@@ -1201,72 +1679,139 @@ SFR_FUNC void sfr_release_mesh(Mesh** mesh) {
 
 SFR_FUNC Texture* sfr_load_texture(const char* filename) {
     FILE* file = fopen(filename, "rb");
-    if (!file) return NULL;
+    if (!file) {
+        SFR_ERR_RET(NULL, "Failed to open file '%s'\n", filename);
+    }
 
+    // read bmp headers
     u8 header[54];
-    if (54 != fread(header, 1, 54, file)) {
+    if (fread(header, 1, 54, file) != 54) {
         fclose(file);
-        SFR_ERR_RET(NULL, "sfr_load_texture: only BMP (.bmp) images are currently supported");
+        SFR_ERR_RET(NULL, "sfr_load_texture: not a valid BMP file\n");
     }
 
-    if ('B' != header[0] || 'M' != header[1]) {
+    if (header[0] != 'B' || header[1] != 'M') {
         fclose(file);
-        SFR_ERR_RET(NULL, "sfr_load_texture: only BMP (.bmp) images are currently supported");
+        SFR_ERR_RET(NULL, "sfr_load_texture: not a BMP file\n");
     }
 
-    i32 dataOffset = *(i32*)&header[0x0A];
-    i32 width = *(i32*)&header[0x12];
-    i32 height = *(i32*)&header[0x16];
-    i32 imageSize = *(i32*)&header[0x22];
+    // parse header information
+    const i32 dataOffset = *(i32*)(header + 0x0A);
+    const i32 infoSize   = *(i32*)(header + 0x0E);
+    const i32 width      = *(i32*)(header + 0x12);
+    const i32 rawHeight  = *(i32*)(header + 0x16);
+    const u16 bpp        = *(u16*)(header + 0x1C);
+    const u32 comp       = *(u32*)(header + 0x1E);
 
-    if (0 == imageSize) {
-        imageSize = width * height * 3;
-    }
-    if (0 == dataOffset) {
-        dataOffset = 54;
-    }
-
-    u8* data = (u8*)malloc(imageSize);
-    if (!data) {
+    // verify supported format
+    if (comp > 3) {
         fclose(file);
-        SFR_ERR_RET(NULL, "sfr_load_texture: failed to allocate memory for image");
+        SFR_ERR_RET(NULL, "sfr_load_texture: unsupported BMP compression\n");
+    }
+
+    // handle height direction
+    const u8 isTopDown = rawHeight < 0;
+    const i32 height = isTopDown ? -rawHeight : rawHeight;
+
+    // extended header information
+    u32 masks[4] = {0};
+    u32 palette[256] = {0};
+    i32 paletteSize = 0;
+
+    if (bpp <= 8) {
+        const i32 colorsUsed = *(i32*)(header + 0x2E);
+        paletteSize = (colorsUsed ? colorsUsed : 1 << bpp) * 4;
+        if (infoSize >= 40 && fread(palette, 1, paletteSize, file) != paletteSize) {
+            fclose(file);
+            SFR_ERR_RET(NULL, "sfr_load_texture: failed to read color palette\n");
+        }
+    } else if (3 == comp && 4 != fread(masks, 4, 4, file)) { // BI_BITFIELDS
+        fclose(file);
+        SFR_ERR_RET(NULL, "sfr_load_texture: failed to read bit masks\n");
+    }
+
+    // stride and data size
+    const i32 stride = ((width * bpp + 31) / 32) * 4;
+    const i32 dataSize = stride * height;
+
+    // read pixel data
+    u8* pixelData = (u8*)malloc(dataSize);
+    if (!pixelData) {
+        fclose(file);
+        SFR_ERR_RET(NULL, "sfr_load_texture: failed to allocate pixel data\n");
     }
 
     fseek(file, dataOffset, SEEK_SET);
-    if (imageSize != fread(data, 1, imageSize, file)) {
-        free(data);
+    if (fread(pixelData, 1, dataSize, file) != dataSize) {
+        free(pixelData);
         fclose(file);
-        SFR_ERR_RET(NULL, "sfr_load_texture: invalid bitmap image");
+        SFR_ERR_RET(NULL, "sfr_load_texture: failed to read pixel data\n");
     }
     fclose(file);
 
+    // create texture
     Texture* tex = (Texture*)malloc(sizeof(Texture));
     if (!tex) {
-        free(data);
-        SFR_ERR_RET(NULL, "sfr_load_texture: failed to allocate memory for Texture struct");
-    }
-
-    tex->pixels = (u32*)malloc(width * height * sizeof(u32));
-    if (!tex->pixels) {
-        free(data);
-        free(tex);
-        SFR_ERR_RET(NULL, "sfr_load_texture: failed to allocate memory for texture pixels");
+        free(pixelData);
+        SFR_ERR_RET(NULL, "sfr_load_texture: failed to allocate texture struct\n");
     }
 
     tex->w = width;
     tex->h = height;
+    tex->pixels = (u32*)malloc(width * height * sizeof(u32));
+    if (!tex->pixels) {
+        free(pixelData);
+        free(tex);
+        SFR_ERR_RET(NULL, "sfr_load_texture: failed to allocate texture pixels\n");
+    }
 
-    for (i32 y = 0; y < height; y++) {
-        for (i32 x = 0; x < width; x++) {
-            const i32 i = (y * width + x) * 3;
-            u8 b = data[i + 0];
-            u8 g = data[i + 1];
-            u8 r = data[i + 2];
-            tex->pixels[(height - 1 - y) * width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+    // process pixels
+    for (i32 y = 0, i = 0; y < height; y += 1) {
+        const i32 srcY = isTopDown ? y : height - 1 - y;
+        const u8* row = pixelData + srcY * stride;
+        for (i32 x = 0; x < width; x += 1, i += 1) {
+            u32 col = 0;
+            switch (bpp) {
+                case 32: {
+                    const u8* px = row + x * 4;
+                    col = (px[3] << 24) | (px[2] << 16) | (px[1] << 8) | px[0];
+                } break;
+                case 24: {
+                    const u8* px = row + x * 3;
+                    col |= (px[2] << 16) | (px[1] << 8) | px[0];
+                } break;
+                case 16: {
+                    const u16 px = *((u16*)(row + x * 2));
+                    u32 r_mask = masks[0] ? masks[0] : 0x7C00;
+                    u32 g_mask = masks[1] ? masks[1] : 0x03E0;
+                    u32 b_mask = masks[2] ? masks[2] : 0x001F;
+                    
+                    col |= ((px & r_mask) * 0xFF / r_mask) << 16;
+                    col |= ((px & g_mask) * 0xFF / g_mask) << 8;
+                    col |= ((px & b_mask) * 0xFF / b_mask);
+                } break;
+                case 8:
+                case 4:
+                case 1: {
+                    const u8 index = row[x / (8 / bpp)];
+                    const u8 shift = (7 - (x % (8 / bpp))) * bpp;
+                    const u8 pal_idx = (index >> shift) & ((1 << bpp) - 1);
+                    const u8* entry = (u8*)(palette + pal_idx);
+                    col |= (entry[2] << 16) | (entry[1] << 8) | entry[0];
+                } break;
+                default: {
+                    free(pixelData);
+                    free(tex->pixels);
+                    free(tex);
+                    SFR_ERR_RET(NULL, "sfr_load_texture: unsupported bit depth: %d\n", bpp);
+                }
+            }
+            
+            tex->pixels[i] = col;
         }
     }
 
-    free(data);
+    free(pixelData);
 
     return tex;
 }
@@ -1326,6 +1871,7 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max) {
     #undef u16
     #undef i32
     #undef u32
+    #undef i64
     #undef u64
     #undef f32
     #undef f64
