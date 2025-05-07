@@ -2,9 +2,17 @@
 
 ### A minimalistic, efficient, single file, cross platform software renderer
 
-*examples/starter-console.c*
+---
 
-https://github.com/user-attachments/assets/465e6888-a0e2-4649-9ffa-780fe2615dd7
+[*examples/tex-starter-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/tex-starter-sdl2.c)
+
+![simple textures demo](https://github.com/user-attachments/assets/83dbc4ed-2fad-42e1-839e-ae6d80d4919b)
+
+[*examples/starter-console.c*](https://github.com/cyprus327/sofren/blob/main/examples/tex-starter-sdl2.c)
+
+![sfrconsoledemo1](https://github.com/user-attachments/assets/36b51566-7893-4729-a498-b18c6569ea83)
+
+---
 
 For examples and good starting points rendering to an SDL2 window or console window, see the examples folder
 
@@ -12,13 +20,13 @@ For examples and good starting points rendering to an SDL2 window or console win
 - As few a 0 other headers included, can be 100% standalone
 - Single file - just `#include "sofren.c"`
 - Primitive drawing (triangles, cubes)
+- Perspective correct texture mapping
 - OBJ mesh loading (requires `stdio.h`)
 - Flat shading with directional lighting
 - Customizable math implementations (system or bundled)
 - Simplistic design, quick to learn and use
-- Matrix transformations (model/view/projection)
 - ARGB8888 color format support
-- Backface culling & depth buffering
+- Backface culling, depth buffering, and clipping
 
 ## Pre Processing Configuration 
 ```c
@@ -87,31 +95,30 @@ extern f32 sfrNearDist, sfrFarDist;
 
 ### Red Rotating Cube
 ```c
-sfr_reset();
-sfr_rotate_y(time);
-sfr_rotate_x(time * 0.5f);
-sfr_scale(1.f, 3.f, 0.5f);
-sfr_translate(0.f, 0.f, 2.5f);
-sfr_cube(0xFF0000);
+sfr_reset();                   // prepare to draw
+sfr_rotate_y(time);            // rotate about y
+sfr_rotate_x(time * 0.5f);     // rotate about x
+sfr_scale(1.f, 3.f, 0.5f);     // scale by x y z
+sfr_translate(0.f, 0.f, 2.5f); // move to x y z
+sfr_cube(0xFF0000);            // draw pure red cube
 ```
 
 ### OBJ Loading
 ```c
 Mesh* mesh = sfr_load_mesh("model.obj"); // allocate and load obj file
 ...
-mesh->rot.y = time; // rotate about y, radians not degrees
+mesh->rot.y = time;       // rotate about y, radians not degrees
 mesh->pos.y = sinf(time); // move up and down
-sfr_reset(); // reset model matrix
-sfr_mesh(mesh); // draw mesh using its properties
+sfr_reset();              // reset model matrix
+sfr_mesh(mesh);           // draw mesh using its properties
 ...
 sfr_release_mesh(&mesh); // free mesh's memory
 ``` 
 
 ## TODO / Upcoming
-- Texture mapping
+- More advanced lighting
 - Per vertex colors
 - Support for more color formats
-- More advanced lighting
 - MSAA, maybe
 - Stencil buffer, maybe
 - Config flag for multithreading, very maybe
