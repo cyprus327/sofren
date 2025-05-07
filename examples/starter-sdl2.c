@@ -1,3 +1,12 @@
+/* SOFREN EXAMPLES, starter-sdl2.c
+
+a small and digestable example demonstrating:
+    handling a window resizing,
+    basic camera usage,
+    how to draw primitives
+
+*/
+
 #define SFR_IMPL
 #include "../sofren.c"
 

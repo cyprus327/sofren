@@ -1,8 +1,14 @@
+/* SOFREN EXAMPLES, starter-sdl2.c
+
+a slightly larger example that shows more:
+    handling a window resizing,
+    simple FPS player controller,
+    drawing a simple scene,
+    drawing OBJ files
+
+*/
+
 #define SFR_IMPL
-// #define SFR_NO_STD
-// #define SFR_NO_MATH
-// #define SFR_NO_STRING
-// #define SFR_NO_STDINT
 #include "../sofren.c"
 
 #ifndef SFR_NO_STD // cant load obj file without stdio
@@ -35,6 +41,9 @@ i32 main(void) {
     // load rock obj and set it up
     #ifndef SFR_NO_STD
         Mesh* mesh = sfr_load_mesh(ROCK_PATH);
+        if (!mesh) {
+            return 1;
+        }
         mesh->col = 0xFADA80;
         mesh->scale = (Vec){0.0025f, 0.0025f, 0.0025f};
     #endif
@@ -225,9 +234,9 @@ i32 main(void) {
                         case 3: z =  worldSize; break;
                     }
 
-                    i32 cols[12];
+                    u32 cols[12];
                     for (i32 c = 0; c < 12; c += 1) {
-                        cols[c] = (i32)(
+                        cols[c] = (u32)(
                             (sfr_rand_int(50, 210) << 16) | 
                             (sfr_rand_int(50, 210) << 8)  |
                             (sfr_rand_int(50, 210) << 0));
