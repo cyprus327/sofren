@@ -53,6 +53,7 @@ SFR_NO_CULLING - whether or not to cull triangles
     #define Tri     sfrtri_t
     #define Mesh    sfrmesh_t
     #define Texture sfrtexture_t
+    #define Font    sfrfont_t
     
     #define i8  sfri8_t
     #define u8  sfru8_t
@@ -93,6 +94,7 @@ typedef struct sfrvec     Vec;
 typedef struct sfrmat     Mat;
 typedef struct sfrmesh    Mesh;
 typedef struct sfrtexture Texture;
+typedef struct sfrfont    Font;
 
 //: extern variables
 extern i32 sfrWidth, sfrHeight;
@@ -122,6 +124,22 @@ extern f32 sfrNearDist, sfrFarDist;
         #define SFR_FUNC static
     #endif
 #endif
+
+#ifndef SFR_SQRT_ACCURACY
+    #define SFR_SQRT_ACCURACY 20
+#endif
+#ifndef SFR_TRIG_ACCURACY
+    #define SFR_TRIG_ACCURACY 10
+#endif
+
+#ifndef SFR_FONT_GLYPH_MAX
+    #define SFR_FONT_GLYPH_MAX 512
+#endif
+#ifndef SFR_FONT_VERT_MAX
+    // 72 verts max == 12 tris max
+    #define SFR_FONT_VERT_MAX 72
+#endif
+#define SFR_FONT_VERT_EMPTY 1234321
 
 //: math functions
 SFR_FUNC Vec sfr_vec_add(Vec a, Vec b);
@@ -177,6 +195,10 @@ SFR_FUNC void sfr_cube_tex(const Texture* tex); // draw a cube with 'tex' applie
 SFR_FUNC void sfr_mesh(const Mesh* mesh);       // draw specified mesh, using matrices based on 'mesh'
 SFR_FUNC void sfr_mesh_tex(                     // same as 'sfr_mesh' but with 'tex' applied using mesh's uvs
     const Mesh* mesh, const Texture* tex);
+SFR_FUNC void sfr_string(                       // draw a string, '\n' handled automatically
+    const Font* font, const char* s, i32 sLength, u32 col);
+SFR_FUNC void sfr_glyph(                        // draw single character glyph 
+    const Font* font, u16 id, u32 col);
 
 SFR_FUNC i32 sfr_world_to_screen( // project the world position specified to screen coordinates
     f32 x, f32 y, f32 z, i32* screenX, i32* screenY);    
@@ -196,6 +218,9 @@ SFR_FUNC void sfr_set_lighting( // update internal lighting state for simple sha
 
     SFR_FUNC Texture* sfr_load_texture(const char* filename); // load a BMP texture
     SFR_FUNC void sfr_release_texture(Texture** texture);     // release loaded texture's memory
+
+    SFR_FUNC Font* sfr_load_font(const char* filename); // load a .srft (sofren font type) font, see 'sfr-fontmaker'
+    SFR_FUNC void sfr_release_font(Font** font);        // release loaded font's memory
 #endif
 
 SFR_FUNC void sfr_rand_seed(u32 seed);       // seed random number generator
@@ -250,13 +275,6 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max]
     }
 #endif
 
-#ifndef SFR_SQRT_ACCURACY
-    #define SFR_SQRT_ACCURACY 20
-#endif
-#ifndef SFR_TRIG_ACCURACY
-    #define SFR_TRIG_ACCURACY 10
-#endif
-
 
 //================================================
 //:         TYPES
@@ -286,6 +304,11 @@ typedef struct sfrtexture {
     u32* pixels;
     i32 w, h;
 } Texture;
+
+typedef struct sfrfont {
+    // xy pairs [x0][y0][x1][y1][x2][...]
+    f32 verts[SFR_FONT_GLYPH_MAX][SFR_FONT_VERT_MAX];
+} Font;
 
 typedef struct strState {
     i32 lightingEnabled;
@@ -349,7 +372,7 @@ SfrState sfrState = {0};
     #define SFR_ERR_RET(_r, ...) { \
         fprintf(stderr, "SFR error (%s) at line %d:\n\t", __FILE__, __LINE__); \
         fprintf(stderr, __VA_ARGS__); \
-        return (_r); \
+        return _r; \
     }
 #else
     #ifndef SFR_NO_WARNINGS
@@ -1583,6 +1606,30 @@ SFR_FUNC void sfr_mesh_tex(const Mesh* mesh, const Texture* tex) {
     }
 }
 
+SFR_FUNC void sfr_string(const Font* font, const char* s, i32 sLength, u32 col) {
+    SFR_ERR_RET(, "sfr_string: TODO not implemented, 'sfr_glyph' is implemented\n");
+}
+
+SFR_FUNC void sfr_glyph(const Font* font, u16 id, u32 col) {
+    if (id >= SFR_FONT_GLYPH_MAX) {
+        SFR_ERR_RET(, "sfr_glyph: invalid id (%d >= %d)\n", id, SFR_FONT_GLYPH_MAX);
+    }
+
+    // printf("V0: %f\n", font->verts[id][0]);
+
+    const f32* t = font->verts[id];
+    for (i32 i = 0; i < SFR_FONT_VERT_MAX; i += 6) {
+        if (SFR_FONT_VERT_EMPTY == font->verts[id][i]) {
+            break;
+        }
+
+        sfr_triangle(
+            t[i + 0], t[i + 1], 0.f,
+            t[i + 2], t[i + 3], 0.f,
+            t[i + 4], t[i + 5], 0.f, col);
+    }
+}
+
 SFR_FUNC i32 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY) {
     Vec p = {x, y, z, 1.f};
     p = sfr_mat_mul_vec(sfrMatView, p);
@@ -1845,19 +1892,19 @@ SFR_FUNC void sfr_release_mesh(Mesh** mesh) {
 SFR_FUNC Texture* sfr_load_texture(const char* filename) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
-        SFR_ERR_RET(NULL, "Failed to open file '%s'\n", filename);
+        SFR_ERR_RET(NULL, "sfr_load_texture: failed to open file '%s'\n", filename);
     }
 
     // read bmp headers
     u8 header[54];
     if (fread(header, 1, 54, file) != 54) {
         fclose(file);
-        SFR_ERR_RET(NULL, "sfr_load_texture: not a valid BMP file\n");
+        SFR_ERR_RET(NULL, "sfr_load_texture: not a valid BMP file ('%s')\n", filename);
     }
 
     if (header[0] != 'B' || header[1] != 'M') {
         fclose(file);
-        SFR_ERR_RET(NULL, "sfr_load_texture: not a BMP file\n");
+        SFR_ERR_RET(NULL, "sfr_load_texture: not a BMP file ('%s')\n", filename);
     }
 
     // parse header information
@@ -1986,12 +2033,88 @@ SFR_FUNC void sfr_release_texture(Texture** tex) {
         return;
     }
 
-    free((*tex)->pixels);
-    (*tex)->pixels = NULL;
+    if ((*tex)->pixels) {
+        free((*tex)->pixels);
+        (*tex)->pixels = NULL;
+    }
 
     free(*tex);
     *tex = NULL;
 }
+
+SFR_FUNC Font* sfr_load_font(const char* filename) {
+    FILE* file = fopen(filename, "rb");
+    if (!file) {
+        SFR_ERR_RET(NULL, "sfr_load_font: failed to open file '%s'\n", filename);
+    }
+
+    /* .srft format
+
+    [0..7] header:
+    - [0..4] = ['s']['r']['f']['t']
+
+    [8...] data:
+    - {
+        glyph id,   u16, 2 bytes, i.e. 'a' points to glyphs['a'],
+        vert count, u16, 2 bytes,
+        vert data,  f32, 4 bytes, [x0][y0][x1][y1][x2][...]
+    }
+    */
+
+    // validate file as .srft (sofren font type)
+    const u32 code = ('s' << 24) | ('r' << 16) | ('f' << 8)  | 't';
+    u32 codeCheck;
+    if (1 != fread(&codeCheck, 4, 1, file) || code != codeCheck) {
+        fclose(file);
+        SFR_ERR_RET(NULL, "sfr_load_font: not a valid .srft file ('%s')\n", filename);
+    }
+
+    // allocate space for font
+    Font* font = (Font*)malloc(sizeof(Font));
+    if (!font) {
+        fclose(file);
+        SFR_ERR_RET(NULL, "sfr_load_font: failed to allocate struct\n");
+    }
+
+    // load font
+    for (i32 i = 0; i < SFR_FONT_GLYPH_MAX; i += 1) {
+        for (i32 j = 0; j < SFR_FONT_VERT_MAX; j += 1) {
+            font->verts[i][j] = SFR_FONT_VERT_EMPTY;
+        }
+        
+        u8 vertCount;
+        if (1 != fread(&vertCount, 1, 1, file)) {
+            fclose(file);
+            free(font);
+            SFR_ERR_RET(NULL, "sfr_load_font: error reading from file\n");
+        }
+        if (vertCount >= SFR_FONT_VERT_MAX) {
+            fclose(file);
+            free(font);
+            SFR_ERR_RET(NULL, 
+                "sfr_load_font: vert count out of bounds for glyph '%c' (%d) (%d >= %d)\n",
+                i, i, vertCount, SFR_FONT_VERT_MAX);
+        }
+
+        if (vertCount && vertCount != fread(font->verts[i], 4, vertCount, file)) {
+            fclose(file);
+            free(font);
+            SFR_ERR_RET(NULL, "sfr_load_font: error reading vertices from file\n");
+        }
+    }
+    
+    return font;
+}
+
+SFR_FUNC void sfr_release_font(Font** font) {
+    if (!font || !(*font)) {
+        return;
+    }
+
+    free(*font);
+    *font = NULL;
+}
+
 #endif // !SFR_NO_STD
 
 SFR_FUNC void sfr_rand_seed(u32 seed) {
@@ -2029,6 +2152,7 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max) {
     #undef Tri
     #undef Mesh
     #undef Texture
+    #undef Font
 
     #undef i8
     #undef u8
