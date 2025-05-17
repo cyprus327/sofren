@@ -24,16 +24,19 @@ For examples and good starting points rendering to an SDL2 window or console win
 - As few a 0 other headers included, can be 100% standalone
 - Single file - just `#include "sofren.c"`
 - Primitive drawing (triangles, cubes)
-- Perspective correct texture mapping
+- Perspective correct texture mapping (currently only .bmp image support)
 - OBJ mesh loading (requires `stdio.h`)
 - Flat shading with directional lighting
 - Customizable math implementations (system or bundled)
 - Simplistic design, quick to learn and use
-- ARGB8888 color format support
+- ARGB8888 color format support (no transparency currently, however)
 - Backface culling, depth buffering, and clipping
 
 ## Pre Processing Configuration 
 ```c
+// the default values are the opposite of the macro unless otherwise stated,
+// e.g. functions aren't inline by default
+
 #define SFR_IMPL // indicate declaration of functions
 
 #define SFR_NO_STD    // don't include 'stdio' and 'stdlib.h'
@@ -64,8 +67,8 @@ For examples and good starting points rendering to an SDL2 window or console win
 #define SFR_TRIG_ACCURACY // defaults to 10 if not defined
 
 // for text rendering
-#define SFR_FONT_GLYPH_MAX 512 // 512 glyphs per font, ids [0..512]
-#define SFR_FONT_VERT_MAX 72   // 72 verts per glyph max == 12 tris max
+#define SFR_FONT_GLYPH_MAX // max glyphs per font, defaults to 512
+#define SFR_FONT_VERT_MAX  // max verts per glyph, defaults to 72 (12 tris)
 ```
 
 ## Global Variables
@@ -127,7 +130,8 @@ sfr_release_mesh(&mesh); // free mesh's memory
 - More advanced lighting
 - Per vertex colors
 - Support for more color formats
-- MSAA, maybe
+- Transparency
+- MSAA / AA in general, maybe
 - Stencil buffer, maybe
 - Config flag for multithreading, very maybe
 
