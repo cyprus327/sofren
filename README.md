@@ -8,6 +8,10 @@
 
 ![simple textures demo](https://github.com/user-attachments/assets/83dbc4ed-2fad-42e1-839e-ae6d80d4919b)
 
+[*examples/font-starter-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/font-starter-sdl2.c)
+
+![sfrfontdemo1](https://github.com/user-attachments/assets/87f62598-b39e-4d04-b19d-0f97ddba1622)
+
 [*examples/starter-console.c*](https://github.com/cyprus327/sofren/blob/main/examples/tex-starter-sdl2.c)
 
 ![sfrconsoledemo1](https://github.com/user-attachments/assets/36b51566-7893-4729-a498-b18c6569ea83)
@@ -58,6 +62,10 @@ For examples and good starting points rendering to an SDL2 window or console win
 // dictate the accuracy of the bundled math functions
 #define SFR_SQRT_ACCURACY // defaults to 20 if not defined
 #define SFR_TRIG_ACCURACY // defaults to 10 if not defined
+
+// for text rendering
+#define SFR_FONT_GLYPH_MAX 512 // 512 glyphs per font, ids [0..512]
+#define SFR_FONT_VERT_MAX 72   // 72 verts per glyph max == 12 tris max
 ```
 
 ## Global Variables
