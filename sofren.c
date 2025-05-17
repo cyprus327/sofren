@@ -233,6 +233,7 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max]
 //:         IMPLEMENTATION
 //================================================
 
+// #define SFR_IMPL
 #ifdef SFR_IMPL
 
 #ifndef SFR_NO_STRING
@@ -2050,13 +2051,12 @@ SFR_FUNC Font* sfr_load_font(const char* filename) {
 
     /* .srft format
 
-    [0..7] header:
-    - [0..4] = ['s']['r']['f']['t']
+    [0..4] header:
+    - [0..4] = ['s']['r']['f']['t'] = 1936877172
 
-    [8...] data:
+    [5...] data:
     - {
-        glyph id,   u16, 2 bytes, i.e. 'a' points to glyphs['a'],
-        vert count, u16, 2 bytes,
+        vert count, u16, 2 bytes, max 
         vert data,  f32, 4 bytes, [x0][y0][x1][y1][x2][...]
     }
     */
