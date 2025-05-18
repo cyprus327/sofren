@@ -1,6 +1,6 @@
 /* SOFREN EXAMPLES, starter-sdl2.c
 
-a small and digestable example demonstrating:
+demonstrating:
     handling a window resizing,
     basic camera usage,
     how to draw primitives

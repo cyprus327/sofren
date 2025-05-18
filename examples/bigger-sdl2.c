@@ -12,7 +12,7 @@ a slightly larger example that shows more:
 #include "../sofren.c"
 
 #ifndef SFR_NO_STD // cant load obj file without stdio
-    #define ROCK_PATH "examples/res/rock.obj"
+    #define OBJ_PATH "examples/res/rock.obj"
 #endif
 
 #include <SDL2/SDL.h>
@@ -40,12 +40,10 @@ i32 main(void) {
 
     // load rock obj and set it up
     #ifndef SFR_NO_STD
-        Mesh* mesh = sfr_load_mesh(ROCK_PATH);
+        Mesh* mesh = sfr_load_mesh(OBJ_PATH);
         if (!mesh) {
             return 1;
         }
-        mesh->col = 0xFADA80;
-        mesh->scale = (Vec){0.0025f, 0.0025f, 0.0025f};
     #endif
 
     // player controller variables
@@ -262,13 +260,11 @@ i32 main(void) {
                 const f32 x = sfr_rand_flt(-range, range);
                 const f32 z = sfr_rand_flt(-range, range);
 
-                mesh->rot.y = i + time * 3.f;
-                mesh->pos.x = x;
-                mesh->pos.y = 0.3f + sinf(i + time * 2.f) * 0.2f;
-                mesh->pos.z = z;
-
                 sfr_reset();
-                sfr_mesh(mesh);
+                sfr_rotate_y(i + time * 3.f);
+                sfr_scale(0.0025f, 0.0025f, 0.0025f);
+                sfr_translate(x, 0.3f + sinf(i + time * 2.f) * 0.2f, z);
+                sfr_mesh(mesh, 0xFADA80);
             }
         }
         #endif

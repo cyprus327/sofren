@@ -1,8 +1,9 @@
-/* SOFREN EXAMPLES, starter-sdl2.c
+/* SOFREN EXAMPLES, tex-starter-sdl2.c
 
-a small and digestable example demonstrating:
+demonstrates:
     loading textures and meshes,
-    drawing textured meshes and cubes
+    drawing textured meshes and cubes,
+    ui with an FPS counter
 
 */
 
@@ -12,22 +13,27 @@ a small and digestable example demonstrating:
 #include <SDL2/SDL.h>
 
 i32 main() {    
-    Mesh* mesh; Texture* meshTex;
+    Mesh* mesh; Texture* meshTex; Texture* cubeTex; Font* font;
     SDL_Window* window; SDL_Renderer* renderer; SDL_Texture* sdlTex;
     { // init
         // load mesh and texture
-        mesh = sfr_load_mesh("examples/res/bunny.obj");
+        mesh = sfr_load_mesh("examples/res/hawk.obj");
         if (!mesh) {
             return 1;
         }
 
-        mesh->col = 0xFFFFAA;
-        mesh->pos.y = -0.2f;
-        mesh->pos.z = 1.6f;
-        mesh->scale = (Vec){3.f, 3.f, 3.f};
-
-        meshTex = sfr_load_texture("examples/res/test.bmp");
+        meshTex = sfr_load_texture("examples/res/hawk.bmp");
         if (!meshTex) {
+            return 1;
+        }
+
+        cubeTex = sfr_load_texture("examples/res/test.bmp");
+        if (!cubeTex) {
+            return 1;
+        }
+
+        font = sfr_load_font("examples/res/basic-font.srft");
+        if (!font) {
             return 1;
         }
 
@@ -47,9 +53,10 @@ i32 main() {
         sdlTex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
                                               SDL_TEXTUREACCESS_STREAMING, w, h);
     }
-    
+
     f32 camX = 0.f;
     f32 moveMult = 0;
+    char asdfasdf = 'a';
 
     for (i32 shouldQuit = 0; !shouldQuit;) {
         SDL_Event e;
@@ -80,24 +87,62 @@ i32 main() {
         sfr_clear();
 
         { // draw scene
-            mesh->rot.y = time * 1.5f;
-            
             // textured bunny
-            mesh->pos.x = -0.6f;
             sfr_reset();
+            sfr_rotate_x(SFR_PI * 1.5f);
+            sfr_rotate_y(time * 1.5f);
+            sfr_scale(0.125f, 0.125f, 0.125f);
+            sfr_translate(-2.5f, -1.7f, 8.f);
             sfr_mesh_tex(mesh, meshTex);
 
-            // lit, flat shaded, bunny
-            mesh->pos.x = 0.6f;
+            // flat shaded bunny
             sfr_reset();
-            sfr_mesh(mesh);
+            sfr_rotate_x(SFR_PI * 1.5f);
+            sfr_rotate_y(time * 1.5f);
+            sfr_scale(0.125f, 0.125f, 0.125f);
+            sfr_translate(2.5f, -1.7f, 8.f);
+            sfr_mesh(mesh, 0xFFFFAA);
 
             // textured cube
             sfr_reset();
-            sfr_rotate_x(time * 0.5f);
-            sfr_rotate_y(time * 1.1f);
-            sfr_translate(0.f, 0.f, 8.f);
-            sfr_cube_tex(meshTex);
+            sfr_rotate_y(sinf(time) * 0.2f + 0.5f);
+            sfr_rotate_x(cosf(time) * 0.125f + 2.5f);
+            sfr_scale(10.f, 10.f, 10.f);
+            sfr_translate(0.f, 0.f, 20.f);
+            sfr_cube_tex(cubeTex);
+        }
+
+        // reset depth buffer before drawing ui
+        memset(sfrDepthBuf, 0x7F, sizeof(f32) * sfrWidth * sfrHeight);
+
+        { // draw FPS counter
+            static f32 fpsTimer = 0.f;
+            static i32 fpsCounter = 0;
+            fpsTimer += frameTime;
+            fpsCounter += 1;
+
+            static char buf[8] = "999";
+            static i32 len = 3;
+
+            if (fpsTimer >= 1.f) {
+                len = 0;
+                snprintf(buf, sizeof(buf), "%d", fpsCounter);
+                while ('\0' != buf[len]) {
+                    len += 1;
+                }
+
+                fpsTimer -= 1.f;
+                fpsCounter = 0;
+            }
+            
+            sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
+            sfr_reset();
+            sfr_scale(0.01f, 0.01f, 0.01f);
+            sfr_translate(-0.87f, 0.43f, 1.f);
+            for (i32 i = 0; i < len; i += 1) {
+                sfr_translate(0.07f, 0.f, 0.f);
+                sfr_glyph(font, buf[i], 0x77FF77);    
+            }
         }
 
         // update SDL window
@@ -108,6 +153,8 @@ i32 main() {
     }
 
     { // cleanup
+        sfr_release_font(&font);
+        sfr_release_texture(&cubeTex);
         sfr_release_texture(&meshTex);
         sfr_release_mesh(&mesh);
         free(sfrPixelBuf);
