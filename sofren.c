@@ -9,43 +9,6 @@ extern "C" {
 //:         PUBLIC API
 //================================================
 
-/*          pre processing settings:
-
-        the default values are the opposite of the define unless otherwise stated,
-        e.g. functions aren't inline by default
-
-SFR_USE_INLINE - whether functions should be defined as 'static inline' or 'static'
-
-SFR_FUNC - SFR_USE_INLINE controls this, however you can't turn off 'static'
-         - if you define this as nothing, SFR_FUNC will be nothing, i.e. no 'static'
-
-SFR_PREFIXED_TYPES - whether or not types start with 'sfr'
-                   - e.g. 'sfrmesh_t' instead of just 'Mesh'
-
-SFR_NO_WARNINGS - whether or not #warning is used to report small potential problems
-
-SFR_NO_STD - whether or not 'stdio.h' and 'stdlib.h' are allowed to be included
-           - they're only used in 'sfr_load_mesh' and 'sfr_unload_mesh'
-
-SFR_NO_MATH - whether or not 'math.h' is allowed to be included
-            - there are fallbacks for functions but they're probably worse than math.h's
-
-SFR_NO_STRING - whether or not 'string.h' is allowed to be included
-              - will use custom memset / memmove when defined
-
-SFR_NO_STDINT - whether or not 'stdint.h' is allowed to be included
-              - dictates type of 'i32', 'u32', etc.
-
-SFR_SQRT_ACCURACY - only applicable when SFR_NO_MATH defined, defaults to 20 if not defined
-
-SFR_TRIG_ACCURACY - only applicable when SFR_NO_MATH defined, defaults to 10 if not defined
-
-
-        TODO the following should be changed to a normal variable at some point
-
-SFR_NO_CULLING - whether or not to cull triangles
-*/
-
 //: types
 #ifdef SFR_PREFIXED_TYPES
     #define Vec     sfrvec_t
@@ -189,15 +152,15 @@ SFR_FUNC void sfr_triangle_tex( // draw specified triangle with 'tex' applied
     f32 bx, f32 by, f32 bz, f32 bu, f32 bv,
     f32 cx, f32 cy, f32 cz, f32 cu, f32 cv,
     const Texture* tex);
-SFR_FUNC void sfr_cube(u32 col);                // draw a cube with a solid color
-SFR_FUNC void sfr_cube_ex(u32 col[12]);         // draw a cube with triangles of specified colors
-SFR_FUNC void sfr_cube_tex(const Texture* tex); // draw a cube with 'tex' applied
-SFR_FUNC void sfr_mesh(const Mesh* mesh);       // draw specified mesh, using matrices based on 'mesh'
-SFR_FUNC void sfr_mesh_tex(                     // same as 'sfr_mesh' but with 'tex' applied using mesh's uvs
+SFR_FUNC void sfr_cube(u32 col);                   // draw a cube with a solid color
+SFR_FUNC void sfr_cube_ex(u32 col[12]);            // draw a cube with triangles of specified colors
+SFR_FUNC void sfr_cube_tex(const Texture* tex);    // draw a cube with 'tex' applied
+SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col); // draw a loaded mesh
+SFR_FUNC void sfr_mesh_tex(                        // same as 'sfr_mesh' but with 'tex' applied using mesh's uvs
     const Mesh* mesh, const Texture* tex);
-SFR_FUNC void sfr_string(                       // draw a string, '\n' handled automatically
+SFR_FUNC void sfr_string(                          // draw a string, not yet implemented TODO
     const Font* font, const char* s, i32 sLength, u32 col);
-SFR_FUNC void sfr_glyph(                        // draw single character glyph 
+SFR_FUNC void sfr_glyph(                           // draw single character glyph 
     const Font* font, u16 id, u32 col);
 
 SFR_FUNC i32 sfr_world_to_screen( // project the world position specified to screen coordinates
@@ -296,9 +259,7 @@ typedef struct sfrtri {
 typedef struct sfrmesh { // see the 'sfr_mesh' for example usage
     f32* tris;           // vertex positions
     f32* uvs;            // uv coordinates
-    i32 vertCount;       // total number of position floats (3 per vertex)
-    Vec pos, scale, rot; // properties that will be used in 'sfr_mesh'
-    u32 col;             // color to draw the mesh with if using 'sfr_mesh'
+    i32 vertCount;       // total number of floats (3 per vertex)
 } Mesh;
 
 typedef struct sfrtexture {
@@ -1487,100 +1448,76 @@ SFR_FUNC void sfr_cube_ex(u32 col[12]) {
 SFR_FUNC void sfr_cube_tex(const Texture* tex) {
     // front face
     sfr_triangle_tex(
-        -0.5f,-0.5f,-0.5f, 0.f,0.f, 
-        -0.5f, 0.5f,-0.5f, 0.f,1.f,
-         0.5f, 0.5f,-0.5f, 1.f,1.f, tex);
+        -0.5f,-0.5f,-0.5f, 1.f,0.f, 
+        -0.5f, 0.5f,-0.5f, 1.f,1.f,
+         0.5f, 0.5f,-0.5f, 0.f,1.f, tex);
     sfr_triangle_tex(
-        -0.5f,-0.5f,-0.5f, 0.f,0.f,
-         0.5f, 0.5f,-0.5f, 1.f,1.f,
-         0.5f,-0.5f,-0.5f, 1.f,0.f, tex);
+        -0.5f,-0.5f,-0.5f, 1.f,0.f,
+         0.5f, 0.5f,-0.5f, 0.f,1.f,
+         0.5f,-0.5f,-0.5f, 0.f,0.f, tex);
 
     // right face
     sfr_triangle_tex(
-        0.5f,-0.5f,-0.5f, 0.f,0.f,
-        0.5f, 0.5f,-0.5f, 0.f,1.f,
-        0.5f, 0.5f, 0.5f, 1.f,1.f, tex);
+        0.5f,-0.5f,-0.5f, 1.f,0.f,
+        0.5f, 0.5f,-0.5f, 1.f,1.f,
+        0.5f, 0.5f, 0.5f, 0.f,1.f, tex);
     sfr_triangle_tex(
-        0.5f,-0.5f,-0.5f, 0.f,0.f,
-        0.5f, 0.5f, 0.5f, 1.f,1.f,
-        0.5f,-0.5f, 0.5f, 1.f,0.f, tex);
+        0.5f,-0.5f,-0.5f, 1.f,0.f,
+        0.5f, 0.5f, 0.5f, 0.f,1.f,
+        0.5f,-0.5f, 0.5f, 0.f,0.f, tex);
 
     // back face
     sfr_triangle_tex(
-         0.5f,-0.5f, 0.5f, 0.f,0.f,
-         0.5f, 0.5f, 0.5f, 0.f,1.f,
-        -0.5f, 0.5f, 0.5f, 1.f,1.f, tex);
+         0.5f,-0.5f, 0.5f, 1.f,0.f,
+         0.5f, 0.5f, 0.5f, 1.f,1.f,
+        -0.5f, 0.5f, 0.5f, 0.f,1.f, tex);
     sfr_triangle_tex(
-         0.5f,-0.5f, 0.5f, 0.f,0.f,
-        -0.5f, 0.5f, 0.5f, 1.f,1.f,
-        -0.5f,-0.5f, 0.5f, 1.f,0.f, tex);
+         0.5f,-0.5f, 0.5f, 1.f,0.f,
+        -0.5f, 0.5f, 0.5f, 0.f,1.f,
+        -0.5f,-0.5f, 0.5f, 0.f,0.f, tex);
 
     // left face
     sfr_triangle_tex(
-        -0.5f,-0.5f, 0.5f, 0.f,0.f,
-        -0.5f, 0.5f, 0.5f, 0.f,1.f,
-        -0.5f, 0.5f,-0.5f, 1.f,1.f, tex);
+        -0.5f,-0.5f, 0.5f, 1.f,0.f,
+        -0.5f, 0.5f, 0.5f, 1.f,1.f,
+        -0.5f, 0.5f,-0.5f, 0.f,1.f, tex);
     sfr_triangle_tex(
-        -0.5f,-0.5f, 0.5f, 0.f,0.f,
-        -0.5f, 0.5f,-0.5f, 1.f,1.f,
-        -0.5f,-0.5f,-0.5f, 1.f,0.f, tex);
+        -0.5f,-0.5f, 0.5f, 1.f,0.f,
+        -0.5f, 0.5f,-0.5f, 0.f,1.f,
+        -0.5f,-0.5f,-0.5f, 0.f,0.f, tex);
 
     // top face
     sfr_triangle_tex(
-        -0.5f, 0.5f,-0.5f, 0.f,0.f,
-        -0.5f, 0.5f, 0.5f, 0.f,1.f,
-         0.5f, 0.5f, 0.5f, 1.f,1.f, tex);
+        -0.5f, 0.5f,-0.5f, 1.f,0.f,
+        -0.5f, 0.5f, 0.5f, 1.f,1.f,
+         0.5f, 0.5f, 0.5f, 0.f,1.f, tex);
     sfr_triangle_tex(
-        -0.5f, 0.5f,-0.5f, 0.f,0.f,
-         0.5f, 0.5f, 0.5f, 1.f,1.f,
-         0.5f, 0.5f,-0.5f, 1.f,0.f, tex);
+        -0.5f, 0.5f,-0.5f, 1.f,0.f,
+         0.5f, 0.5f, 0.5f, 0.f,1.f,
+         0.5f, 0.5f,-0.5f, 0.f,0.f, tex);
 
     // bottom face
     sfr_triangle_tex(
-         0.5f,-0.5f, 0.5f, 0.f,0.f,
-        -0.5f,-0.5f, 0.5f, 0.f,1.f,
-        -0.5f,-0.5f,-0.5f, 1.f,1.f, tex);
+         0.5f,-0.5f, 0.5f, 1.f,0.f,
+        -0.5f,-0.5f, 0.5f, 1.f,1.f,
+        -0.5f,-0.5f,-0.5f, 0.f,1.f, tex);
     sfr_triangle_tex(
-         0.5f,-0.5f, 0.5f, 0.f,0.f,
-        -0.5f,-0.5f,-0.5f, 1.f,1.f,
-         0.5f,-0.5f,-0.5f, 1.f,0.f, tex);
+         0.5f,-0.5f, 0.5f, 1.f,0.f,
+        -0.5f,-0.5f,-0.5f, 0.f,1.f,
+         0.5f,-0.5f,-0.5f, 0.f,0.f, tex);
 }
 
-SFR_FUNC void sfr_mesh(const Mesh* mesh) {
-    if (0.f != mesh->rot.y) {
-        sfr_rotate_y(mesh->rot.y);
-    }
-    if (0.f != mesh->rot.x) {
-        sfr_rotate_x(mesh->rot.x);
-    }
-    if (0.f != mesh->rot.z) {
-        sfr_rotate_z(mesh->rot.z);
-    }
-    sfr_scale(mesh->scale.x, mesh->scale.y, mesh->scale.z);
-    sfr_translate(mesh->pos.x, mesh->pos.y, mesh->pos.z);
-
+SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col) {
     for (i32 i = 0; i < mesh->vertCount; i += 9) {
         sfr_triangle(
             mesh->tris[i + 0], mesh->tris[i + 1], mesh->tris[i + 2],
             mesh->tris[i + 3], mesh->tris[i + 4], mesh->tris[i + 5],
             mesh->tris[i + 6], mesh->tris[i + 7], mesh->tris[i + 8],
-            mesh->col);
+            col);
     }
 }
 
 SFR_FUNC void sfr_mesh_tex(const Mesh* mesh, const Texture* tex) {
-    if (0.f != mesh->rot.y) {
-        sfr_rotate_y(mesh->rot.y);
-    }
-    if (0.f != mesh->rot.x) {
-        sfr_rotate_x(mesh->rot.x);
-    }
-    if (0.f != mesh->rot.z) {
-        sfr_rotate_z(mesh->rot.z);
-    }
-    sfr_scale(mesh->scale.x, mesh->scale.y, mesh->scale.z);
-    sfr_translate(mesh->pos.x, mesh->pos.y, mesh->pos.z);
-
     for (i32 i = 0; i < mesh->vertCount; i += 9) {
         const i32 uv = (i / 9) * 6;
         const f32 ax = mesh->tris[i + 0];
@@ -1681,10 +1618,11 @@ SFR_FUNC void sfr_set_lighting(i32 on, Vec dir, f32 ambientIntensity) {
 }
 
 #ifndef SFR_NO_STD
+
 SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
     Mesh* mesh = (Mesh*)malloc(sizeof(Mesh));
     if (!mesh) {
-        SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate mesh\n");
+        SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate Mesh struct\n");
     }
 
     mesh->tris = NULL;
@@ -1697,18 +1635,18 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
         SFR_ERR_RET(0, "sfr_load_mesh: failed to open file '%s'\n", filename);
     }
 
-    // Read vertices and UVs
+    // read verts and uvs
     f32* verts = NULL;
     f32* uvCoords = NULL;
     i32 vi = 0, uvi = 0;
     char line[128];
-    f32 x, y, z, u, v;
 
     while (fgets(line, sizeof(line), objFile)) {
         if ('v' != line[0]) {
             continue;
         }
 
+        f32 x, y, z;
         if (' ' == line[1] && 3 == sscanf(line, "v %f %f %f", &x, &y, &z)) {
             verts = realloc(verts, (vi + 3) * sizeof(f32));
             if (!verts) {
@@ -1720,7 +1658,7 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
             verts[vi + 1] = y;
             verts[vi + 2] = z;
             vi += 3;
-        } else if ('t' == line[1] && 2 == sscanf(line, "vt %f %f", &u, &v)) {
+        } else if ('t' == line[1] && 2 == sscanf(line, "vt %f %f", &x, &y)) {
             uvCoords = realloc(uvCoords, (uvi + 2) * sizeof(f32));
             if (!uvCoords) {
                 fclose(objFile);
@@ -1728,8 +1666,8 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
                 free(mesh);
                 SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate UVs\n");
             }
-            uvCoords[uvi + 0] = u;
-            uvCoords[uvi + 1] = v;
+            uvCoords[uvi + 0] = x;
+            uvCoords[uvi + 1] = y;
             uvi += 2;
         }
     }
@@ -1741,25 +1679,27 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
     u8 meshHasUVs = 0;
 
     while (fgets(line, sizeof(line), objFile)) {
-        if ('f' != line[0]) {
+        if (line[0] != 'f') {
             continue;
         }
 
         char* tokens[4];
         i32 tokenCount = 0;
-        char* token = strtok(line, " \t\n");
-        while (NULL != (token = strtok(NULL, " \t\n")) && tokenCount < 3) {
+        char* token = strtok(line, " \t\n"); // skip 'f'
+        while ((token = strtok(NULL, " \t\n")) != NULL && tokenCount < 4) {
             tokens[tokenCount] = token;
             tokenCount += 1;
         }
-        if (3 != tokenCount) {
+        
+        // skip lines with less than 3 or more than 4 vertices
+        if (tokenCount < 3 || tokenCount > 4) {
             continue;
         }
 
-        i32 vIndices[3], uvIndices[3];
+        i32 vIndices[4], uvIndices[4];
         u8 currentFaceHasUV = 0;
 
-        for (i32 i = 0; i < 3; i += 1) {
+        for (i32 i = 0; i < tokenCount; i += 1) {
             vIndices[i] = uvIndices[i] = -1;
             char* parts[3] = {0};
             char* part = strtok(tokens[i], "/");
@@ -1775,91 +1715,124 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
             }
         }
 
-        if (currentFaceHasUV) {
-            if (!meshHasUVs) {
-                meshHasUVs = 1;
+        // determine the number of triangles and their vertex inds
+        i32 numTriangles = (tokenCount == 3) ? 1 : 2;
+        i32 triVertices[2][3];
+        if (tokenCount == 3) {
+            triVertices[0][0] = 0;
+            triVertices[0][1] = 1;
+            triVertices[0][2] = 2;
+        } else {
+            // quad => split into two triangles (0,1,2) and (0,2,3)
+            triVertices[0][0] = 0;
+            triVertices[0][1] = 1;
+            triVertices[0][2] = 2;
+            triVertices[1][0] = 0;
+            triVertices[1][1] = 2;
+            triVertices[1][2] = 3;
+        }
+
+        // process each triangle
+        for (i32 t = 0; t < numTriangles; t += 1) {
+            // check uv consistency
+            if (currentFaceHasUV) {
                 for (i32 i = 0; i < 3; i += 1) {
-                    if (-1 == uvIndices[i]) {
+                    const i32 ind = triVertices[t][i];
+                    if (-1 == uvIndices[ind]) {
+                        fclose(objFile);
+                        free(verts);
+                        free(uvCoords);
+                        free(mesh->tris);
+                        free(mesh->uvs);
+                        free(mesh);
+                        SFR_ERR_RET(0, "sfr_load_mesh: inconsistent UV indices\n");
+                    }
+                }
+            }
+
+            if (currentFaceHasUV) {
+                if (!meshHasUVs) {
+                    meshHasUVs = 1;
+                    if (!uvCoords) {
+                        fclose(objFile);
+                        free(verts);
+                        free(mesh->tris);
+                        free(mesh);
+                        SFR_ERR_RET(0, "sfr_load_mesh: UVs missing\n");
+                    }
+                }
+
+                // add uvs for this triangle
+                for (i32 i = 0; i < 3; i += 1) {
+                    const i32 ind = triVertices[t][i];
+                    const i32 currUVInd = uvIndices[ind];
+                    if (currUVInd < 0 || currUVInd >= uvi / 2) {
+                        fclose(objFile);
+                        free(verts);
+                        free(uvCoords);
+                        free(mesh->uvs);
+                        free(mesh->tris);
+                        free(mesh);
+                        SFR_ERR_RET(0, "sfr_load_mesh: invalid UV index\n");
+                    }
+
+                    const f32 u =       uvCoords[currUVInd * 2 + 0];
+                    const f32 v = 1.f - uvCoords[currUVInd * 2 + 1];
+
+                    mesh->uvs = realloc(mesh->uvs, (uvInd + 2) * sizeof(f32));
+                    if (!mesh->uvs) {
                         fclose(objFile);
                         free(verts);
                         free(uvCoords);
                         free(mesh->tris);
                         free(mesh);
-                        SFR_ERR_RET(0, "sfr_load_mesh: inconsistent UV indices\n");
+                        SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate UVs\n");
                     }
-                }
-                if (!uvCoords) {
-                    fclose(objFile);
-                    free(verts);
-                    free(mesh);
-                    SFR_ERR_RET(0, "sfr_load_mesh: UVs missing\n");
-                }
-            }
 
-            for (i32 i = 0; i < 3; i += 1) {
-                if (uvIndices[i] < 0 || uvIndices[i] >= uvi / 2) {
-                    fclose(objFile);
-                    free(verts);
-                    free(uvCoords);
-                    free(mesh->uvs);
-                    free(mesh->tris);
-                    free(mesh);
-                    SFR_ERR_RET(0, "sfr_load_mesh: invalid UV index\n");
+                    mesh->uvs[uvInd + 0] = u;
+                    mesh->uvs[uvInd + 1] = v;
+                    uvInd += 2;
                 }
-
-                const f32 u    = uvCoords[uvIndices[i] * 2 + 0];
-                const f32 uVal = uvCoords[uvIndices[i] * 2 + 1];
-
-                mesh->uvs = realloc(mesh->uvs, (uvInd + 2) * sizeof(f32));
-                if (!mesh->uvs) {
-                    fclose(objFile);
-                    free(verts);
-                    free(uvCoords);
-                    free(mesh->tris);
-                    free(mesh);
-                    SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate UVs\n");
-                }
-                mesh->uvs[uvInd + 0] = u;
-                mesh->uvs[uvInd + 1] = uVal;
-                uvInd += 2;
-            }
-        } else if (meshHasUVs) {
-            fclose(objFile);
-            free(verts);
-            free(uvCoords);
-            free(mesh->uvs);
-            free(mesh->tris);
-            free(mesh);
-            SFR_ERR_RET(0, "sfr_load_mesh: face missing UVs\n");
-        }
-
-        // add vertices to mesh->tris
-        for (i32 i = 0; i < 3; i += 1) {
-            if (vIndices[i] < 0 || vIndices[i] >= vi / 3) {
+            } else if (meshHasUVs) {
                 fclose(objFile);
                 free(verts);
                 free(uvCoords);
                 free(mesh->uvs);
                 free(mesh->tris);
                 free(mesh);
-                SFR_ERR_RET(0, "sfr_load_mesh: invalid vertex index\n");
+                SFR_ERR_RET(0, "sfr_load_mesh: face missing UVs\n");
             }
 
-            f32* v = &verts[vIndices[i] * 3];
-            mesh->tris = realloc(mesh->tris, (triInd + 3) * sizeof(f32));
-            if (!mesh->tris) {
-                fclose(objFile);
-                free(verts);
-                free(uvCoords);
-                free(mesh->uvs);
-                free(mesh);
-                SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate vertices\n");
-            }
+            // add vertices to mesh->tris
+            for (i32 i = 0; i < 3; i += 1) {
+                const i32 ind = triVertices[t][i];
+                const i32 vInd = vIndices[ind];
+                if (vInd < 0 || vInd >= vi / 3) {
+                    fclose(objFile);
+                    free(verts);
+                    free(uvCoords);
+                    free(mesh->uvs);
+                    free(mesh->tris);
+                    free(mesh);
+                    SFR_ERR_RET(0, "sfr_load_mesh: invalid vertex index\n");
+                }
 
-            mesh->tris[triInd + 0] = v[0];
-            mesh->tris[triInd + 1] = v[1];
-            mesh->tris[triInd + 2] = v[2];
-            triInd += 3;
+                mesh->tris = realloc(mesh->tris, (triInd + 3) * sizeof(f32));
+                if (!mesh->tris) {
+                    fclose(objFile);
+                    free(verts);
+                    free(uvCoords);
+                    free(mesh->uvs);
+                    free(mesh);
+                    SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate vertices\n");
+                }
+
+                const f32* v = &verts[vInd * 3];
+                mesh->tris[triInd + 0] = v[0];
+                mesh->tris[triInd + 1] = v[1];
+                mesh->tris[triInd + 2] = v[2];
+                triInd += 3;
+            }
         }
     }
 
