@@ -87,62 +87,102 @@ i32 main() {
         sfr_clear();
 
         { // draw scene
+            static u32 col;
+            static f32 colTimer = 0.f;
+            colTimer -= frameTime;
+            if (colTimer <= -0.5f) {
+                colTimer += 3.f;
+            } else if (colTimer <= 0.f) {
+                col = 0xFFFFFF;
+            } else if (colTimer <= 0.5f) {
+                col = 0xFFAAAA;
+            } else if (colTimer <= 1.f) {
+                col = 0xAAFFAA;
+            } else if (colTimer <= 1.5f) {
+                col = 0xAAAAFF;
+            } else if (colTimer <= 2.f) {
+                col = 0xFF0000;
+            } else if (colTimer <= 2.5f) {
+                col = 0x00FF00;
+            } else if (colTimer <= 3.f) {
+                col = 0x0000FF;
+            }
+
             // textured bunny
             sfr_reset();
             sfr_rotate_x(SFR_PI * 1.5f);
             sfr_rotate_y(time * 1.5f);
             sfr_scale(0.125f, 0.125f, 0.125f);
-            sfr_translate(-2.5f, -1.7f, 8.f);
-            sfr_mesh_tex(mesh, meshTex);
+            sfr_translate(-2.5f, -2.f, 8.f);
+            sfr_mesh_tex(mesh, col, meshTex);
 
             // flat shaded bunny
             sfr_reset();
             sfr_rotate_x(SFR_PI * 1.5f);
             sfr_rotate_y(time * 1.5f);
             sfr_scale(0.125f, 0.125f, 0.125f);
-            sfr_translate(2.5f, -1.7f, 8.f);
-            sfr_mesh(mesh, 0xFFFFAA);
+            sfr_translate(2.5f, -2.f, 8.f);
+            sfr_mesh(mesh, col);
 
             // textured cube
             sfr_reset();
             sfr_rotate_y(sinf(time) * 0.2f + 0.5f);
             sfr_rotate_x(cosf(time) * 0.125f + 2.5f);
             sfr_scale(10.f, 10.f, 10.f);
-            sfr_translate(0.f, 0.f, 20.f);
-            sfr_cube_tex(cubeTex);
+            sfr_translate(0.f, -2.f, 20.f);
+            sfr_cube_tex(0xFFFFFF, cubeTex);
         }
 
         // reset depth buffer before drawing ui
         memset(sfrDepthBuf, 0x7F, sizeof(f32) * sfrWidth * sfrHeight);
 
-        { // draw FPS counter
+        { // draw ui text
             static f32 fpsTimer = 0.f;
             static i32 fpsCounter = 0;
             fpsTimer += frameTime;
             fpsCounter += 1;
 
-            static char buf[8] = "999";
-            static i32 len = 3;
+            static u32 trisCounter = 0;
+
+            static char fpsBuf[8] = "999";
+            static i32 fpsLen = 3;
+
+            static char trisBuf[24] = "";
+            static i32 trisLen = 0;
 
             if (fpsTimer >= 1.f) {
-                len = 0;
-                snprintf(buf, sizeof(buf), "%d", fpsCounter);
-                while ('\0' != buf[len]) {
-                    len += 1;
-                }
+                fpsLen = 0;
+                snprintf(fpsBuf, sizeof(fpsBuf), "%d", fpsCounter);
+                while ('\0' != fpsBuf[fpsLen++]) { }
+
+                trisLen = 0;
+                snprintf(trisBuf, sizeof(trisBuf), "%d tris", trisCounter / fpsCounter);
+                while ('\0' != trisBuf[trisLen++]) { }
 
                 fpsTimer -= 1.f;
                 fpsCounter = 0;
+                trisCounter = 0;
             }
             
             sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
+            
             sfr_reset();
             sfr_scale(0.01f, 0.01f, 0.01f);
             sfr_translate(-0.87f, 0.43f, 1.f);
-            for (i32 i = 0; i < len; i += 1) {
+            for (i32 i = 0; i < fpsLen; i += 1) {
                 sfr_translate(0.07f, 0.f, 0.f);
-                sfr_glyph(font, buf[i], 0x77FF77);    
+                sfr_glyph(font, fpsBuf[i], 0x77FF77);    
             }
+
+            sfr_reset();
+            sfr_scale(0.01f, 0.01f, 0.01f);
+            sfr_translate(-0.6f, 0.43f, 1.f);
+            for (i32 i = 0; i < trisLen; i += 1) {
+                sfr_translate(0.07f, 0.f, 0.f);
+                sfr_glyph(font, trisBuf[i], 0xCA9999);
+            }
+
+            trisCounter += sfrRasterCount;
         }
 
         // update SDL window

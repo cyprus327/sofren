@@ -140,7 +140,6 @@ SFR_FUNC void sfr_translate(f32 x, f32 y, f32 z); // translate model matrix by x
 SFR_FUNC void sfr_scale(f32 x, f32 y, f32 z);     // scale model matrix by x y z
 SFR_FUNC void sfr_look_at(f32 x, f32 y, f32 z);   // set view matrix to look at x y z
 
-// all drawing functions below other than sfr_mesh use current matrices when drawing
 SFR_FUNC void sfr_clear(void); // reset depth and pixel buffers
 SFR_FUNC void sfr_triangle(    // draw specified triangle
     f32 ax, f32 ay, f32 az,
@@ -151,13 +150,14 @@ SFR_FUNC void sfr_triangle_tex( // draw specified triangle with 'tex' applied
     f32 ax, f32 ay, f32 az, f32 au, f32 av,
     f32 bx, f32 by, f32 bz, f32 bu, f32 bv,
     f32 cx, f32 cy, f32 cz, f32 cu, f32 cv,
-    const Texture* tex);
+    u32 col, const Texture* tex);
 SFR_FUNC void sfr_cube(u32 col);                   // draw a cube with a solid color
 SFR_FUNC void sfr_cube_ex(u32 col[12]);            // draw a cube with triangles of specified colors
-SFR_FUNC void sfr_cube_tex(const Texture* tex);    // draw a cube with 'tex' applied
+SFR_FUNC void sfr_cube_tex(                        // draw a cube with 'tex' applied
+    u32 col, const Texture* tex);
 SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col); // draw a loaded mesh
 SFR_FUNC void sfr_mesh_tex(                        // same as 'sfr_mesh' but with 'tex' applied using mesh's uvs
-    const Mesh* mesh, const Texture* tex);
+    const Mesh* mesh, u32 col, const Texture* tex);
 SFR_FUNC void sfr_string(                          // draw a string, not yet implemented TODO
     const Font* font, const char* s, i32 sLength, u32 col);
 SFR_FUNC void sfr_glyph(                           // draw single character glyph 
@@ -256,10 +256,10 @@ typedef struct sfrtri {
     Vec p[3];
 } Tri;
 
-typedef struct sfrmesh { // see the 'sfr_mesh' for example usage
-    f32* tris;           // vertex positions
-    f32* uvs;            // uv coordinates
-    i32 vertCount;       // total number of floats (3 per vertex)
+typedef struct sfrmesh {
+    f32* tris;     // vertex positions
+    f32* uvs;      // uv coordinates
+    i32 vertCount; // total number of floats (3 per vertex)
 } Mesh;
 
 typedef struct sfrtexture {
@@ -340,7 +340,7 @@ SfrState sfrState = {0};
     #ifndef SFR_NO_WARNINGS
         #warning "SFR WARNING: If there is an internal error it will not be reported (SFR_NO_STD defined)"
     #endif
-    #define SFR_ERR_EXIT(...) { *(int*)0 = 0 } // crash the program to exit
+    #define SFR_ERR_EXIT(...) { *(int*)0 = 0; } // crash the program to exit
     #define SFR_ERR_RET(_r, ...) return (_r)
 #endif
 
@@ -562,17 +562,15 @@ SFR_FUNC Mat sfr_mat_proj(f32 fovDev, f32 aspect, f32 near, f32 far) {
 }
 
 SFR_FUNC Mat sfr_mat_mul(Mat a, Mat b) {
-    Mat matrix;
-    for (i32 c = 0; c < 4; c += 1) {
-        for (i32 r = 0; r < 4; r += 1) {
-            matrix.m[r][c] =
-                a.m[r][0] * b.m[0][c] +
-                a.m[r][1] * b.m[1][c] +
-                a.m[r][2] * b.m[2][c] +
-                a.m[r][3] * b.m[3][c];
-        }
+    Mat r;
+    for (i32 i = 0; i < 4; i += 1) {
+        const f32 a0 = a.m[i][0], a1 = a.m[i][1], a2 = a.m[i][2], a3 = a.m[i][3];
+        r.m[i][0] = a0 * b.m[0][0] + a1 * b.m[1][0] + a2 * b.m[2][0] + a3 * b.m[3][0];
+        r.m[i][1] = a0 * b.m[0][1] + a1 * b.m[1][1] + a2 * b.m[2][1] + a3 * b.m[3][1];
+        r.m[i][2] = a0 * b.m[0][2] + a1 * b.m[1][2] + a2 * b.m[2][2] + a3 * b.m[3][2];
+        r.m[i][3] = a0 * b.m[0][3] + a1 * b.m[1][3] + a2 * b.m[2][3] + a3 * b.m[3][3];
     }
-    return matrix;
+    return r;
 }
 
 SFR_FUNC Vec sfr_mat_mul_vec(Mat m, Vec v) {
@@ -903,7 +901,7 @@ SFR_FUNC void sfr_rasterize_tex(
     f32 ax, f32 ay, f32 az, f32 aInvZ, f32 auoz, f32 avoz,
     f32 bx, f32 by, f32 bz, f32 bInvZ, f32 buoz, f32 bvoz,
     f32 cx, f32 cy, f32 cz, f32 cInvZ, f32 cuoz, f32 cvoz,
-    const Texture* tex
+    u32 col, const Texture* tex
 ) {
     sfrRasterCount += 1;
 
@@ -1007,7 +1005,17 @@ SFR_FUNC void sfr_rasterize_tex(
                     tx = (tx < 0) ? 0 : ((tx >= tex->w) ? tex->w - 1 : tx);
                     ty = (ty < 0) ? 0 : ((ty >= tex->h) ? tex->h - 1 : ty);
                     
-                    sfrPixelBuf[i] = tex->pixels[ty * tex->w + tx];
+                    const u32 texCol = tex->pixels[ty * tex->w + tx];
+                    const u8 tr = (texCol >> 16) & 0xFF;
+                    const u8 tg = (texCol >> 8)  & 0xFF;
+                    const u8 tb = (texCol >> 0)  & 0xFF;
+                    const u8 cr = (col >> 16) & 0xFF;
+                    const u8 cg = (col >> 8)  & 0xFF;
+                    const u8 cb = (col >> 0)  & 0xFF;
+                    const u8 fr = (tr * cr) / 255;
+                    const u8 fg = (tg * cg) / 255;
+                    const u8 fb = (tb * cb) / 255;
+                    sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
                 }
     
                 // increment interpolants
@@ -1091,7 +1099,17 @@ SFR_FUNC void sfr_rasterize_tex(
                     tx = (tx < 0) ? 0 : ((tx >= tex->w) ? tex->w - 1 : tx);
                     ty = (ty < 0) ? 0 : ((ty >= tex->h) ? tex->h - 1 : ty);
                     
-                    sfrPixelBuf[i] = tex->pixels[ty * tex->w + tx];
+                    const u32 texCol = tex->pixels[ty * tex->w + tx];
+                    const u8 tr = (texCol >> 16) & 0xFF;
+                    const u8 tg = (texCol >> 8)  & 0xFF;
+                    const u8 tb = (texCol >> 0)  & 0xFF;
+                    const u8 cr = (col >> 16) & 0xFF;
+                    const u8 cg = (col >> 8)  & 0xFF;
+                    const u8 cb = (col >> 0)  & 0xFF;
+                    const u8 fr = (tr * cr) / 255;
+                    const u8 fg = (tg * cg) / 255;
+                    const u8 fb = (tb * cb) / 255;
+                    sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
                 }
 
                 // increment interpolants
@@ -1324,12 +1342,12 @@ SFR_FUNC void sfr_triangle_tex(
     f32 ax, f32 ay, f32 az, f32 au, f32 av,
     f32 bx, f32 by, f32 bz, f32 bu, f32 bv,
     f32 cx, f32 cy, f32 cz, f32 cu, f32 cv,
-    const Texture* tex
+    u32 col, const Texture* tex
 ) {
     // transform vertices to world space for culling
-    Vec aModel = sfr_mat_mul_vec(sfrMatModel, (Vec){ax, ay, az, 1.f});
-    Vec bModel = sfr_mat_mul_vec(sfrMatModel, (Vec){bx, by, bz, 1.f});
-    Vec cModel = sfr_mat_mul_vec(sfrMatModel, (Vec){cx, cy, cz, 1.f});
+    const Vec aModel = sfr_mat_mul_vec(sfrMatModel, (Vec){ax, ay, az, 1.f});
+    const Vec bModel = sfr_mat_mul_vec(sfrMatModel, (Vec){bx, by, bz, 1.f});
+    const Vec cModel = sfr_mat_mul_vec(sfrMatModel, (Vec){cx, cy, cz, 1.f});
 
     // backface culling
     #ifndef SFR_NO_CULLING
@@ -1341,6 +1359,27 @@ SFR_FUNC void sfr_triangle_tex(
             return;
         }
     #endif
+
+    // lighting calculation
+    if (sfrState.lightingEnabled) {
+        if (sfrState.normalMatDirty) {
+            sfr_update_normal_mat();
+        }
+
+        Vec normal = sfr_vec_face_normal(
+            (Vec){ax, ay, az},
+            (Vec){bx, by, bz},
+            (Vec){cx, cy, cz});
+        
+        normal = sfr_mat_mul_vec(sfrState.matNormal, normal);
+        normal = sfr_vec_norm(normal);
+
+        const f32 intensity = sfr_fmaxf(
+            sfrState.lightingAmbient, 
+            sfr_vec_dot(normal, sfrState.lightingDir));
+        
+        col = sfr_adjust_color_u32(col, intensity);
+    }
 
     // to view space
     SfrTexVert viewTri[3] = {
@@ -1410,7 +1449,7 @@ SFR_FUNC void sfr_triangle_tex(
             screen[0].x, screen[0].y, screen[0].z, screen[0].invZ, screen[0].uoz, screen[0].voz,
             screen[1].x, screen[1].y, screen[1].z, screen[1].invZ, screen[1].uoz, screen[1].voz,
             screen[2].x, screen[2].y, screen[2].z, screen[2].invZ, screen[2].uoz, screen[2].voz,
-            tex
+            col, tex
         );
     }
 }
@@ -1445,66 +1484,66 @@ SFR_FUNC void sfr_cube_ex(u32 col[12]) {
     sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5,-0.5,  0.5,-0.5,-0.5, col[11]);
 }
 
-SFR_FUNC void sfr_cube_tex(const Texture* tex) {
+SFR_FUNC void sfr_cube_tex(u32 col, const Texture* tex) {
     // front face
     sfr_triangle_tex(
         -0.5f,-0.5f,-0.5f, 1.f,0.f, 
         -0.5f, 0.5f,-0.5f, 1.f,1.f,
-         0.5f, 0.5f,-0.5f, 0.f,1.f, tex);
+         0.5f, 0.5f,-0.5f, 0.f,1.f, col, tex);
     sfr_triangle_tex(
         -0.5f,-0.5f,-0.5f, 1.f,0.f,
          0.5f, 0.5f,-0.5f, 0.f,1.f,
-         0.5f,-0.5f,-0.5f, 0.f,0.f, tex);
+         0.5f,-0.5f,-0.5f, 0.f,0.f, col, tex);
 
     // right face
     sfr_triangle_tex(
         0.5f,-0.5f,-0.5f, 1.f,0.f,
         0.5f, 0.5f,-0.5f, 1.f,1.f,
-        0.5f, 0.5f, 0.5f, 0.f,1.f, tex);
+        0.5f, 0.5f, 0.5f, 0.f,1.f, col, tex);
     sfr_triangle_tex(
         0.5f,-0.5f,-0.5f, 1.f,0.f,
         0.5f, 0.5f, 0.5f, 0.f,1.f,
-        0.5f,-0.5f, 0.5f, 0.f,0.f, tex);
+        0.5f,-0.5f, 0.5f, 0.f,0.f, col, tex);
 
     // back face
     sfr_triangle_tex(
          0.5f,-0.5f, 0.5f, 1.f,0.f,
          0.5f, 0.5f, 0.5f, 1.f,1.f,
-        -0.5f, 0.5f, 0.5f, 0.f,1.f, tex);
+        -0.5f, 0.5f, 0.5f, 0.f,1.f, col, tex);
     sfr_triangle_tex(
          0.5f,-0.5f, 0.5f, 1.f,0.f,
         -0.5f, 0.5f, 0.5f, 0.f,1.f,
-        -0.5f,-0.5f, 0.5f, 0.f,0.f, tex);
+        -0.5f,-0.5f, 0.5f, 0.f,0.f, col, tex);
 
     // left face
     sfr_triangle_tex(
         -0.5f,-0.5f, 0.5f, 1.f,0.f,
         -0.5f, 0.5f, 0.5f, 1.f,1.f,
-        -0.5f, 0.5f,-0.5f, 0.f,1.f, tex);
+        -0.5f, 0.5f,-0.5f, 0.f,1.f, col, tex);
     sfr_triangle_tex(
         -0.5f,-0.5f, 0.5f, 1.f,0.f,
         -0.5f, 0.5f,-0.5f, 0.f,1.f,
-        -0.5f,-0.5f,-0.5f, 0.f,0.f, tex);
+        -0.5f,-0.5f,-0.5f, 0.f,0.f, col, tex);
 
     // top face
     sfr_triangle_tex(
         -0.5f, 0.5f,-0.5f, 1.f,0.f,
         -0.5f, 0.5f, 0.5f, 1.f,1.f,
-         0.5f, 0.5f, 0.5f, 0.f,1.f, tex);
+         0.5f, 0.5f, 0.5f, 0.f,1.f, col, tex);
     sfr_triangle_tex(
         -0.5f, 0.5f,-0.5f, 1.f,0.f,
          0.5f, 0.5f, 0.5f, 0.f,1.f,
-         0.5f, 0.5f,-0.5f, 0.f,0.f, tex);
+         0.5f, 0.5f,-0.5f, 0.f,0.f, col, tex);
 
     // bottom face
     sfr_triangle_tex(
          0.5f,-0.5f, 0.5f, 1.f,0.f,
         -0.5f,-0.5f, 0.5f, 1.f,1.f,
-        -0.5f,-0.5f,-0.5f, 0.f,1.f, tex);
+        -0.5f,-0.5f,-0.5f, 0.f,1.f, col, tex);
     sfr_triangle_tex(
          0.5f,-0.5f, 0.5f, 1.f,0.f,
         -0.5f,-0.5f,-0.5f, 0.f,1.f,
-         0.5f,-0.5f,-0.5f, 0.f,0.f, tex);
+         0.5f,-0.5f,-0.5f, 0.f,0.f, col, tex);
 }
 
 SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col) {
@@ -1517,7 +1556,7 @@ SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col) {
     }
 }
 
-SFR_FUNC void sfr_mesh_tex(const Mesh* mesh, const Texture* tex) {
+SFR_FUNC void sfr_mesh_tex(const Mesh* mesh, u32 col, const Texture* tex) {
     for (i32 i = 0; i < mesh->vertCount; i += 9) {
         const i32 uv = (i / 9) * 6;
         const f32 ax = mesh->tris[i + 0];
@@ -1539,7 +1578,7 @@ SFR_FUNC void sfr_mesh_tex(const Mesh* mesh, const Texture* tex) {
             ax, ay, az, au, av,
             bx, by, bz, bu, bv,
             cx, cy, cz, cu, cv,
-            tex
+            col, tex
         );
     }
 }
