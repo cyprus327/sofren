@@ -6,7 +6,7 @@
 
 [*examples/tex-starter-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/tex-starter-sdl2.c)
 
-![simple textures demo](https://github.com/user-attachments/assets/83dbc4ed-2fad-42e1-839e-ae6d80d4919b)
+![main demo](https://github.com/user-attachments/assets/73646581-9351-4320-b029-6f31cd42f79f)
 
 [*examples/font-starter-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/font-starter-sdl2.c)
 
@@ -107,33 +107,21 @@ extern f32 sfrNearDist, sfrFarDist;
 ### Red Rotating Cube
 ```c
 sfr_reset();                   // prepare to draw
-sfr_rotate_y(time);            // rotate about y
+sfr_rotate_y(time);            // rotate about y, radians not degrees
 sfr_rotate_x(time * 0.5f);     // rotate about x
 sfr_scale(1.f, 3.f, 0.5f);     // scale by x y z
 sfr_translate(0.f, 0.f, 2.5f); // move to x y z
 sfr_cube(0xFF0000);            // draw pure red cube
-```
-
-### OBJ Loading
-```c
-Mesh* mesh = sfr_load_mesh("model.obj"); // allocate and load obj file
-...
-mesh->rot.y = time;       // rotate about y, radians not degrees
-mesh->pos.y = sinf(time); // move up and down
-sfr_reset();              // reset model matrix
-sfr_mesh(mesh);           // draw mesh using its properties
-...
-sfr_release_mesh(&mesh); // free mesh's memory
 ``` 
 
-## TODO / Upcoming
+## TODO / Upcoming Features
 - More advanced lighting
 - Per vertex colors
-- Support for more color formats
 - Transparency
-- MSAA / AA in general, maybe
+- Some support for multithreading
+- Particles
+- AA, maybe
 - Stencil buffer, maybe
-- Config flag for multithreading, very maybe
 
 # License
 This project is under the MIT license, do with that what you will
