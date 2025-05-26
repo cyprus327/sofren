@@ -53,16 +53,20 @@ extern "C" {
 typedef float  f32;
 typedef double f64;
 
-typedef struct sfrvec     Vec;
-typedef struct sfrmat     Mat;
-typedef struct sfrmesh    Mesh;
-typedef struct sfrtexture Texture;
-typedef struct sfrfont    Font;
+typedef struct sfrvec  Vec;
+typedef struct sfrmat  Mat;
+typedef struct sfrmesh Mesh;
+typedef struct sfrtex  Texture;
+typedef struct sfrfont Font;
 
 //: extern variables
 extern i32 sfrWidth, sfrHeight;
 extern u32* sfrPixelBuf; // ARGB8888 colors, TODO add more formats
 extern f32* sfrDepthBuf;
+#ifndef SFR_NO_ALPHA
+    typedef struct sfrac SfrAccumCol;
+    extern SfrAccumCol* sfrAccumBuf;
+#endif
 
 // global variables below can be managed by you, however
 // there is probably a function that will do what you want
@@ -129,8 +133,14 @@ SFR_FUNC Mat sfr_mat_qinv(Mat m);
 SFR_FUNC Mat sfr_mat_look_at(Vec pos, Vec target, Vec up);
 
 //: core functions
-SFR_FUNC void sfr_init( // initialize matrices and set buffers
-    u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg);
+#ifdef SFR_NO_ALPHA
+    SFR_FUNC void sfr_init(
+        u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg);
+#else
+    SFR_FUNC void sfr_init(
+        SfrAccumCol* accumBuf, u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg);
+    SFR_FUNC void sfr_present_alpha(void); // draw transparent parts of scene last
+#endif
 
 SFR_FUNC void sfr_reset(void);                    // reset model matrix to identity and lighting to {0}
 SFR_FUNC void sfr_rotate_x(f32 theta);            // rotate model matrix about x by theta radians
@@ -140,7 +150,7 @@ SFR_FUNC void sfr_translate(f32 x, f32 y, f32 z); // translate model matrix by x
 SFR_FUNC void sfr_scale(f32 x, f32 y, f32 z);     // scale model matrix by x y z
 SFR_FUNC void sfr_look_at(f32 x, f32 y, f32 z);   // set view matrix to look at x y z
 
-SFR_FUNC void sfr_clear(void); // reset depth and pixel buffers
+SFR_FUNC void sfr_clear(u32 clearCol); // reset depth and pixel buffers
 SFR_FUNC void sfr_triangle(    // draw specified triangle
     f32 ax, f32 ay, f32 az,
     f32 bx, f32 by, f32 bz,
@@ -196,7 +206,7 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max]
 //:         IMPLEMENTATION
 //================================================
 
-// #define SFR_IMPL
+#define SFR_IMPL
 #ifdef SFR_IMPL
 
 #ifndef SFR_NO_STRING
@@ -262,7 +272,7 @@ typedef struct sfrmesh {
     i32 vertCount; // total number of floats (3 per vertex)
 } Mesh;
 
-typedef struct sfrtexture {
+typedef struct sfrtex {
     u32* pixels;
     i32 w, h;
 } Texture;
@@ -271,6 +281,12 @@ typedef struct sfrfont {
     // xy pairs [x0][y0][x1][y1][x2][...]
     f32 verts[SFR_FONT_GLYPH_MAX][SFR_FONT_VERT_MAX];
 } Font;
+
+#ifndef SFR_NO_ALPHA
+    typedef struct sfrac {
+        u16 a, r, g, b;
+    } SfrAccumCol;
+#endif
 
 typedef struct strState {
     i32 lightingEnabled;
@@ -298,6 +314,9 @@ typedef struct {
 i32 sfrWidth, sfrHeight;
 u32* sfrPixelBuf;
 f32* sfrDepthBuf;
+#ifndef SFR_NO_ALPHA
+    SfrAccumCol* sfrAccumBuf;
+#endif
 i32 sfrRasterCount;
 
 Mat sfrMatModel, sfrMatView, sfrMatProj;
@@ -820,9 +839,9 @@ SFR_FUNC void sfr_rasterize(
     }
 
     const f32 deltaACX = cx - ax, deltaACZ = cz - az;
-    const f32 deltaABX = bx - ax, delta_ab_z = bz - az;
-    const f32 invHeightAC = (cy != ay) ? 1.0 / (cy - ay) : 0.0;
-    const f32 invHeightAB = (by != ay) ? 1.0 / (by - ay) : 0.0;
+    const f32 deltaABX = bx - ax, deltaABZ = bz - az;
+    const f32 invHeightAC = (cy != ay) ? 1.f / (cy - ay) : 0.f;
+    const f32 invHeightAB = (by != ay) ? 1.f / (by - ay) : 0.f;
 
     i32 y0 = ((i32)ay < 0) ? 0 : (i32)ay, y1 = ((i32)by >= sfrHeight) ? sfrHeight : (i32)by;
     for (i32 y = y0; y < y1; y += 1) {
@@ -831,7 +850,7 @@ SFR_FUNC void sfr_rasterize(
         const f32 beta = dy * invHeightAB;
 
         f32 sx = ax + deltaACX * alpha, sz = az + deltaACZ * alpha;
-        f32 ex = ax + deltaABX * beta, ez = az + delta_ab_z * beta;
+        f32 ex = ax + deltaABX * beta, ez = az + deltaABZ * beta;
 
         if (sx > ex) {
             SFR_SWAPF(sx, ex);
@@ -846,20 +865,46 @@ SFR_FUNC void sfr_rasterize(
         }
 
         const f32 dxScan = ex - sx;
-        const f32 depthStep = (0.0 != dxScan) ? (ez - sz) / dxScan : 0.0;
+        const f32 depthStep = (0.f != dxScan) ? (ez - sz) / dxScan : 0.f;
         f32 depth = sz + (sxi - sx) * depthStep;
 
         i32 i = y * sfrWidth + sxi;
         for (i32 x = sxi; x < exi; x += 1, i += 1, depth += depthStep) {
+            // skip if fully transparent
+            #ifndef SFR_NO_ALPHA
+                const u8 a = (col >> 24) & 0xFF;
+                if (0 == a) {
+                    continue;
+                }
+            #endif
+
             if (depth < sfrDepthBuf[i]) {
-                sfrDepthBuf[i] = depth;
-                sfrPixelBuf[i] = col;
+                #ifdef SFR_NO_ALPHA
+                    sfrPixelBuf[i] = col;
+                    sfrDepthBuf[i] = depth;
+                #else
+                    if (0xFF != a) {
+                        const u8 currAlpha = sfrAccumBuf[i].a;
+                        const u16 contribution = ((255 - currAlpha) * a) / 255;
+
+                        // accumulate premultiplied color components
+                        sfrAccumBuf[i].r += (((col >> 16) & 0xFF) * contribution) / 255;
+                        sfrAccumBuf[i].g += (((col >> 8)  & 0xFF) * contribution) / 255;
+                        sfrAccumBuf[i].b += (((col >> 0)  & 0xFF) * contribution) / 255;
+
+                        // update accumulated alpha
+                        sfrAccumBuf[i].a = currAlpha + (u8)contribution;
+                    } else {
+                        sfrPixelBuf[i] = col;
+                        sfrDepthBuf[i] = depth;
+                    }
+                #endif
             }
         }
     }
 
     const f32 deltaBCX = cx - bx, deltaBCZ = cz - bz;
-    const f32 invHeightBC = (cy != by) ? 1.0 / (cy - by) : 0.0;
+    const f32 invHeightBC = (cy != by) ? 1.f / (cy - by) : 0.f;
 
     y0 = ((i32)by < 0) ? 0 : (i32)by, y1 = ((i32)cy >= sfrHeight) ? sfrHeight : (i32)cy;
     for (i32 y = y0; y < y1; y += 1) {
@@ -884,14 +929,40 @@ SFR_FUNC void sfr_rasterize(
         }
 
         const f32 dxScan = ex - sx;
-        const f32 depthStep = (0.0 != dxScan) ? (ez - sz) / dxScan : 0.0;
+        const f32 depthStep = (0.f != dxScan) ? (ez - sz) / dxScan : 0.f;
         f32 depth = sz + (sxi - sx) * depthStep;
 
         i32 i = y * sfrWidth + sxi;
         for (i32 x = sxi; x < exi; x += 1, i += 1, depth += depthStep) {
+            // skip if fully transparent
+            #ifndef SFR_NO_ALPHA
+                const u8 a = (col >> 24) & 0xFF;
+                if (0 == a) {
+                    continue;
+                }
+            #endif
+
             if (depth < sfrDepthBuf[i]) {
-                sfrDepthBuf[i] = depth;
-                sfrPixelBuf[i] = col;
+                #ifdef SFR_NO_ALPHA
+                    sfrPixelBuf[i] = col;
+                    sfrDepthBuf[i] = depth;
+                #else
+                    if (0xFF != a) {
+                        const u8 currAlpha = sfrAccumBuf[i].a;
+                        const u16 contribution = ((255 - currAlpha) * a) / 255;
+
+                        // accumulate premultiplied color components
+                        sfrAccumBuf[i].r += (((col >> 16) & 0xFF) * contribution) / 255;
+                        sfrAccumBuf[i].g += (((col >> 8)  & 0xFF) * contribution) / 255;
+                        sfrAccumBuf[i].b += (((col >> 0)  & 0xFF) * contribution) / 255;
+
+                        // update accumulated alpha
+                        sfrAccumBuf[i].a = currAlpha + (u8)contribution;
+                    } else {
+                        sfrPixelBuf[i] = col;
+                        sfrDepthBuf[i] = depth;
+                    }
+                #endif
             }
         }
     }
@@ -932,15 +1003,15 @@ SFR_FUNC void sfr_rasterize_tex(
     const f32 deltaACinvZ = cInvZ - aInvZ;
     const f32 deltaACuoz = cuoz - auoz;
     const f32 deltaACvoz = cvoz - avoz;
-    const f32 invHeightAC = (cy != ay) ? 1.0f / (cy - ay) : 0;
+    const f32 invHeightAC = (cy != ay) ? 1.f / (cy - ay) : 0.f;
 
     { // lower triangle (A to B)
         const f32 deltaABX = bx - ax;
         const f32 deltaABZ = bz - az;
         const f32 deltaABinvZ = bInvZ - aInvZ;
-        const f32 deltaAB_u_ov_z = buoz - auoz;
-        const f32 deltaAB_v_ov_z = bvoz - avoz;
-        const f32 invHeightAB = (by != ay) ? 1.0f / (by - ay) : 0;
+        const f32 deltaABuoz = buoz - auoz;
+        const f32 deltaABvoz = bvoz - avoz;
+        const f32 invHeightAB = (by != ay) ? 1.f / (by - ay) : 0.f;
 
         const i32 yStart = (ay < 0) ? 0 : (i32)ay;
         const i32 yEnd = (by >= sfrHeight) ? sfrHeight : (i32)by;
@@ -960,8 +1031,8 @@ SFR_FUNC void sfr_rasterize_tex(
             f32 ex = ax + deltaABX * beta;
             f32 ez = az + deltaABZ * beta;
             f32 eInvZ = aInvZ + deltaABinvZ * beta;
-            f32 eu = auoz + deltaAB_u_ov_z * beta;
-            f32 ev = avoz + deltaAB_v_ov_z * beta;
+            f32 eu = auoz + deltaABuoz * beta;
+            f32 ev = avoz + deltaABvoz * beta;
     
             // swap start/end if needed
             if (sx > ex) {
@@ -992,9 +1063,16 @@ SFR_FUNC void sfr_rasterize_tex(
             for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1) {
                 // perspective correction
                 const f32 z = 1.f / invZ;
-                if (z < sfrDepthBuf[i]) {
-                    sfrDepthBuf[i] = z;
 
+                // skip if fully transparent
+                #ifndef SFR_NO_ALPHA
+                    const u8 a = (col >> 24) & 0xFF;
+                    if (0 == a) {
+                        goto RASTERIZE_TEX_LOWER_CONTINUE;
+                    }
+                #endif
+
+                if (z < sfrDepthBuf[i]) {
                     // recover texture coords
                     const f32 u = uoz * z;
                     const f32 v = voz * z;
@@ -1015,10 +1093,31 @@ SFR_FUNC void sfr_rasterize_tex(
                     const u8 fr = (tr * cr) / 255;
                     const u8 fg = (tg * cg) / 255;
                     const u8 fb = (tb * cb) / 255;
-                    sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
+
+                    #ifdef SFR_NO_ALPHA
+                        sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
+                        sfrDepthBuf[i] = z;
+                    #else
+                        if (0xFF != a) {
+                            const u8 currAlpha = sfrAccumBuf[i].a;
+                            const u16 contribution = ((255 - currAlpha) * a) / 255;
+
+                            // accumulate premultiplied color components
+                            sfrAccumBuf[i].r += (fr * contribution) / 255;
+                            sfrAccumBuf[i].g += (fg * contribution) / 255;
+                            sfrAccumBuf[i].b += (fb * contribution) / 255;
+
+                            // update accumulated alpha
+                            sfrAccumBuf[i].a = currAlpha + (u8)contribution;
+                        } else {
+                            sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
+                            sfrDepthBuf[i] = z;
+                        }
+                    #endif
                 }
     
                 // increment interpolants
+                RASTERIZE_TEX_LOWER_CONTINUE:;
                 invZ += invZStep;
                 uoz += uStep;
                 voz += vStep;
@@ -1086,9 +1185,16 @@ SFR_FUNC void sfr_rasterize_tex(
             for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1) {
                 // perspective correction
                 const f32 z = 1.f / invZ;
+
+                // skip if fully transparent
+                #ifndef SFR_NO_ALPHA
+                    const u8 a = (col >> 24) & 0xFF;
+                    if (0 == a) {
+                        goto RASTERIZE_TEX_UPPER_CONTINUE;
+                    }
+                #endif
+
                 if (z < sfrDepthBuf[i]) {
-                    sfrDepthBuf[i] = z;
-                    
                     // recover texture coords
                     const f32 u = uoz * z;
                     const f32 v = voz * z;
@@ -1109,10 +1215,31 @@ SFR_FUNC void sfr_rasterize_tex(
                     const u8 fr = (tr * cr) / 255;
                     const u8 fg = (tg * cg) / 255;
                     const u8 fb = (tb * cb) / 255;
-                    sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
+
+                    #ifdef SFR_NO_ALPHA
+                        sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
+                        sfrDepthBuf[i] = z;
+                    #else
+                        if (0xFF != a) {
+                            const u8 currAlpha = sfrAccumBuf[i].a;
+                            const u16 contribution = ((255 - currAlpha) * a) / 255;
+
+                            // accumulate premultiplied color components
+                            sfrAccumBuf[i].r += (fr * contribution) / 255;
+                            sfrAccumBuf[i].g += (fg * contribution) / 255;
+                            sfrAccumBuf[i].b += (fb * contribution) / 255;
+
+                            // update accumulated alpha
+                            sfrAccumBuf[i].a = currAlpha + (u8)contribution;
+                        } else {
+                            sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
+                            sfrDepthBuf[i] = z;
+                        }
+                    #endif
                 }
 
                 // increment interpolants
+                RASTERIZE_TEX_UPPER_CONTINUE:;
                 invZ += invZStep;
                 uoz += uStep;
                 voz += vStep;
@@ -1122,13 +1249,14 @@ SFR_FUNC void sfr_rasterize_tex(
 }
 
 // helper for when lighting is enabled
-SFR_FUNC i32 sfr_adjust_color_u32(i32 col, f32 intensity) {
-    const unsigned char r = (col >> 16) & 0xFF;
-    const unsigned char g = (col >> 8)  & 0xFF;
-    const unsigned char b = (col >> 0)  & 0xFF;
-    return ((unsigned char)(r * intensity) << 16) |
-           ((unsigned char)(g * intensity) << 8)  |
-           ((unsigned char)(b * intensity) << 0);
+SFR_FUNC i32 sfr_adjust_color_u32(u32 col, f32 intensity) {
+    const u8 r = (col >> 16) & 0xFF;
+    const u8 g = (col >> 8)  & 0xFF;
+    const u8 b = (col >> 0)  & 0xFF;
+    return (col & 0xFF000000)          | 
+           ((u8)(r * intensity) << 16) |
+           ((u8)(g * intensity) << 8)  |
+           ((u8)(b * intensity) << 0);
 }
 
 // helper for updating normal mat used for shading
@@ -1157,6 +1285,8 @@ SFR_FUNC void sfr_update_normal_mat(void) {
 //:         PUBLIC API FUNCTION DEFINITIONS
 //================================================
 
+#ifdef SFR_NO_ALPHA
+
 SFR_FUNC void sfr_init(u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
     sfrWidth = w;
     sfrHeight = h;
@@ -1164,12 +1294,50 @@ SFR_FUNC void sfr_init(u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
     sfrPixelBuf = pixelBuf;
     sfrDepthBuf = depthBuf;
 
-    sfr_clear();
+    sfr_clear(0xFF000000);
     sfr_reset();
-
     sfr_set_fov(fovDeg);
     sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
 }
+
+#else
+
+SFR_FUNC void sfr_init(SfrAccumCol* accumBuf, u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
+    sfrWidth = w;
+    sfrHeight = h;
+
+    sfrPixelBuf = pixelBuf;
+    sfrDepthBuf = depthBuf;
+    sfrAccumBuf = accumBuf;
+
+    sfr_clear(0xFF000000);
+    sfr_reset();
+    sfr_set_fov(fovDeg);
+    sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
+}
+
+SFR_FUNC void sfr_present_alpha(void) {
+    for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
+        const u8 a = sfrAccumBuf[i].a;
+        if (0 == a) {
+            continue;
+        }
+
+        const u32 bgCol = sfrPixelBuf[i];
+        const u8 bgr = (bgCol >> 16) & 0xFF;
+        const u8 bgg = (bgCol >> 8)  & 0xFF;
+        const u8 bgb = (bgCol >> 0)  & 0xFF;
+
+        // blend accumulated color with background
+        const u8 r = sfrAccumBuf[i].r + (bgr * (255 - a)) / 255;
+        const u8 g = sfrAccumBuf[i].g + (bgg * (255 - a)) / 255;
+        const u8 b = sfrAccumBuf[i].b + (bgb * (255 - a)) / 255;
+
+        sfrPixelBuf[i] = (r << 16) | (g << 8) | b;
+    }
+}
+
+#endif // !SFR_NO_ALPHA
 
 SFR_FUNC void sfr_reset(void) {
     sfrMatModel = sfr_mat_identity();
@@ -1212,9 +1380,14 @@ SFR_FUNC void sfr_look_at(f32 x, f32 y, f32 z) {
     sfrMatView = sfr_mat_qinv(view);
 }
 
-SFR_FUNC void sfr_clear(void) {
-    sfr_memset(sfrPixelBuf, 0, sizeof(i32) * sfrWidth * sfrHeight);
-    sfr_memset(sfrDepthBuf, 0x7f, sizeof(i32) * sfrWidth * sfrHeight);
+SFR_FUNC void sfr_clear(u32 clearCol) {
+    for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
+        sfrPixelBuf[i] = clearCol;
+        sfrDepthBuf[i] = sfrFarDist;
+        #ifndef SFR_NO_ALPHA
+            sfrAccumBuf[i] = (SfrAccumCol){0};
+        #endif
+    }
     sfrRasterCount = 0;
 }
 
