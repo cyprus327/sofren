@@ -9,6 +9,7 @@ a slightly larger example that shows more:
 */
 
 #define SFR_IMPL
+#define SFR_NO_ALPHA
 #include "../sofren.c"
 
 #ifndef SFR_NO_STD // cant load obj file without stdio
@@ -124,15 +125,15 @@ i32 main(void) {
         }
 
         // clear pixel and depth buffers
-        sfr_clear();
+        sfr_clear(0x000000);
 
         { // update player, TODO time independent things (marked with '<--')
             const f32 moveMult = sprint ? 3.f : 1.f;
             const f32 turnMult = 2.75f;
 
-            if (up)    playerForwardSpeed = 2.5f * delta * moveMult;
+            if (up)    playerForwardSpeed =  2.5f * delta * moveMult;
             if (down)  playerForwardSpeed = -2.5f * delta * moveMult;
-            if (left)  playerStrafeSpeed = 2.5f * delta * moveMult;
+            if (left)  playerStrafeSpeed =  2.5f * delta * moveMult;
             if (right) playerStrafeSpeed = -2.5f * delta * moveMult;
             playerY += ((crouch ? playerCrouchHeight : playerStandHeight) - playerY) * 0.1f; // <--
             

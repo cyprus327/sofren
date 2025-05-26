@@ -1,6 +1,7 @@
 /* SOFREN EXAMPLES, starter-sdl2.c
 
 demonstrating:
+    resolution scaling,
     handling a window resizing,
     basic camera usage,
     how to draw primitives
@@ -8,6 +9,7 @@ demonstrating:
 */
 
 #define SFR_IMPL
+#define SFR_NO_ALPHA
 #include "../sofren.c"
 
 #include <SDL2/SDL.h>
@@ -27,9 +29,7 @@ i32 main() {
         sfr_set_lighting(1, sfr_vec_normf(-0.5f, 0.1f, -1.f), 0.4f);
     }
 
-    SDL_Window* window;
-    SDL_Renderer* renderer;
-    SDL_Texture* texture;
+    SDL_Window* window; SDL_Renderer* renderer; SDL_Texture* texture;
     { // initialize SDL
         SDL_Init(SDL_INIT_VIDEO);
         window = SDL_CreateWindow("Window", SDL_WINDOWPOS_CENTERED, 
@@ -78,7 +78,7 @@ i32 main() {
         }
 
         // clear previous frame
-        sfr_clear();
+        sfr_clear(0x000000);
 
         // make camera look around at the scene
         sfr_set_camera(0.f, 0.f, -1.f, sinf(time) * 0.5f, 0.f, cosf(time) * 0.5f);

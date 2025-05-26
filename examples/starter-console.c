@@ -6,6 +6,7 @@ the performance of this example is highly determined by the terminal's performan
 */
 
 #define SFR_IMPL
+#define SFR_NO_ALPHA
 #include "../sofren.c"
 
 #include <stdio.h> // for printing rendered output
@@ -88,7 +89,7 @@ i32 main() {
         }
 
         // clear pixel and depth buffers
-        sfr_clear();
+        sfr_clear(0x000000);
 
         { // render scene
             sfr_rand_seed(5);

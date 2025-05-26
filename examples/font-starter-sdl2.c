@@ -14,6 +14,7 @@ small example showing usage of a Font struct and .srft file
 */
 
 #define SFR_IMPL
+#define SFR_NO_ALPHA
 #include "../sofren.c"
 
 #include <stdio.h>
@@ -63,7 +64,7 @@ i32 main() {
         time = currTime;
 
         // clear previous frame
-        sfr_clear();
+        sfr_clear(0x000000);
 
         { // render scene
             // first line

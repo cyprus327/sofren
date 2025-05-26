@@ -1,6 +1,7 @@
 /* SOFREN EXAMPLES, tex-starter-sdl2.c
 
 demonstrates:
+    transparent drawing (alpha in use),
     loading textures and meshes,
     drawing textured meshes and cubes,
     ui with an FPS counter
@@ -8,6 +9,7 @@ demonstrates:
 */
 
 #define SFR_IMPL
+// #define SFR_NO_ALPHA // ~15 more FPS when defined but no transparency
 #include "../sofren.c"
 
 #include <SDL2/SDL.h>
@@ -42,23 +44,25 @@ i32 main() {
         // initialize sofren
         u32* pixelBuf = malloc(sizeof(u32) * w * h);
         f32* depthBuf = malloc(sizeof(f32) * w * h);
-        sfr_init(pixelBuf, depthBuf, w, h, 50.0f);
-        sfr_set_lighting(1, sfr_vec_normf(0.6f, 1.f, -1.f), 0.4f);
+        #ifdef SFR_NO_ALPHA // accumBuf is only needed when alpha blending is enabled
+            sfr_init(pixelBuf, depthBuf, w, h, 50.f);
+        #else
+            SfrAccumCol* accumBuf = malloc(sizeof(SfrAccumCol) * w * h);
+            sfr_init(accumBuf, pixelBuf, depthBuf, w, h, 50.0f);
+        #endif
         
         // initialize SDL
         SDL_Init(SDL_INIT_VIDEO);
         window = SDL_CreateWindow("Window", SDL_WINDOWPOS_CENTERED, 
                                             SDL_WINDOWPOS_CENTERED, w, h, 0);
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-        sdlTex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
-                                              SDL_TEXTUREACCESS_STREAMING, w, h);
+        sdlTex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
     }
 
     f32 camX = 0.f;
     f32 moveMult = 0;
-    char asdfasdf = 'a';
 
-    for (i32 shouldQuit = 0; !shouldQuit;) {
+    for (u8 shouldQuit = 0; !shouldQuit;) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (SDL_QUIT == e.type) {
@@ -84,31 +88,36 @@ i32 main() {
         sfr_set_camera(camX, 0.f, 0.f, 0.f, 0.f, 0.f);
 
         // clear buffers
-        sfr_clear();
+        sfr_clear(0xFF000000);
 
         { // draw scene
-            static u32 col;
             static f32 colTimer = 0.f;
             colTimer -= frameTime;
+            
+            u32 col;
             if (colTimer <= -0.5f) {
-                colTimer += 3.f;
+                colTimer += 3.5f;
             } else if (colTimer <= 0.f) {
-                col = 0xFFFFFF;
+                col = 0x00FFFFFF;
             } else if (colTimer <= 0.5f) {
-                col = 0xFFAAAA;
+                col = 0x00FF7777;
             } else if (colTimer <= 1.f) {
-                col = 0xAAFFAA;
+                col = 0x0077FF77;
             } else if (colTimer <= 1.5f) {
-                col = 0xAAAAFF;
+                col = 0x007777FF;
             } else if (colTimer <= 2.f) {
-                col = 0xFF0000;
+                col = 0x00FF0000;
             } else if (colTimer <= 2.5f) {
-                col = 0x00FF00;
+                col = 0x0000FF00;
             } else if (colTimer <= 3.f) {
-                col = 0x0000FF;
+                col = 0x000000FF;
             }
+            col |= (u32)(fminf(1.f, sinf(time) + 1.f) * 255.f) << 24;
 
-            // textured bunny
+            // enable lighting for hawks
+            sfr_set_lighting(1, sfr_vec_normf(0.6f, 1.f, -1.f), 0.4f);
+
+            // transparent hawk
             sfr_reset();
             sfr_rotate_x(SFR_PI * 1.5f);
             sfr_rotate_y(time * 1.5f);
@@ -116,7 +125,7 @@ i32 main() {
             sfr_translate(-2.5f, -2.f, 8.f);
             sfr_mesh_tex(mesh, col, meshTex);
 
-            // flat shaded bunny
+            // solid untextured hawk
             sfr_reset();
             sfr_rotate_x(SFR_PI * 1.5f);
             sfr_rotate_y(time * 1.5f);
@@ -124,13 +133,16 @@ i32 main() {
             sfr_translate(2.5f, -2.f, 8.f);
             sfr_mesh(mesh, col);
 
+            // disable lighting on cube
+            sfr_set_lighting(0, SFR_VEC0, 0.f);
+
             // textured cube
             sfr_reset();
             sfr_rotate_y(sinf(time) * 0.2f + 0.5f);
             sfr_rotate_x(cosf(time) * 0.125f + 2.5f);
             sfr_scale(10.f, 10.f, 10.f);
             sfr_translate(0.f, -2.f, 20.f);
-            sfr_cube_tex(0xFFFFFF, cubeTex);
+            sfr_cube_tex(0xFFFFFFFF, cubeTex);
         }
 
         // reset depth buffer before drawing ui
@@ -171,7 +183,7 @@ i32 main() {
             sfr_translate(-0.87f, 0.43f, 1.f);
             for (i32 i = 0; i < fpsLen; i += 1) {
                 sfr_translate(0.07f, 0.f, 0.f);
-                sfr_glyph(font, fpsBuf[i], 0x77FF77);    
+                sfr_glyph(font, fpsBuf[i], 0xFF77FF77);    
             }
 
             sfr_reset();
@@ -179,11 +191,17 @@ i32 main() {
             sfr_translate(-0.6f, 0.43f, 1.f);
             for (i32 i = 0; i < trisLen; i += 1) {
                 sfr_translate(0.07f, 0.f, 0.f);
-                sfr_glyph(font, trisBuf[i], 0xCA9999);
+                sfr_glyph(font, trisBuf[i], 0xFFCA9999);
             }
 
+            // count tris from drawing text as well
             trisCounter += sfrRasterCount;
         }
+
+        #ifndef SFR_NO_ALPHA
+            // draw transparent parts of the scene
+            sfr_present_alpha();
+        #endif
 
         // update SDL window
         SDL_UpdateTexture(sdlTex, NULL, sfrPixelBuf, sfrWidth * 4);
@@ -199,6 +217,9 @@ i32 main() {
         sfr_release_mesh(&mesh);
         free(sfrPixelBuf);
         free(sfrDepthBuf);
+        #ifndef SFR_NO_ALPHA
+            free(sfrAccumBuf);
+        #endif
         
         SDL_DestroyTexture(sdlTex);
         SDL_DestroyRenderer(renderer);
