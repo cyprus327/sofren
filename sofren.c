@@ -1022,14 +1022,14 @@ SFR_FUNC void sfr_rasterize_tex(
     
             // interpolate along AC edge (start)
             f32 sx = ax + deltaACX * alpha;
-            f32 sz = az + deltaACZ * alpha;
+            f32 sz = az + deltaACZ * alpha; // NDC z for depth
             f32 sInvZ = aInvZ + deltaACinvZ * alpha;
             f32 su = auoz + deltaACuoz * alpha;
             f32 sv = avoz + deltaACvoz * alpha;
     
-            // interpolate along BC edge (end)
+            // interpolate along AB edge (end)
             f32 ex = ax + deltaABX * beta;
-            f32 ez = az + deltaABZ * beta;
+            f32 ez = az + deltaABZ * beta; // NDC z for depth
             f32 eInvZ = aInvZ + deltaABinvZ * beta;
             f32 eu = auoz + deltaABuoz * beta;
             f32 ev = avoz + deltaABvoz * beta;
@@ -1050,32 +1050,36 @@ SFR_FUNC void sfr_rasterize_tex(
             // scanline interpolation parameters
             const f32 dx = ex - sx;
             const f32 tStep = (0.f != dx) ? 1.f / dx : 0.f;
+            const f32 depthStep = (ez - sz) * tStep; // NDC z step
             const f32 invZStep = (eInvZ - sInvZ) * tStep;
             const f32 uStep = (eu - su) * tStep;
             const f32 vStep = (ev - sv) * tStep;
     
             // initialize current values
+            f32 depth = sz + (xStart - sx) * depthStep; // NDC z for depth testing
             f32 invZ = sInvZ + (xStart - sx) * invZStep;
             f32 uoz = su + (xStart - sx) * uStep;
             f32 voz = sv + (xStart - sx) * vStep;
     
             // rasterize scanline
-            for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1) {
-                // perspective correction
-                const f32 z = 1.f / invZ;
+            for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1,
+                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep
+            ) {
+                // perspective correction for texture
+                const f32 zView = 1.f / invZ;
 
                 // skip if fully transparent
                 #ifndef SFR_NO_ALPHA
                     const u8 a = (col >> 24) & 0xFF;
                     if (0 == a) {
-                        goto RASTERIZE_TEX_LOWER_CONTINUE;
+                        continue;
                     }
                 #endif
 
-                if (z < sfrDepthBuf[i]) {
+                if (depth < sfrDepthBuf[i]) {
                     // recover texture coords
-                    const f32 u = uoz * z;
-                    const f32 v = voz * z;
+                    const f32 u = uoz * zView;
+                    const f32 v = voz * zView;
                     
                     // wrap texture coords and clamp
                     i32 tx = (i32)(u * (tex->w - 1));
@@ -1096,7 +1100,7 @@ SFR_FUNC void sfr_rasterize_tex(
 
                     #ifdef SFR_NO_ALPHA
                         sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
-                        sfrDepthBuf[i] = z;
+                        sfrDepthBuf[i] = depth;
                     #else
                         if (0xFF != a) {
                             const u8 currAlpha = sfrAccumBuf[i].a;
@@ -1111,16 +1115,10 @@ SFR_FUNC void sfr_rasterize_tex(
                             sfrAccumBuf[i].a = currAlpha + (u8)contribution;
                         } else {
                             sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
-                            sfrDepthBuf[i] = z;
+                            sfrDepthBuf[i] = depth;
                         }
                     #endif
                 }
-    
-                // increment interpolants
-                RASTERIZE_TEX_LOWER_CONTINUE:;
-                invZ += invZStep;
-                uoz += uStep;
-                voz += vStep;
             }
         }
     }
@@ -1141,14 +1139,14 @@ SFR_FUNC void sfr_rasterize_tex(
     
             // interpolate along BC edge (start)
             f32 sx = bx + deltaBCX * beta;
-            f32 sz = bz + deltaBCZ * beta;
+            f32 sz = bz + deltaBCZ * beta; // NDC z for depth
             f32 sInvZ = bInvZ + deltaBCinvZ * beta;
             f32 suoz = buoz + deltaBCuoz * beta;
             f32 svoz = bvoz + deltaBCvoz * beta;
     
             // interpolate along AC edge (end)
             f32 ex = ax + deltaACX * alpha;
-            f32 ez = az + deltaACZ * alpha;
+            f32 ez = az + deltaACZ * alpha; // NDC z for depth
             f32 eInvZ = aInvZ + deltaACinvZ * alpha;
             f32 euoz = auoz + deltaACuoz * alpha;
             f32 evoz = avoz + deltaACvoz * alpha;
@@ -1172,32 +1170,36 @@ SFR_FUNC void sfr_rasterize_tex(
             // scanline interpolation parameters
             const f32 dx = ex - sx;
             const f32 tStep = (0.f != dx) ? 1.f / dx : 0.f;
+            const f32 depthStep = (ez - sz) * tStep; // NDC z step
             const f32 invZStep = (eInvZ - sInvZ) * tStep;
             const f32 uStep = (euoz - suoz) * tStep;
             const f32 vStep = (evoz - svoz) * tStep;
     
             // initialize current values
+            f32 depth = sz + (xStart - sx) * depthStep; // NDC z for depth testing
             f32 invZ = sInvZ + (xStart - sx) * invZStep;
             f32 uoz = suoz + (xStart - sx) * uStep;
             f32 voz = svoz + (xStart - sx) * vStep;
     
             // rasterize scanline
-            for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1) {
-                // perspective correction
-                const f32 z = 1.f / invZ;
+            for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1,
+                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep
+            ) {
+                // perspective correction for texture
+                const f32 zView = 1.f / invZ;
 
                 // skip if fully transparent
                 #ifndef SFR_NO_ALPHA
                     const u8 a = (col >> 24) & 0xFF;
                     if (0 == a) {
-                        goto RASTERIZE_TEX_UPPER_CONTINUE;
+                        continue;
                     }
                 #endif
 
-                if (z < sfrDepthBuf[i]) {
+                if (depth < sfrDepthBuf[i]) {
                     // recover texture coords
-                    const f32 u = uoz * z;
-                    const f32 v = voz * z;
+                    const f32 u = uoz * zView;
+                    const f32 v = voz * zView;
                     
                     // wrap texture coords and clamp
                     i32 tx = (i32)(u * (tex->w - 1));
@@ -1218,7 +1220,7 @@ SFR_FUNC void sfr_rasterize_tex(
 
                     #ifdef SFR_NO_ALPHA
                         sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
-                        sfrDepthBuf[i] = z;
+                        sfrDepthBuf[i] = depth;
                     #else
                         if (0xFF != a) {
                             const u8 currAlpha = sfrAccumBuf[i].a;
@@ -1233,16 +1235,10 @@ SFR_FUNC void sfr_rasterize_tex(
                             sfrAccumBuf[i].a = currAlpha + (u8)contribution;
                         } else {
                             sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
-                            sfrDepthBuf[i] = z;
+                            sfrDepthBuf[i] = depth;
                         }
                     #endif
                 }
-
-                // increment interpolants
-                RASTERIZE_TEX_UPPER_CONTINUE:;
-                invZ += invZStep;
-                uoz += uStep;
-                voz += vStep;
             }
         }
     }
