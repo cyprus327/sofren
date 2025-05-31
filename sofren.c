@@ -142,6 +142,8 @@ SFR_FUNC Mat sfr_mat_look_at(Vec pos, Vec target, Vec up);
     SFR_FUNC void sfr_present_alpha(void); // draw transparent parts of scene last
 #endif
 
+SFR_FUNC void sfr_resize(i32 width, i32 height);
+
 SFR_FUNC void sfr_reset(void);                    // reset model matrix to identity and lighting to {0}
 SFR_FUNC void sfr_rotate_x(f32 theta);            // rotate model matrix about x by theta radians
 SFR_FUNC void sfr_rotate_y(f32 theta);            // rotate model matrix about y by theta radians
@@ -285,6 +287,7 @@ typedef struct sfrfont {
 #ifndef SFR_NO_ALPHA
     typedef struct sfrac {
         u16 a, r, g, b;
+        f32 depth;
     } SfrAccumCol;
 #endif
 
@@ -297,10 +300,14 @@ typedef struct strState {
     i32 normalMatDirty;
 
     u32 randState;
+
+    f32 width2, height2;
+
+    Vec clipPlanes[4][2];
 } SfrState;
 
 // helper to track vertex attributes during clipping of textured triangles
-typedef struct {
+typedef struct sfrTexVert {
     Vec pos;   // position in view space
     f32 u, v;  // texture coords
     f32 viewZ; // z in view space for perspective correction
@@ -709,95 +716,119 @@ SFR_FUNC i32 sfr_clip_against_plane(Tri out[2], Vec plane, Vec norm, Tri in) {
     return 0;
 }
 
-SFR_FUNC i32 sfr_clip_tex_tri_against_plane(SfrTexVert out[2][3], Vec plane, Vec norm, const SfrTexVert in[3]) {
-    norm = sfr_vec_norm(norm);
+SFR_FUNC i32 sfr_clip_tex_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const SfrTexVert in[3]) {
+    const Vec norm = sfr_vec_norm((Vec){plane.x, plane.y, plane.z, 0.f});
+    const f32 planeD = plane.w;
     
     SfrTexVert inside[3];
     SfrTexVert outside[3];
     i32 insideCount = 0, outsideCount = 0;
-    const f32 ndotp = sfr_vec_dot(norm, plane);
 
-    // classify points
     for (i32 i = 0; i < 3; i += 1) {
-        const f32 dist = sfr_vec_dot(norm, in[i].pos) - ndotp;
+        const Vec v = in[i].pos;
+        const f32 dist = norm.x * v.x + norm.y * v.y + norm.z * v.z + planeD * v.w;
         if (dist >= 0) {
-            inside[insideCount] = in[i];
-            insideCount += 1;
+            inside[insideCount++] = in[i];
         } else {
-            outside[outsideCount] = in[i];
-            outsideCount += 1;
+            outside[outsideCount++] = in[i];
         }
     }
 
     if (3 == insideCount) {
-        out[0][0] = in[0];
-        out[0][1] = in[1];
-        out[0][2] = in[2];
+        memcpy(out[0], in, sizeof(SfrTexVert) * 3);
         return 1;
     }
 
     if (1 == insideCount && 2 == outsideCount) {
-        // interpolate between inside outside pairs
-        const SfrTexVert A = inside[0];
-        const SfrTexVert B = outside[0];
-        const SfrTexVert C = outside[1];
+        const SfrTexVert a = inside[0];
+        const SfrTexVert b = outside[0];
+        const SfrTexVert c = outside[1];
 
-        // intersection values
-        const f32 tAB = (-ndotp - sfr_vec_dot(norm, A.pos)) / 
-                       (sfr_vec_dot(norm, sfr_vec_sub(B.pos, A.pos)));
-        const f32 tAC = (-ndotp - sfr_vec_dot(norm, A.pos)) / 
-                       (sfr_vec_dot(norm, sfr_vec_sub(C.pos, A.pos)));
+        // interpolation factors
+        const Vec vA = a.pos, vB = b.pos, vC = c.pos;
+        const f32 dA = norm.x * vA.x + norm.y * vA.y + norm.z * vA.z + planeD * vA.w;
+        const f32 dB = norm.x * vB.x + norm.y * vB.y + norm.z * vB.z + planeD * vB.w;
+        const f32 dC = norm.x * vC.x + norm.y * vC.y + norm.z * vC.z + planeD * vC.w;
+        
+        const f32 tAB = dA / (dA - dB);
+        const f32 tAC = dA / (dA - dC);
 
-        // interpolate vertices
+        // interpolate vertex b
         SfrTexVert newB = {
-            .pos = sfr_intersect_plane(plane, norm, A.pos, B.pos),
-            .u = A.u + tAB * (B.u - A.u),
-            .v = A.v + tAB * (B.v - A.v),
-            .viewZ = A.viewZ + tAB * (B.viewZ - A.viewZ)
+            .pos = {
+                .x = a.pos.x + tAB * (b.pos.x - a.pos.x),
+                .y = a.pos.y + tAB * (b.pos.y - a.pos.y),
+                .z = a.pos.z + tAB * (b.pos.z - a.pos.z),
+                .w = a.pos.w + tAB * (b.pos.w - a.pos.w)
+            },
+            .u = a.u + tAB * (b.u - a.u),
+            .v = a.v + tAB * (b.v - a.v),
+            .viewZ = a.viewZ + tAB * (b.viewZ - a.viewZ)
         };
         
+        // interpolate vertex c
         SfrTexVert newC = {
-            .pos = sfr_intersect_plane(plane, norm, A.pos, C.pos),
-            .u = A.u + tAC * (C.u - A.u),
-            .v = A.v + tAC * (C.v - A.v),
-            .viewZ = A.viewZ + tAC * (C.viewZ - A.viewZ)
+            .pos = {
+                .x = a.pos.x + tAC * (c.pos.x - a.pos.x),
+                .y = a.pos.y + tAC * (c.pos.y - a.pos.y),
+                .z = a.pos.z + tAC * (c.pos.z - a.pos.z),
+                .w = a.pos.w + tAC * (c.pos.w - a.pos.w)
+            },
+            .u = a.u + tAC * (c.u - a.u),
+            .v = a.v + tAC * (c.v - a.v),
+            .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ)
         };
 
-        out[0][0] = A;
+        out[0][0] = a;
         out[0][1] = newB;
         out[0][2] = newC;
         return 1;
     }
 
     if (2 == insideCount && 1 == outsideCount) {
-        const SfrTexVert A = inside[0];
-        const SfrTexVert B = inside[1];
-        const SfrTexVert C = outside[0];
+        const SfrTexVert a = inside[0];
+        const SfrTexVert b = inside[1];
+        const SfrTexVert c = outside[0];
 
-        const f32 tAC = (-ndotp - sfr_vec_dot(norm, A.pos)) / 
-                       (sfr_vec_dot(norm, sfr_vec_sub(C.pos, A.pos)));
-        const f32 tBC = (-ndotp - sfr_vec_dot(norm, B.pos)) / 
-                       (sfr_vec_dot(norm, sfr_vec_sub(C.pos, B.pos)));
+        // interpolation factors
+        const Vec vA = a.pos, vB = b.pos, vC = c.pos;
+        const f32 dA = norm.x * vA.x + norm.y * vA.y + norm.z * vA.z + planeD * vA.w;
+        const f32 dB = norm.x * vB.x + norm.y * vB.y + norm.z * vB.z + planeD * vB.w;
+        const f32 dC = norm.x * vC.x + norm.y * vC.y + norm.z * vC.z + planeD * vC.w;
+        
+        const f32 tAC = dA / (dA - dC);
+        const f32 tBC = dB / (dB - dC);
 
+        // interpolate vertices
         SfrTexVert newAC = {
-            .pos = sfr_intersect_plane(plane, norm, A.pos, C.pos),
-            .u = A.u + tAC * (C.u - A.u),
-            .v = A.v + tAC * (C.v - A.v),
-            .viewZ = A.viewZ + tAC * (C.viewZ - A.viewZ)
+            .pos = {
+                .x = a.pos.x + tAC * (c.pos.x - a.pos.x),
+                .y = a.pos.y + tAC * (c.pos.y - a.pos.y),
+                .z = a.pos.z + tAC * (c.pos.z - a.pos.z),
+                .w = a.pos.w + tAC * (c.pos.w - a.pos.w)
+            },
+            .u = a.u + tAC * (c.u - a.u),
+            .v = a.v + tAC * (c.v - a.v),
+            .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ)
         };
 
         SfrTexVert newBC = {
-            .pos = sfr_intersect_plane(plane, norm, B.pos, C.pos),
-            .u = B.u + tBC * (C.u - B.u),
-            .v = B.v + tBC * (C.v - B.v),
-            .viewZ = B.viewZ + tBC * (C.viewZ - B.viewZ)
+            .pos = {
+                .x = b.pos.x + tBC * (c.pos.x - b.pos.x),
+                .y = b.pos.y + tBC * (c.pos.y - b.pos.y),
+                .z = b.pos.z + tBC * (c.pos.z - b.pos.z),
+                .w = b.pos.w + tBC * (c.pos.w - b.pos.w)
+            },
+            .u = b.u + tBC * (c.u - b.u),
+            .v = b.v + tBC * (c.v - b.v),
+            .viewZ = b.viewZ + tBC * (c.viewZ - b.viewZ)
         };
 
-        out[0][0] = A;
-        out[0][1] = B;
+        out[0][0] = a;
+        out[0][1] = b;
         out[0][2] = newAC;
         
-        out[1][0] = B;
+        out[1][0] = b;
         out[1][1] = newAC;
         out[1][2] = newBC;
         
@@ -894,6 +925,9 @@ SFR_FUNC void sfr_rasterize(
 
                         // update accumulated alpha
                         sfrAccumBuf[i].a = currAlpha + (u8)contribution;
+                        if (depth < sfrAccumBuf[i].depth) {
+                            sfrAccumBuf[i].depth = depth;
+                        }
                     } else {
                         sfrPixelBuf[i] = col;
                         sfrDepthBuf[i] = depth;
@@ -958,6 +992,9 @@ SFR_FUNC void sfr_rasterize(
 
                         // update accumulated alpha
                         sfrAccumBuf[i].a = currAlpha + (u8)contribution;
+                        if (depth < sfrAccumBuf[i].depth) {
+                            sfrAccumBuf[i].depth = depth;
+                        }
                     } else {
                         sfrPixelBuf[i] = col;
                         sfrDepthBuf[i] = depth;
@@ -1113,6 +1150,9 @@ SFR_FUNC void sfr_rasterize_tex(
 
                             // update accumulated alpha
                             sfrAccumBuf[i].a = currAlpha + (u8)contribution;
+                            if (depth < sfrAccumBuf[i].depth) {
+                                sfrAccumBuf[i].depth = depth;
+                            }
                         } else {
                             sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
                             sfrDepthBuf[i] = depth;
@@ -1233,6 +1273,9 @@ SFR_FUNC void sfr_rasterize_tex(
 
                             // update accumulated alpha
                             sfrAccumBuf[i].a = currAlpha + (u8)contribution;
+                            if (depth < sfrAccumBuf[i].depth) {
+                                sfrAccumBuf[i].depth = depth;
+                            }
                         } else {
                             sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
                             sfrDepthBuf[i] = depth;
@@ -1284,8 +1327,7 @@ SFR_FUNC void sfr_update_normal_mat(void) {
 #ifdef SFR_NO_ALPHA
 
 SFR_FUNC void sfr_init(u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
-    sfrWidth = w;
-    sfrHeight = h;
+    sfr_resize(w, h);
     
     sfrPixelBuf = pixelBuf;
     sfrDepthBuf = depthBuf;
@@ -1299,8 +1341,7 @@ SFR_FUNC void sfr_init(u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
 #else
 
 SFR_FUNC void sfr_init(SfrAccumCol* accumBuf, u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
-    sfrWidth = w;
-    sfrHeight = h;
+    sfr_resize(w, h);
 
     sfrPixelBuf = pixelBuf;
     sfrDepthBuf = depthBuf;
@@ -1312,10 +1353,13 @@ SFR_FUNC void sfr_init(SfrAccumCol* accumBuf, u32* pixelBuf, f32* depthBuf, i32 
     sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
 }
 
+// TODO: BUG: if there are two transparent objects separated by a solid object
+// and the scene is viewed so the transparent objects overlap one another through the wall,
+// the object behind the wall will be visible inside of the closer object
 SFR_FUNC void sfr_present_alpha(void) {
     for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
         const u8 a = sfrAccumBuf[i].a;
-        if (0 == a) {
+        if (0 == a || sfrDepthBuf[i] < sfrAccumBuf[i].depth) {
             continue;
         }
 
@@ -1334,6 +1378,29 @@ SFR_FUNC void sfr_present_alpha(void) {
 }
 
 #endif // !SFR_NO_ALPHA
+
+SFR_FUNC void sfr_resize(i32 width, i32 height) {
+    sfrWidth = width;
+    sfrHeight = height;
+    sfrState.width2 = width / 2.f;
+    sfrState.height2 = height / 2.f;
+
+    // top
+    sfrState.clipPlanes[0][0] = (Vec){0.f, 0.5f, 0.f, 1.f};
+    sfrState.clipPlanes[0][1] = (Vec){0.f, 1.f,  0.f, 1.f};
+    
+    // bottom
+    sfrState.clipPlanes[1][0] = (Vec){0.f, height, 0.f, 1.f};
+    sfrState.clipPlanes[1][1] = (Vec){0.f, -1.f,   0.f, 1.f};
+
+    // left
+    sfrState.clipPlanes[2][0] = (Vec){0.5f, 0.f, 0.f, 1.f};
+    sfrState.clipPlanes[2][1] = (Vec){1.f,  0.f, 0.f, 1.f};
+    
+    // right
+    sfrState.clipPlanes[3][0] = (Vec){width, 0.f, 0.f, 1.f};
+    sfrState.clipPlanes[3][1] = (Vec){-1.f,  0.f, 0.f, 1.f};
+}
 
 SFR_FUNC void sfr_reset(void) {
     sfrMatModel = sfr_mat_identity();
@@ -1381,7 +1448,10 @@ SFR_FUNC void sfr_clear(u32 clearCol) {
         sfrPixelBuf[i] = clearCol;
         sfrDepthBuf[i] = sfrFarDist;
         #ifndef SFR_NO_ALPHA
-            sfrAccumBuf[i] = (SfrAccumCol){0};
+            sfrAccumBuf[i] = (SfrAccumCol){
+                .a = 0, .r = 0, .g = 0, .b = 0,
+                .depth = sfrFarDist
+            };
         #endif
     }
     sfrRasterCount = 0;
@@ -1423,7 +1493,6 @@ SFR_FUNC void sfr_triangle(
         (Vec){0.f, 0.f, 1.f, 1.f},
         tri);
 
-    const f32 w2 = sfrWidth / 2.f, h2 = sfrHeight / 2.f;
     Tri queue[16];
     for (i32 c = 0; c < clippedCount; c += 1) {
         tri.p[0] = sfr_mat_mul_vec(sfrMatProj, clipped[c].p[0]);
@@ -1435,34 +1504,23 @@ SFR_FUNC void sfr_triangle(
         tri.p[2] = sfr_vec_div(tri.p[2], tri.p[2].w);
 
         for (i32 i = 0; i < 3; i += 1) {
-            tri.p[i].x =  (tri.p[i].x + 1.f) * w2;
-            tri.p[i].y = (-tri.p[i].y + 1.f) * h2;
+            tri.p[i].x =  (tri.p[i].x + 1.f) * sfrState.width2;
+            tri.p[i].y = (-tri.p[i].y + 1.f) * sfrState.height2;
         }
 
         queue[c] = tri;
     }
 
-    const Vec clipPlanes[4][2] = {
-        {{0.f, 0.5f, 0.f, 1.f}, {0.f, 1.f, 0.f, 1.f}},            // top
-        {{0.f, (f32)sfrHeight, 0.f, 1.f}, {0.f, -1.f, 0.f, 1.f}}, // bottom 
-        {{0.5f, 0.f, 0.f, 1.f}, {1.f, 0.f, 0.f, 1.f}},            // left
-        {{(f32)sfrWidth, 0.f, 0.f, 1.f}, {-1.f, 0.f, 0.f, 1.f}},  // right
-    };
-
-    Tri bufferA[SFR_ARRLEN(queue)], bufferB[SFR_ARRLEN(queue)];
-    Tri* inputBuffer = bufferA;
-    Tri* outputBuffer = bufferB;
+    Tri buffer[SFR_ARRLEN(queue)];
+    Tri* inputBuffer = queue;
+    Tri* outputBuffer = buffer;
     i32 inputCount = clippedCount, outputCount;
-
-    for (i32 i = 0; i < clippedCount; i += 1) {
-        inputBuffer[i] = queue[i];
-    }
 
     for (i32 p = 0; p < 4; p += 1) {
         outputCount = 0;
         for (i32 i = 0; i < inputCount; i += 1) {
             const Tri test = inputBuffer[i];
-            const i32 c = sfr_clip_against_plane(clipped, clipPlanes[p][0], clipPlanes[p][1], test);
+            const i32 c = sfr_clip_against_plane(clipped, sfrState.clipPlanes[p][0], sfrState.clipPlanes[p][1], test);
             for (i32 j = 0; j < c; j += 1) {
                 // if (outputCount < SFR_ARRLEN(queue)) {
                 outputBuffer[outputCount] = clipped[j];
@@ -1557,67 +1615,92 @@ SFR_FUNC void sfr_triangle_tex(
         {sfr_mat_mul_vec(sfrMatView, cModel), cu, cv, 0}
     };
     for (int i = 0; i < 3; i += 1) {
-        viewTri[i].viewZ = viewTri[i].pos.z; // original z for perspective
+        viewTri[i].viewZ = viewTri[i].pos.z;
     }
 
-    // clip against near plane
-    SfrTexVert clipped[2][3];
-    const i32 clippedCount = sfr_clip_tex_tri_against_plane(
-        clipped,
-        (Vec){0.f, 0.f, sfrNearDist, 1.f},
-        (Vec){0.f, 0.f, 1.f, 1.f},
-        viewTri
-    );
+    // prepare clip space verts and transform to clip space
+    SfrTexVert clipTris[16][3];
+    for (i32 i = 0; i < 3; i += 1) {
+        clipTris[0][i].pos = sfr_mat_mul_vec(sfrMatProj, viewTri[i].pos);
+        clipTris[0][i].u = viewTri[i].u;
+        clipTris[0][i].v = viewTri[i].v;
+        clipTris[0][i].viewZ = viewTri[i].viewZ;
+    }
 
-    // process clipped triangles
-    for (i32 c = 0; c < clippedCount; c += 1) {
-        // project to screen space
-        SfrTexVert* tri = clipped[c];
-        Vec aProj = sfr_mat_mul_vec(sfrMatProj, tri[0].pos);
-        Vec bProj = sfr_mat_mul_vec(sfrMatProj, tri[1].pos);
-        Vec cProj = sfr_mat_mul_vec(sfrMatProj, tri[2].pos);
+    // frustum planes in homogeneous clip space
+    const Vec frustumPlanes[6] = {
+        {1.f, 0.f, 0.f, 1.f},  // left:   x + w >= 0
+        {-1.f, 0.f, 0.f, 1.f}, // right: -x + w >= 0
+        {0.f, 1.f, 0.f, 1.f},  // bottom: y + w >= 0
+        {0.f, -1.f, 0.f, 1.f}, // top:   -y + w >= 0
+        {0.f, 0.f, 1.f, 1.f},  // near:   z + w >= 0 (already clipped)
+        {0.f, 0.f, -1.f, 1.f}  // far:   -z + w >= 0
+    };
 
+    // clip against frustum planes
+    SfrTexVert buffer[SFR_ARRLEN(clipTris)][3];
+    SfrTexVert (*input)[3] = clipTris;
+    SfrTexVert (*output)[3] = buffer;
+    i32 inputCount = 1;
+    
+    // process each clipping plane
+    for (i32 p = 0; p < 6; p += 1) {
+        i32 outputCount = 0;
+        for (i32 i = 0; i < inputCount; i += 1) {
+            SfrTexVert clipped[2][3];
+            const i32 count = sfr_clip_tex_tri_homogeneous(
+                clipped,
+                frustumPlanes[p],
+                input[i]
+            );
+            
+            // add clipped triangles to output
+            for (i32 j = 0; j < count; j += 1) {
+                output[outputCount][0] = clipped[j][0];
+                output[outputCount][1] = clipped[j][1];
+                output[outputCount][2] = clipped[j][2];
+                outputCount += 1;
+            }
+        }
+        
+        // swap buffers
+        SfrTexVert (*temp)[3] = input;
+        input = output;
+        output = temp;
+        inputCount = outputCount;
+    }
+
+    // rasterize all final triangles
+    for (i32 i = 0; i < inputCount; i += 1) {
+        SfrTexVert* tri = input[i];
+        SfrTexVert screen[3];
+        
         // perspective divide and screen space conversion
-        aProj = sfr_vec_div(aProj, aProj.w);
-        bProj = sfr_vec_div(bProj, bProj.w);
-        cProj = sfr_vec_div(cProj, cProj.w);
+        for (i32 j = 0; j < 3; j += 1) {
+            const Vec ndc = sfr_vec_div(tri[j].pos, tri[j].pos.w);
+            screen[j].pos.x =  (ndc.x + 1.f) * sfrState.width2;
+            screen[j].pos.y = (-ndc.y + 1.f) * sfrState.height2;
+            screen[j].pos.z = ndc.z;
+            screen[j].u = tri[j].u;
+            screen[j].v = tri[j].v;
+            screen[j].viewZ = tri[j].viewZ;
+        }
 
-        const f32 w2 = sfrWidth / 2.f, h2 = sfrHeight / 2.f;
-        aProj.x = (aProj.x + 1.f) * w2;
-        aProj.y = (-aProj.y + 1.f) * h2;
-        bProj.x = (bProj.x + 1.f) * w2;
-        bProj.y = (-bProj.y + 1.f) * h2;
-        cProj.x = (cProj.x + 1.f) * w2;
-        cProj.y = (-cProj.y + 1.f) * h2;
-
-        // screen space vertices with perspective attributes
-        struct {
-            f32 x, y, z;
-            f32 invZ, uoz, voz;
-        } screen[3] =
-        { {
-            aProj.x, aProj.y, aProj.z, 
-            1.f / tri[0].viewZ, 
-            tri[0].u / tri[0].viewZ, 
-            tri[0].v / tri[0].viewZ
-        }, {
-            bProj.x, bProj.y, bProj.z, 
-            1.f/tri[1].viewZ, 
-            tri[1].u / tri[1].viewZ, 
-            tri[1].v / tri[1].viewZ
-        }, {
-            cProj.x, cProj.y, cProj.z, 
-            1.f / tri[2].viewZ, 
-            tri[2].u / tri[2].viewZ, 
-            tri[2].v / tri[2].viewZ
-        }};
-
-        // TODO clip against screen edges
-
+        const f32 aInvZ = 1.f / screen[0].viewZ;
+        const f32 bInvZ = 1.f / screen[1].viewZ;
+        const f32 cInvZ = 1.f / screen[2].viewZ;
+        
+        const f32 auoz = screen[0].u * aInvZ;
+        const f32 avoz = screen[0].v * aInvZ;
+        const f32 buoz = screen[1].u * bInvZ;
+        const f32 bvoz = screen[1].v * bInvZ;
+        const f32 cuoz = screen[2].u * cInvZ;
+        const f32 cvoz = screen[2].v * cInvZ;
+        
         sfr_rasterize_tex(
-            screen[0].x, screen[0].y, screen[0].z, screen[0].invZ, screen[0].uoz, screen[0].voz,
-            screen[1].x, screen[1].y, screen[1].z, screen[1].invZ, screen[1].uoz, screen[1].voz,
-            screen[2].x, screen[2].y, screen[2].z, screen[2].invZ, screen[2].uoz, screen[2].voz,
+            screen[0].pos.x, screen[0].pos.y, screen[0].pos.z, aInvZ, auoz, avoz,
+            screen[1].pos.x, screen[1].pos.y, screen[1].pos.z, bInvZ, buoz, bvoz,
+            screen[2].pos.x, screen[2].pos.y, screen[2].pos.z, cInvZ, cuoz, cvoz,
             col, tex
         );
     }
