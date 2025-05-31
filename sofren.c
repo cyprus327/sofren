@@ -126,7 +126,7 @@ SFR_FUNC Mat sfr_mat_rot_y(f32 a);
 SFR_FUNC Mat sfr_mat_rot_z(f32 a);
 SFR_FUNC Mat sfr_mat_translate(f32 x, f32 y, f32 z);
 SFR_FUNC Mat sfr_mat_scale(f32 x, f32 y, f32 z);
-SFR_FUNC Mat sfr_mat_proj(f32 fovDev, f32 aspect, f32 near, f32 far);
+SFR_FUNC Mat sfr_mat_proj(f32 fovDeg, f32 aspect, f32 near, f32 far);
 SFR_FUNC Mat sfr_mat_mul(Mat a, Mat b);
 SFR_FUNC Vec sfr_mat_mul_vec(Mat m, Vec v);
 SFR_FUNC Mat sfr_mat_qinv(Mat m);
@@ -152,34 +152,43 @@ SFR_FUNC void sfr_translate(f32 x, f32 y, f32 z); // translate model matrix by x
 SFR_FUNC void sfr_scale(f32 x, f32 y, f32 z);     // scale model matrix by x y z
 SFR_FUNC void sfr_look_at(f32 x, f32 y, f32 z);   // set view matrix to look at x y z
 
-SFR_FUNC void sfr_clear(u32 clearCol); // reset depth and pixel buffers
-SFR_FUNC void sfr_triangle(    // draw specified triangle
+// clear all buffers to default states
+SFR_FUNC void sfr_clear(u32 clearCol);
+
+// triangle drawing functions
+SFR_FUNC void sfr_triangle(
     f32 ax, f32 ay, f32 az,
     f32 bx, f32 by, f32 bz,
     f32 cx, f32 cy, f32 cz,
     u32 col);
-SFR_FUNC void sfr_triangle_tex( // draw specified triangle with 'tex' applied
+SFR_FUNC void sfr_triangle_tex(
     f32 ax, f32 ay, f32 az, f32 au, f32 av,
     f32 bx, f32 by, f32 bz, f32 bu, f32 bv,
     f32 cx, f32 cy, f32 cz, f32 cu, f32 cv,
     u32 col, const Texture* tex);
-SFR_FUNC void sfr_cube(u32 col);                   // draw a cube with a solid color
-SFR_FUNC void sfr_cube_ex(u32 col[12]);            // draw a cube with triangles of specified colors
-SFR_FUNC void sfr_cube_tex(                        // draw a cube with 'tex' applied
-    u32 col, const Texture* tex);
-SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col); // draw a loaded mesh
-SFR_FUNC void sfr_mesh_tex(                        // same as 'sfr_mesh' but with 'tex' applied using mesh's uvs
-    const Mesh* mesh, u32 col, const Texture* tex);
-SFR_FUNC void sfr_string(                          // draw a string, not yet implemented TODO
-    const Font* font, const char* s, i32 sLength, u32 col);
-SFR_FUNC void sfr_glyph(                           // draw single character glyph 
-    const Font* font, u16 id, u32 col);
 
-SFR_FUNC i32 sfr_world_to_screen( // project the world position specified to screen coordinates
-    f32 x, f32 y, f32 z, i32* screenX, i32* screenY);    
+// billboard drawing functions
+SFR_FUNC void sfr_billboard(u32 col);
+SFR_FUNC void sfr_billboard_tex(u32 col, const Texture* tex);
 
-SFR_FUNC void sfr_set_camera( // update the camera with the new position and view
-    f32 x, f32 y, f32 z, f32 yaw, f32 pitch, f32 roll);
+// cube drawing functions
+SFR_FUNC void sfr_cube(u32 col);
+SFR_FUNC void sfr_cube_ex(u32 col[12]);
+SFR_FUNC void sfr_cube_tex(u32 col, const Texture* tex);
+
+// mesh drawing functions
+SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col);
+SFR_FUNC void sfr_mesh_tex(const Mesh* mesh, u32 col, const Texture* tex);
+
+// string / character drawing functions
+SFR_FUNC void sfr_string(const Font* font, const char* s, i32 sLength, u32 col); // not yet implemented
+SFR_FUNC void sfr_glyph(const Font* font, u16 id, u32 col); // draw a single character
+
+// project the world position specified to screen coordinates
+SFR_FUNC i32 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY);    
+
+// update the camera with the new position and view
+SFR_FUNC void sfr_set_camera(f32 x, f32 y, f32 z, f32 yaw, f32 pitch, f32 roll);
 SFR_FUNC void sfr_set_fov(f32 fovDeg); // update projection matrix with new fov
 SFR_FUNC void sfr_set_lighting( // update internal lighting state for simple shading on triangles
     i32 on, Vec dir, f32 ambientIntensity);
@@ -1706,6 +1715,72 @@ SFR_FUNC void sfr_triangle_tex(
     }
 }
 
+SFR_FUNC void sfr_billboard(u32 col) {
+    const Mat savedModel = sfrMatModel;
+    sfrMatModel = sfr_mat_identity();
+
+    const Vec center = { savedModel.m[3][0], savedModel.m[3][1], savedModel.m[3][2], 1.f };
+
+    const f32 sx = 0.5f * sfr_sqrtf(
+        savedModel.m[0][0] * savedModel.m[0][0] + 
+        savedModel.m[0][1] * savedModel.m[0][1] + 
+        savedModel.m[0][2] * savedModel.m[0][2]);
+    const f32 sy = 0.5f * sfr_sqrtf(
+        savedModel.m[1][0] * savedModel.m[1][0] + 
+        savedModel.m[1][1] * savedModel.m[1][1] + 
+        savedModel.m[1][2] * savedModel.m[1][2]);
+
+    const Vec right = { sx * sfrMatView.m[0][0], sx * sfrMatView.m[1][0], sx * sfrMatView.m[2][0], 0.f };
+    const Vec up    = { sy * sfrMatView.m[0][1], sy * sfrMatView.m[1][1], sy * sfrMatView.m[2][1], 0.f };
+
+    const Vec a = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right, -1.f), sfr_vec_mul(up, -1.f)));
+    const Vec b = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right,  1.f), sfr_vec_mul(up, -1.f)));
+    const Vec c = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right,  1.f), sfr_vec_mul(up,  1.f)));
+    const Vec d = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right, -1.f), sfr_vec_mul(up,  1.f)));
+
+    sfr_triangle(a.x, a.y, a.z, c.x, c.y, c.z, b.x, b.y, b.z, col);
+    sfr_triangle(a.x, a.y, a.z, d.x, d.y, d.z, c.x, c.y, c.z, col);
+
+    sfrMatModel = savedModel;
+}
+
+SFR_FUNC void sfr_billboard_tex(u32 col, const Texture* tex) {
+    const Mat savedModel = sfrMatModel;
+    sfrMatModel = sfr_mat_identity();
+
+    const Vec center = { savedModel.m[3][0], savedModel.m[3][1], savedModel.m[3][2], 1.f };
+
+    const f32 sx = 0.5f * sfr_sqrtf(
+        savedModel.m[0][0] * savedModel.m[0][0] + 
+        savedModel.m[0][1] * savedModel.m[0][1] + 
+        savedModel.m[0][2] * savedModel.m[0][2]);
+    const f32 sy = 0.5f * sfr_sqrtf(
+        savedModel.m[1][0] * savedModel.m[1][0] + 
+        savedModel.m[1][1] * savedModel.m[1][1] + 
+        savedModel.m[1][2] * savedModel.m[1][2]);
+
+    const Vec right = { sx * sfrMatView.m[0][0], sx * sfrMatView.m[1][0], sx * sfrMatView.m[2][0], 0.f };
+    const Vec up    = { sy * sfrMatView.m[0][1], sy * sfrMatView.m[1][1], sy * sfrMatView.m[2][1], 0.f };
+
+    const Vec a = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right, -1.f), sfr_vec_mul(up, -1.f)));
+    const Vec b = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right,  1.f), sfr_vec_mul(up, -1.f)));
+    const Vec c = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right,  1.f), sfr_vec_mul(up,  1.f)));
+    const Vec d = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right, -1.f), sfr_vec_mul(up,  1.f)));
+
+    sfr_triangle_tex(
+        a.x, a.y, a.z, 0.f, 1.f,
+        c.x, c.y, c.z, 1.f, 0.f,
+        b.x, b.y, b.z, 1.f, 1.f,
+        col, tex);
+    sfr_triangle_tex(
+        a.x, a.y, a.z, 0.f, 1.f,
+        d.x, d.y, d.z, 0.f, 0.f,
+        c.x, c.y, c.z, 1.f, 0.f,
+        col, tex);
+
+    sfrMatModel = savedModel;
+}
+
 SFR_FUNC void sfr_cube(u32 col) {
     sfr_triangle(-0.5,-0.5,-0.5, -0.5, 0.5,-0.5,  0.5, 0.5,-0.5, col);
     sfr_triangle(-0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5,-0.5,-0.5, col);
@@ -1863,7 +1938,6 @@ SFR_FUNC i32 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY
     Vec p = {x, y, z, 1.f};
     p = sfr_mat_mul_vec(sfrMatView, p);
     p = sfr_mat_mul_vec(sfrMatProj, p);
-    // p = sfr_vec_div(p, p.w);
 
     // behind camera
     if (p.w <= 0.f) {
@@ -1871,8 +1945,9 @@ SFR_FUNC i32 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY
     }
 
     p = sfr_vec_div(p, p.w);
-    p.x =  (p.x + 1.f) * sfrWidth / 2.f;
-    p.y = (-p.y + 1.f) * sfrHeight / 2.f;
+    p.x = (1.f + p.x) * sfrState.width2;
+    p.y = (1.f - p.y) * sfrState.height2;
+
     *screenX = (i32)(p.x + 0.5f);
     *screenY = (i32)(p.y + 0.5f);
 
