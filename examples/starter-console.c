@@ -1,6 +1,6 @@
 /* SOFREN EXAMPLES, starter-console.c
 
-this example is essentially copy pasted 'starter-sdl2.c'
+simple example for how to render to a console window efficiently,
 the performance of this example is highly determined by the terminal's performance
 
 */
@@ -26,7 +26,7 @@ static const i8 COLOR_RAMP[] = " .:-=+*#%%@";
 #define RAMP_LENGTH (sizeof(COLOR_RAMP) - 1)
 
 // helpers
-static inline i8 color_to_ascii(i32 color);
+static inline i8 color_to_ascii(u32 col);
 static inline i32 get_console_size(i32* width, i32* height);
 
 i32 main() {
@@ -133,7 +133,7 @@ i32 main() {
     return 0;
 }
 
-static inline i8 color_to_ascii(i32 col) {
+static inline i8 color_to_ascii(u32 col) {
     if (0 == col) {
         return ' ';
     }
