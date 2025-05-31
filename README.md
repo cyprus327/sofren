@@ -4,7 +4,9 @@
 
 ---
 
-[*examples/tex-starter-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/tex-starter-sdl2.c)
+*All of the following were originally at 1280x720, however the GIF quality is forced to be lower*
+
+[*examples/full-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/tex-starter-sdl2.c)
 
 ![main demo](https://github.com/user-attachments/assets/73646581-9351-4320-b029-6f31cd42f79f)
 
@@ -23,13 +25,14 @@ For examples and good starting points rendering to an SDL2 window or console win
 ## Features
 - As few a 0 other headers included, can be 100% standalone
 - Single file - just `#include "sofren.c"`
-- Primitive drawing (triangles, cubes)
+- Primitive drawing (triangles, cubes, billboards)
 - Perspective correct texture mapping (currently only .bmp image support)
+- Transparency (with a known bug though, see the bottom of this README)
 - OBJ mesh loading (requires `stdio.h`)
 - Flat shading with directional lighting
 - Customizable math implementations (system or bundled)
 - Simplistic design, quick to learn and use
-- ARGB8888 color format support (no transparency currently, however)
+- ARGB8888 color format support
 - Backface culling, depth buffering, and clipping
 
 ## Pre Processing Configuration 
@@ -114,14 +117,15 @@ sfr_translate(0.f, 0.f, 2.5f); // move to x y z
 sfr_cube(0xFF0000);            // draw pure red cube
 ``` 
 
-## TODO / Upcoming Features
+## TODO / Upcoming Features / Known Bugs
+- Fix bug with transparency where if there are two transparent objects separated by a solid object and the scene is viewed so the transparent objects overlap one another through the solid object, the object behind the wall will be visible inside of the closer object, e.g.. the following scene 0 | 0 in 2D viewed from a side where the 0s overlap one another, the second 0 is visible inside the first one
 - More advanced lighting
 - Per vertex colors
-- Transparency
 - Some support for multithreading
 - Particles
 - AA, maybe
 - Stencil buffer, maybe
+- Shadows, maybe maybe
 
 # License
 This project is under the MIT license, do with that what you will
