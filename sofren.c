@@ -242,6 +242,7 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max]
     #include <string.h> // for 'memset' and 'memmove'
     #define sfr_memset memset
     #define sfr_memmove memmove
+    #define sfr_strtok strtok
 #else
     SFR_FUNC void* sfr_memset(void* dest, char c, i32 count) {
         char* p = (char*)dest;
@@ -275,6 +276,63 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max]
         }
 
         return dest;
+    }
+
+    SFR_FUNC char* sfr_strtok(char* str, const char* delim) {
+        static char* next = 0; // persistent pointer for subsequent calls
+        if (str) {
+            next = str; // initialize on first call
+        }
+
+        if (!next || !*next) {
+            return 0; // no tokens left
+        }
+
+        // skip leading delimiters
+        while (*next) {
+            const char* d = delim;
+            u8 found = 0;
+            while (*d) {
+                if (*next == *d++) {
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) {
+                break;
+            }
+            next++;
+        }
+
+        char* token = next; // start of current token
+        if (!*next) {
+            return next = 0; // end of string
+        }
+
+        // find token end
+        while (*next) {
+            const char* d = delim;
+            u8 found = 0;
+            while (*d) {
+                if (*next ==* d) {
+                    found = 1;
+                    break;
+                }
+                d++;
+            }
+            if (found) {
+                break;
+            }
+            next++;
+        }
+
+        // terminate token and update next
+        if (*next) {
+            *next++ = '\0'; // split and move past delimiter
+        } else {
+            next = 0; // last token, reset next
+        }
+        return token;
     }
 #endif
 
@@ -801,7 +859,9 @@ SFR_FUNC i32 sfr_clip_tex_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const
     }
 
     if (3 == insideCount) {
-        memcpy(out[0], in, sizeof(SfrTexVert) * 3);
+        out[0][0] = in[0];
+        out[0][1] = in[1];
+        out[0][2] = in[2];
         return 1;
     }
 
@@ -2114,8 +2174,8 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
 
         char* tokens[4];
         i32 tokenCount = 0;
-        char* token = strtok(line, " \t\n"); // skip 'f'
-        while ((token = strtok(NULL, " \t\n")) != NULL && tokenCount < 4) {
+        char* token = sfr_strtok(line, " \t\n"); // skip 'f'
+        while ((token = sfr_strtok(NULL, " \t\n")) != NULL && tokenCount < 4) {
             tokens[tokenCount] = token;
             tokenCount += 1;
         }
@@ -2131,10 +2191,10 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
         for (i32 i = 0; i < tokenCount; i += 1) {
             vIndices[i] = uvIndices[i] = -1;
             char* parts[3] = {0};
-            char* part = strtok(tokens[i], "/");
+            char* part = sfr_strtok(tokens[i], "/");
             for (i32 j = 0; part && j < 3; j += 1) {
                 parts[j] = part;
-                part = strtok(NULL, "/");
+                part = sfr_strtok(NULL, "/");
             }
             if (parts[0]) vIndices[i]  = atoi(parts[0]) - 1;
             if (parts[1]) uvIndices[i] = atoi(parts[1]) - 1;
