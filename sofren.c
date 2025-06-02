@@ -17,6 +17,9 @@ extern "C" {
     #define Mesh    sfrmesh_t
     #define Texture sfrtexture_t
     #define Font    sfrfont_t
+
+    #define Particle       sfrparticle_t;
+    #define ParticleSystem sfrparticles_t;
     
     #define i8  sfri8_t
     #define u8  sfru8_t
@@ -58,6 +61,9 @@ typedef struct sfrmat  Mat;
 typedef struct sfrmesh Mesh;
 typedef struct sfrtex  Texture;
 typedef struct sfrfont Font;
+
+typedef struct sfrparticle Particle;
+typedef struct sfrparticles ParticleSystem;
 
 //: extern variables
 extern i32 sfrWidth, sfrHeight;
@@ -207,6 +213,18 @@ SFR_FUNC void sfr_set_lighting( // update internal lighting state for simple sha
     SFR_FUNC void sfr_release_font(Font** font);        // release loaded font's memory
 #endif
 
+// all particle related functions
+SFR_FUNC ParticleSystem sfr_particles_create(Particle* buffer, i32 count, const Texture* tex);
+SFR_FUNC void sfr_particles_update(ParticleSystem* sys, f32 frameTime);
+SFR_FUNC void sfr_particles_draw(const ParticleSystem* sys);
+SFR_FUNC void sfr_particles_emit(ParticleSystem* sys,
+    f32 px, f32 py, f32 pz,
+    f32 vx, f32 vy, f32 vz,
+    f32 ax, f32 ay, f32 az,
+    f32 startSize, f32 endSize,
+    u32 startCol, u32 endCol,
+    f32 lifetime);
+
 SFR_FUNC void sfr_rand_seed(u32 seed);       // seed random number generator
 SFR_FUNC u32 sfr_rand_next(void);            // Lehmer random number generator
 SFR_FUNC i32 sfr_rand_int(i32 min, i32 max); // random int in range [min, max]
@@ -289,9 +307,24 @@ typedef struct sfrtex {
 } Texture;
 
 typedef struct sfrfont {
-    // xy pairs [x0][y0][x1][y1][x2][...]
+    // xy pairs [x0, y0, x1, y1, x2, ...]
     f32 verts[SFR_FONT_GLYPH_MAX][SFR_FONT_VERT_MAX];
 } Font;
+
+typedef struct sfrparticle {
+    f32 px, py, pz; // position
+    f32 vx, vy, vz; // velocity
+    f32 ax, ay, az; // acceleration
+    f32 startSize, endSize;
+    u32 startCol, endCol;
+    f32 lifetime, age;
+} Particle;
+
+typedef struct sfrparticles {
+    Particle* particles;
+    i32 total, active;
+    const Texture* tex;
+} ParticleSystem;
 
 #ifndef SFR_NO_ALPHA
     typedef struct sfrac {
@@ -352,6 +385,7 @@ SfrState sfrState = {0};
 #define SFR_EPSILON ((f32)1e-10)
 
 #define SFR_SWAPF(_a, _b) { f32 _swapTemp = (_a); (_a) = (_b); (_b) = _swapTemp; }
+#define SFR_LERPF(_a, _b, _t) ((_a) + (_t) * ((_b) - (_a)))
 #define SFR_VEC0 ((Vec){0.f, 0.f, 0.f, 0.f})
 
 #define SFR_ARRLEN(_arr)  (sizeof(_arr) / sizeof((_arr)[0]))
@@ -383,6 +417,29 @@ SfrState sfrState = {0};
 //================================================
 //:         MATH
 //================================================
+
+SFR_FUNC f32 sfr_lerp(f32 a, f32 b, f32 t) {
+    return a + t * (b - a);
+}
+
+SFR_FUNC u32 sfr_lerp_col(u32 c1, u32 c2, f32 t) {
+    const u8 a1 = (c1 >> 24) & 0xFF;
+    const u8 r1 = (c1 >> 16) & 0xFF;
+    const u8 g1 = (c1 >> 8)  & 0xFF;
+    const u8 b1 = (c1 >> 0)  & 0xFF;
+    
+    const u8 a2 = (c2 >> 24) & 0xFF;
+    const u8 r2 = (c2 >> 16) & 0xFF;
+    const u8 g2 = (c2 >> 8)  & 0xFF;
+    const u8 b2 = (c2 >> 0)  & 0xFF;
+    
+    const u8 a = (u8)(a1 + (a2 - a1) * t);
+    const u8 r = (u8)(r1 + (r2 - r1) * t);
+    const u8 g = (u8)(g1 + (g2 - g1) * t);
+    const u8 b = (u8)(b1 + (b2 - b1) * t);
+    
+    return (a << 24) | (r << 16) | (g << 8) | b;
+}
 
 #ifndef SFR_NO_MATH
     #include <math.h>
@@ -1148,9 +1205,12 @@ SFR_FUNC void sfr_rasterize_tex(
                         sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
                         sfrDepthBuf[i] = depth;
                     #else
-                        if (0xFF != a) {
+                        const u8 ta = (texCol >> 24) & 0xFF;
+                        const u8 ca = (col >> 24) & 0xFF;
+                        const u8 fa = (ta * ca) / 255;
+                        if (0xFF != fa) {
                             const u8 currAlpha = sfrAccumBuf[i].a;
-                            const u16 contribution = ((255 - currAlpha) * a) / 255;
+                            const u16 contribution = ((255 - currAlpha) * fa) / 255;
 
                             // accumulate premultiplied color components
                             sfrAccumBuf[i].r += (fr * contribution) / 255;
@@ -1271,9 +1331,12 @@ SFR_FUNC void sfr_rasterize_tex(
                         sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
                         sfrDepthBuf[i] = depth;
                     #else
-                        if (0xFF != a) {
+                        const u8 ta = (texCol >> 24) & 0xFF;
+                        const u8 ca = (col >> 24) & 0xFF;
+                        const u8 fa = (ta * ca) / 255;
+                        if (0xFF != fa) {
                             const u8 currAlpha = sfrAccumBuf[i].a;
-                            const u16 contribution = ((255 - currAlpha) * a) / 255;
+                            const u16 contribution = ((255 - currAlpha) * fa) / 255;
 
                             // accumulate premultiplied color components
                             sfrAccumBuf[i].r += (fr * contribution) / 255;
@@ -2330,33 +2393,33 @@ SFR_FUNC Texture* sfr_load_texture(const char* filename) {
                 } break;
                 case 24: {
                     const u8* px = row + x * 3;
-                    col |= (px[2] << 16) | (px[1] << 8) | px[0];
+                    col |= 0xFF000000 | (px[2] << 16) | (px[1] << 8) | px[0];
                 } break;
                 case 16: {
                     const u16 px = *((u16*)(row + x * 2));
-                    u32 r_mask = masks[0] ? masks[0] : 0x7C00;
-                    u32 g_mask = masks[1] ? masks[1] : 0x03E0;
-                    u32 b_mask = masks[2] ? masks[2] : 0x001F;
-                    
-                    col |= ((px & r_mask) * 0xFF / r_mask) << 16;
-                    col |= ((px & g_mask) * 0xFF / g_mask) << 8;
-                    col |= ((px & b_mask) * 0xFF / b_mask);
+                    const u32 rMask = masks[0] ? masks[0] : 0x7C00;
+                    const u32 gMask = masks[1] ? masks[1] : 0x03E0;
+                    const u32 bMask = masks[2] ? masks[2] : 0x001F;
+                    col |= 0xFF000000;
+                    col |= ((px & rMask) * 0xFF / rMask) << 16;
+                    col |= ((px & gMask) * 0xFF / gMask) << 8;
+                    col |= ((px & bMask) * 0xFF / bMask);
                 } break;
                 case 8:
                 case 4:
                 case 1: {
                     const u8 index = row[x / (8 / bpp)];
                     const u8 shift = (7 - (x % (8 / bpp))) * bpp;
-                    const u8 pal_idx = (index >> shift) & ((1 << bpp) - 1);
-                    const u8* entry = (u8*)(palette + pal_idx);
-                    col |= (entry[2] << 16) | (entry[1] << 8) | entry[0];
+                    const u8 palInd = (index >> shift) & ((1 << bpp) - 1);
+                    const u8* entry = (u8*)(palette + palInd);
+                    col |= 0xFF000000 | (entry[2] << 16) | (entry[1] << 8) | entry[0];
                 } break;
                 default: {
                     free(pixelData);
                     free(tex->pixels);
                     free(tex);
                     SFR_ERR_RET(NULL, "sfr_load_texture: unsupported bit depth: %d\n", bpp);
-                }
+                } break;
             }
             
             tex->pixels[i] = col;
@@ -2456,6 +2519,81 @@ SFR_FUNC void sfr_release_font(Font** font) {
 
 #endif // !SFR_NO_STD
 
+SFR_FUNC ParticleSystem sfr_particles_create(Particle* buffer, i32 count, const Texture* tex) {
+    return (ParticleSystem){
+        .particles = buffer,
+        .active = 0, .total = count,
+        .tex = tex
+    };
+}
+
+SFR_FUNC void sfr_particles_update(ParticleSystem* sys, f32 frameTime) {
+    for (i32 i = 0; i < sys->active;) {
+        Particle* p = &sys->particles[i];
+        p->age += frameTime;
+
+        // remove dead particles
+        if (p->age >= p->lifetime) {
+            sys->particles[i] = sys->particles[sys->active - 1];
+            sys->active -= 1;
+            continue;
+        }
+
+        // update particle
+        p->vx += p->ax * frameTime;
+        p->vy += p->ay * frameTime;
+        p->vz += p->az * frameTime;
+        p->px += p->vx * frameTime;
+        p->py += p->vy * frameTime;
+        p->pz += p->vz * frameTime;
+
+        i += 1;
+    }
+}
+
+SFR_FUNC void sfr_particles_draw(const ParticleSystem* sys) {
+    for (i32 i = 0; i < sys->active; i += 1) {
+        Particle* p = &sys->particles[i];
+
+        // interpolate properties
+        const f32 t = p->age / p->lifetime;
+        const f32 size = SFR_LERPF(p->startSize, p->endSize, t);
+        const u32 col = sfr_lerp_col(p->startCol, p->endCol, t);
+
+        // set transform and draw
+        sfr_reset();
+        sfr_scale(size, size, size);
+        sfr_translate(p->px, p->py, p->pz);
+        if (sys->tex) {
+            sfr_billboard_tex(col, sys->tex);
+        } else {
+            sfr_billboard(col);
+        }
+    }
+}
+
+SFR_FUNC void sfr_particles_emit(ParticleSystem* sys,
+    f32 px, f32 py, f32 pz,
+    f32 vx, f32 vy, f32 vz,
+    f32 ax, f32 ay, f32 az,
+    f32 startSize, f32 endSize,
+    u32 startCol, u32 endCol,
+    f32 lifetime
+) {
+    if (sys->active >= sys->total) {
+        return;
+    }
+
+    // create new particle
+    Particle* p = &sys->particles[sys->active++];
+    p->px = px, p->py = py, p->pz = pz;
+    p->vx = vx, p->vy = vy, p->vz = vz;
+    p->ax = ax, p->ay = ay, p->az = az;
+    p->startSize = startSize, p->endSize = endSize;
+    p->startCol = startCol, p->endCol = endCol,
+    p->age = 0.f, p->lifetime = lifetime;
+}
+
 SFR_FUNC void sfr_rand_seed(u32 seed) {
     sfrState.randState = seed;
 }
@@ -2492,6 +2630,9 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max) {
     #undef Mesh
     #undef Texture
     #undef Font
+
+    #undef Particle
+    #undef ParticleSystem
 
     #undef i8
     #undef u8
