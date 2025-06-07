@@ -104,7 +104,7 @@ i32 main() {
                 sfr_rotate_y(rt * SFR_PI * 0.3f);
                 sfr_rotate_z(rt * SFR_PI * 0.6f);
                 sfr_translate(sfr_rand_flt(-12.f, 12.f), sfr_rand_flt(-3, 3) + sinf(rt), sfr_rand_flt(4.f, 12.f));
-                sfr_cube(sfr_rand_int(0, 0xFFFFFF));
+                sfr_cube(sfr_rand_int(0, 0xFFFFFF), NULL);
             }
         }
 

@@ -10,7 +10,7 @@ demonstrates:
 */
 
 #define SFR_IMPL
-// #define SFR_NO_ALPHA // ~15 more FPS when defined but no transparency
+#define SFR_NO_ALPHA // ~15 more FPS when defined but no transparency
 #include "../sofren.c"
 
 #include <SDL2/SDL.h>
@@ -39,15 +39,22 @@ static Texture* meshTex;
 static Texture* cubeTex;
 static Font* font;
 
+static Texture* particleTex;
+static ParticleSystem particles;
+
 i32 main() {    
     // load mesh, textures, font
     mesh = sfr_load_mesh("examples/res/hawk.obj");
     meshTex = sfr_load_texture("examples/res/hawk.bmp");
     cubeTex = sfr_load_texture("examples/res/test.bmp");
+    particleTex = sfr_load_texture("tests/parrot.bmp");
     font = sfr_load_font("examples/res/basic-font.srft");
     if (!mesh || !meshTex || !cubeTex || !font) {
         return 1;
     }
+
+    Particle* particleBuf = malloc(sizeof(Particle) * 200);
+    particles = sfr_particles_create(particleBuf, 200, particleTex);
 
     // initial window dimensions
     const i32 startWidth = 1280 * RES_SCALE, startHeight = 720 * RES_SCALE;
@@ -111,7 +118,7 @@ i32 main() {
         handle_inputs(frameTime);
 
         // clear previous frame and draw next one
-        sfr_clear(0xFF000000);
+        sfr_clear(0xFF041411);
         draw(time, frameTime);
 
         // update SDL window
@@ -125,7 +132,9 @@ i32 main() {
     sfr_release_font(&font);
     sfr_release_texture(&cubeTex);
     sfr_release_texture(&meshTex);
+    sfr_release_texture(&particleTex);
     sfr_release_mesh(&mesh);
+    free(particleBuf);
     free(sfrPixelBuf);
     free(sfrDepthBuf);
     #ifndef SFR_NO_ALPHA
@@ -141,29 +150,30 @@ i32 main() {
 }
 
 static void draw(f32 time, f32 frameTime) {
+    u32 col;
     { // draw scene
-        static f32 colTimer = 0.f;
-        colTimer -= frameTime;
+        static f32 timer = 0.f;
+        timer -= frameTime;
         
-        u32 col;
-        if (colTimer <= -0.5f) {
-            colTimer += 3.5f;
-        } else if (colTimer <= 0.f) {
+        if (timer <= -0.5f) {
+            timer += 3.5f;
+        } else if (timer <= 0.f) {
             col = 0x00FFFFFF;
-        } else if (colTimer <= 0.5f) {
+        } else if (timer <= 0.5f) {
             col = 0x00FF7777;
-        } else if (colTimer <= 1.f) {
+        } else if (timer <= 1.f) {
             col = 0x0077FF77;
-        } else if (colTimer <= 1.5f) {
+        } else if (timer <= 1.5f) {
             col = 0x007777FF;
-        } else if (colTimer <= 2.f) {
+        } else if (timer <= 2.f) {
             col = 0x00FF0000;
-        } else if (colTimer <= 2.5f) {
+        } else if (timer <= 2.5f) {
             col = 0x0000FF00;
-        } else if (colTimer <= 3.f) {
+        } else if (timer <= 3.f) {
             col = 0x000000FF;
         }
         col |= (u32)(fminf(1.f, sinf(time) + 1.f) * 255.f) << 24;
+        // col |= 0xFF000000;
     
         // lighting settings
         sfr_set_lighting(1, sfr_vec_normf(0.6f, 1.f, -1.f), 0.4f);
@@ -174,7 +184,7 @@ static void draw(f32 time, f32 frameTime) {
         sfr_rotate_y(time * 1.5f);
         sfr_scale(0.125f, 0.125f, 0.125f);
         sfr_translate(-2.5f, -2.f, 8.f);
-        sfr_mesh_tex(mesh, col, meshTex);
+        sfr_mesh(mesh, col, meshTex);
     
         // solid untextured hawk
         sfr_reset();
@@ -182,7 +192,7 @@ static void draw(f32 time, f32 frameTime) {
         sfr_rotate_y(time * 1.5f);
         sfr_scale(0.125f, 0.125f, 0.125f);
         sfr_translate(2.5f, -2.f, 8.f);
-        sfr_mesh(mesh, col);
+        sfr_mesh(mesh, col, cubeTex);
     
         // textured cube
         sfr_reset();
@@ -190,19 +200,46 @@ static void draw(f32 time, f32 frameTime) {
         sfr_rotate_x(cosf(time) * 0.125f + 2.5f);
         sfr_scale(10.f, 10.f, 10.f);
         sfr_translate(0.f, -2.f, 20.f);
-        sfr_cube_tex(0xFFFFFFFF, cubeTex);
+        sfr_cube(0xFFFFFFFF, cubeTex);
     
         // cube clipping into hawks
         sfr_reset();
         sfr_scale(10.f, 0.5f, 5.f);
         sfr_translate(0.f, -1.f, 8.f);
-        sfr_cube(0xFFAABBCC);
-
-        // draw transparent parts of the scene
-        #ifndef SFR_NO_ALPHA
-            sfr_present_alpha();
-        #endif
+        sfr_cube(0xFFAABBCC, NULL);
     }
+
+    { // draw particle system
+        sfr_set_lighting(0, SFR_VEC0, 0.f);
+
+        static f32 timer = 0.f;
+        timer += frameTime;
+
+        if (timer >= 0.334f) {
+            timer -= 0.334f;
+            const f32 px = sfr_rand_flt(-3.f, 3.f);
+            const f32 py = sfr_rand_flt(0.f, 1.5f);
+            const f32 pz = sfr_rand_flt(7.f, 9.f);
+            for (i32 i = 0; i < 33; i += 1) {
+                sfr_particles_emit(&particles,
+                    px, py, pz,
+                    sfr_rand_flt(-3.f, 3.f), sfr_rand_flt(3.f, 5.f), sfr_rand_flt(-3.f, 3.f),
+                    0.f, -9.8f, 0.f,
+                    0.6f, 0.1f,
+                    col | 0xFF000000, col & 0x00FFFFFF,
+                    1.3f
+                );
+            }
+        }
+
+        sfr_particles_update(&particles, frameTime);
+        sfr_particles_draw(&particles);
+    }
+
+    // draw transparent parts of the scene
+    #ifndef SFR_NO_ALPHA
+        sfr_present_alpha();
+    #endif
 
     // reset depth buffer before drawing ui
     memset(sfrDepthBuf, 0x7F, sizeof(f32) * sfrWidth * sfrHeight);
