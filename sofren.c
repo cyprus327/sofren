@@ -173,20 +173,11 @@ SFR_FUNC void sfr_triangle_tex(
     f32 cx, f32 cy, f32 cz, f32 cu, f32 cv,
     u32 col, const Texture* tex);
 
-// billboard drawing functions
-SFR_FUNC void sfr_billboard(u32 col);
-SFR_FUNC void sfr_billboard_tex(u32 col, const Texture* tex);
-
-// cube drawing functions
-SFR_FUNC void sfr_cube(u32 col);
+// other drawing functions, if tex is null sfrState.baseTex (white 1x1 texture) will be used
+SFR_FUNC void sfr_billboard(u32 col, const Texture* tex);
+SFR_FUNC void sfr_cube(u32 col, const Texture* tex);
 SFR_FUNC void sfr_cube_ex(u32 col[12]);
-SFR_FUNC void sfr_cube_tex(u32 col, const Texture* tex);
-
-// mesh drawing functions
-SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col);
-SFR_FUNC void sfr_mesh_tex(const Mesh* mesh, u32 col, const Texture* tex);
-
-// string / character drawing functions
+SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col, const Texture* tex);
 SFR_FUNC void sfr_string(const Font* font, const char* s, i32 sLength, u32 col); // not yet implemented
 SFR_FUNC void sfr_glyph(const Font* font, u16 id, u32 col); // draw a single character
 
@@ -401,9 +392,12 @@ typedef struct strState {
 
     u32 randState;
 
-    f32 width2, height2;
+    f32 halfWidth, halfHeight;
 
     Vec clipPlanes[4][2];
+
+    u32 baseTexPixels[1];
+    Texture baseTex;
 } SfrState;
 
 // helper to track vertex attributes during clipping of textured triangles
@@ -442,9 +436,13 @@ SfrState sfrState = {0};
 #define SFR_PI ((f32)3.14159265358979323846)
 #define SFR_EPSILON ((f32)1e-10)
 
-#define SFR_SWAPF(_a, _b) { f32 _swapTemp = (_a); (_a) = (_b); (_b) = _swapTemp; }
+#define SFR_SWAPF(_a, _b) { const f32 _swapTemp = (_a); (_a) = (_b); (_b) = _swapTemp; }
 #define SFR_LERPF(_a, _b, _t) ((_a) + (_t) * ((_b) - (_a)))
 #define SFR_VEC0 ((Vec){0.f, 0.f, 0.f, 0.f})
+
+#define SFR_DIV255(_r, _a, _b) \
+    const u32 _##_r##Temp = (u32)(_a) * (u32)(_b) + 128; \
+    const u8 _r = (_##_r##Temp + (_##_r##Temp >> 8)) >> 8;
 
 #define SFR_ARRLEN(_arr)  (sizeof(_arr) / sizeof((_arr)[0]))
 
@@ -503,6 +501,7 @@ SFR_FUNC u32 sfr_lerp_col(u32 c1, u32 c2, f32 t) {
     #include <math.h>
     #define sfr_floorf floorf
     #define sfr_fmaxf fmaxf
+    #define sfr_fabsf fabsf
     #define sfr_sqrtf sqrtf
     #define sfr_cosf cosf
     #define sfr_sinf sinf
@@ -515,6 +514,10 @@ SFR_FUNC u32 sfr_lerp_col(u32 c1, u32 c2, f32 t) {
 
     SFR_FUNC f32 sfr_fmaxf(f32 a, f32 b) {
         return (a > b) ? a : b;
+    }
+
+    SFR_FUNC f32 sfr_fabsf(f32 x) {
+        return x < 0.f ? -x : x;
     }
 
     SFR_FUNC f32 sfr_sqrtf(f32 x) { // newton-raphson method
@@ -783,64 +786,7 @@ SFR_FUNC Mat sfr_mat_look_at(Vec pos, Vec target, Vec up) {
 //:         RENDERING
 //================================================
 
-SFR_FUNC Vec sfr_intersect_plane(Vec plane, Vec norm, Vec start, Vec end) {
-    norm = sfr_vec_norm(norm);
-    const f32 delta = -sfr_vec_dot(norm, plane);
-    const f32 ad = sfr_vec_dot(start, norm);
-    const f32 bd = sfr_vec_dot(end, norm);
-    const f32 t = (-delta - ad) / (bd - ad);
-    
-    const Vec startToEnd = sfr_vec_sub(end, start);
-    const Vec segment = sfr_vec_mul(startToEnd, t);
-    
-    return sfr_vec_add(start, segment);
-}
-
-SFR_FUNC i32 sfr_clip_against_plane(Tri out[2], Vec plane, Vec norm, Tri in) {
-    norm = sfr_vec_norm(norm);
-
-    Vec* inside[3];
-    Vec* outside[3];
-    i32 insideCount = 0, outsideCount = 0;
-
-    const f32 ndotp = sfr_vec_dot(norm, plane);
-    for (i32 i = 0; i < 3; i += 1) {
-        const f32 d = norm.x * in.p[i].x + norm.y * in.p[i].y + norm.z * in.p[i].z - ndotp;
-        if (d >= 0.f) {
-            inside[insideCount] = &in.p[i];
-            insideCount += 1;
-        } else {
-            outside[outsideCount] = &in.p[i];
-            outsideCount += 1;
-        }
-    }
-
-    if (3 == insideCount) {
-        out[0] = in;
-        return 1;
-    }
-
-    if (1 == insideCount && 2 == outsideCount) {
-        out[0].p[0] = *inside[0];
-        out[0].p[1] = sfr_intersect_plane(plane, norm, *inside[0], *outside[0]);
-        out[0].p[2] = sfr_intersect_plane(plane, norm, *inside[0], *outside[1]);
-        return 1;
-    }
-
-    if (2 == insideCount && 1 == outsideCount) {
-        out[0].p[0] = *inside[0];
-        out[0].p[1] = *inside[1];
-        out[0].p[2] = sfr_intersect_plane(plane, norm, *inside[0], *outside[0]);
-        out[1].p[0] = *inside[1];
-        out[1].p[1] = out[0].p[2];
-        out[1].p[2] = sfr_intersect_plane(plane, norm, *inside[1], *outside[0]);
-        return 2;
-    }
-
-    return 0;
-}
-
-SFR_FUNC i32 sfr_clip_tex_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const SfrTexVert in[3]) {
+SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const SfrTexVert in[3]) {
     const Vec norm = sfr_vec_norm((Vec){plane.x, plane.y, plane.z, 0.f});
     const f32 planeD = plane.w;
     
@@ -964,179 +910,23 @@ SFR_FUNC i32 sfr_clip_tex_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const
     return 0;
 }
 
-SFR_FUNC void sfr_rasterize(
-    f32 ax, f32 ay, f32 az,
-    f32 bx, f32 by, f32 bz,
-    f32 cx, f32 cy, f32 cz,
-    u32 col
-) {
-    sfrRasterCount += 1;
-
-    ax = (f32)((i32)ax);
-    ay = (f32)((i32)ay);
-    bx = (f32)((i32)bx);
-    by = (f32)((i32)by);
-    cx = (f32)((i32)cx);
-    cy = (f32)((i32)cy);
-
-    if (ay > by) {
-        SFR_SWAPF(ax, bx);
-        SFR_SWAPF(ay, by);
-        SFR_SWAPF(az, bz);
-    }
-    if (ay > cy) {
-        SFR_SWAPF(ax, cx);
-        SFR_SWAPF(ay, cy);
-        SFR_SWAPF(az, cz);
-    }
-    if (by > cy) {
-        SFR_SWAPF(bx, cx);
-        SFR_SWAPF(by, cy);
-        SFR_SWAPF(bz, cz);
-    }
-
-    const f32 deltaACX = cx - ax, deltaACZ = cz - az;
-    const f32 deltaABX = bx - ax, deltaABZ = bz - az;
-    const f32 invHeightAC = (cy != ay) ? 1.f / (cy - ay) : 0.f;
-    const f32 invHeightAB = (by != ay) ? 1.f / (by - ay) : 0.f;
-
-    i32 y0 = ((i32)ay < 0) ? 0 : (i32)ay, y1 = ((i32)by >= sfrHeight) ? sfrHeight : (i32)by;
-    for (i32 y = y0; y < y1; y += 1) {
-        const f32 dy = (f32)y - ay;
-        const f32 alpha = dy * invHeightAC;
-        const f32 beta = dy * invHeightAB;
-
-        f32 sx = ax + deltaACX * alpha, sz = az + deltaACZ * alpha;
-        f32 ex = ax + deltaABX * beta, ez = az + deltaABZ * beta;
-
-        if (sx > ex) {
-            SFR_SWAPF(sx, ex);
-            SFR_SWAPF(sz, ez);
-        }
-
-        i32 sxi = (i32)sx, exi = (i32)ex;
-        sxi = (sxi < 0) ? 0 : ((sxi >= sfrWidth) ? sfrWidth : sxi);
-        exi = (exi < 0) ? 0 : ((exi >= sfrWidth) ? sfrWidth : exi);
-        if (sxi >= exi) {
-            continue;
-        }
-
-        const f32 dxScan = ex - sx;
-        const f32 depthStep = (0.f != dxScan) ? (ez - sz) / dxScan : 0.f;
-        f32 depth = sz + (sxi - sx) * depthStep;
-
-        i32 i = y * sfrWidth + sxi;
-        for (i32 x = sxi; x < exi; x += 1, i += 1, depth += depthStep) {
-            // skip if fully transparent
-            #ifndef SFR_NO_ALPHA
-                const u8 a = (col >> 24) & 0xFF;
-                if (0 == a) {
-                    continue;
-                }
-            #endif
-
-            if (depth < sfrDepthBuf[i]) {
-                #ifdef SFR_NO_ALPHA
-                    sfrPixelBuf[i] = col;
-                    sfrDepthBuf[i] = depth;
-                #else
-                    if (0xFF != a) {
-                        const u8 currAlpha = sfrAccumBuf[i].a;
-                        const u16 contribution = ((255 - currAlpha) * a) / 255;
-
-                        // accumulate premultiplied color components
-                        sfrAccumBuf[i].r += (((col >> 16) & 0xFF) * contribution) / 255;
-                        sfrAccumBuf[i].g += (((col >> 8)  & 0xFF) * contribution) / 255;
-                        sfrAccumBuf[i].b += (((col >> 0)  & 0xFF) * contribution) / 255;
-
-                        // update accumulated alpha
-                        sfrAccumBuf[i].a = currAlpha + (u8)contribution;
-                        if (depth < sfrAccumBuf[i].depth) {
-                            sfrAccumBuf[i].depth = depth;
-                        }
-                    } else {
-                        sfrPixelBuf[i] = col;
-                        sfrDepthBuf[i] = depth;
-                    }
-                #endif
-            }
-        }
-    }
-
-    const f32 deltaBCX = cx - bx, deltaBCZ = cz - bz;
-    const f32 invHeightBC = (cy != by) ? 1.f / (cy - by) : 0.f;
-
-    y0 = ((i32)by < 0) ? 0 : (i32)by, y1 = ((i32)cy >= sfrHeight) ? sfrHeight : (i32)cy;
-    for (i32 y = y0; y < y1; y += 1) {
-        const f32 dyAlpha = (f32)y - ay;
-        const f32 dyBeta  = (f32)y - by;
-        const f32 alpha = dyAlpha * invHeightAC;
-        const f32 beta  = dyBeta * invHeightBC;
-
-        f32 sx = ax + deltaACX * alpha, sz = az + deltaACZ * alpha;
-        f32 ex = bx + deltaBCX * beta, ez = bz + deltaBCZ * beta;
-
-        if (sx > ex) {
-            SFR_SWAPF(sx, ex);
-            SFR_SWAPF(sz, ez);
-        }
-
-        i32 sxi = (i32)sx, exi = (i32)ex;
-        sxi = (sxi < 0) ? 0 : ((sxi >= sfrWidth) ? sfrWidth : sxi);
-        exi = (exi < 0) ? 0 : ((exi >= sfrWidth) ? sfrWidth : exi);
-        if (sxi >= exi) {
-            continue;
-        }
-
-        const f32 dxScan = ex - sx;
-        const f32 depthStep = (0.f != dxScan) ? (ez - sz) / dxScan : 0.f;
-        f32 depth = sz + (sxi - sx) * depthStep;
-
-        i32 i = y * sfrWidth + sxi;
-        for (i32 x = sxi; x < exi; x += 1, i += 1, depth += depthStep) {
-            // skip if fully transparent
-            #ifndef SFR_NO_ALPHA
-                const u8 a = (col >> 24) & 0xFF;
-                if (0 == a) {
-                    continue;
-                }
-            #endif
-
-            if (depth < sfrDepthBuf[i]) {
-                #ifdef SFR_NO_ALPHA
-                    sfrPixelBuf[i] = col;
-                    sfrDepthBuf[i] = depth;
-                #else
-                    if (0xFF != a) {
-                        const u8 currAlpha = sfrAccumBuf[i].a;
-                        const u16 contribution = ((255 - currAlpha) * a) / 255;
-
-                        // accumulate premultiplied color components
-                        sfrAccumBuf[i].r += (((col >> 16) & 0xFF) * contribution) / 255;
-                        sfrAccumBuf[i].g += (((col >> 8)  & 0xFF) * contribution) / 255;
-                        sfrAccumBuf[i].b += (((col >> 0)  & 0xFF) * contribution) / 255;
-
-                        // update accumulated alpha
-                        sfrAccumBuf[i].a = currAlpha + (u8)contribution;
-                        if (depth < sfrAccumBuf[i].depth) {
-                            sfrAccumBuf[i].depth = depth;
-                        }
-                    } else {
-                        sfrPixelBuf[i] = col;
-                        sfrDepthBuf[i] = depth;
-                    }
-                #endif
-            }
-        }
-    }
-}
-
 SFR_FUNC void sfr_rasterize_tex(
     f32 ax, f32 ay, f32 az, f32 aInvZ, f32 auoz, f32 avoz,
     f32 bx, f32 by, f32 bz, f32 bInvZ, f32 buoz, f32 bvoz,
     f32 cx, f32 cy, f32 cz, f32 cInvZ, f32 cuoz, f32 cvoz,
     u32 col, const Texture* tex
 ) {
+    // skip if fully transparent
+    #ifndef SFR_NO_ALPHA
+        const u8 ca = (col >> 24) & 0xFF;
+        if (0 == ca) {
+            return;
+        }
+    #endif
+    const u8 cr = (col >> 16) & 0xFF;
+    const u8 cg = (col >> 8)  & 0xFF;
+    const u8 cb = (col >> 0)  & 0xFF;
+
     sfrRasterCount += 1;
 
     ax = (f32)((i32)ax);
@@ -1159,6 +949,10 @@ SFR_FUNC void sfr_rasterize_tex(
         SFR_SWAPF(bx, cx); SFR_SWAPF(by, cy); SFR_SWAPF(bz, cz);
         SFR_SWAPF(bInvZ, cInvZ); SFR_SWAPF(buoz, cuoz); SFR_SWAPF(bvoz, cvoz);
     }
+
+    // store often accessed variables
+    const i32 texW = tex->w, texH = tex->h;
+    const i32 texW1 = tex->w - 1, texH1 = tex->h - 1;
 
     // edge deltas for triangle
     const f32 deltaACX = cx - ax;
@@ -1228,66 +1022,59 @@ SFR_FUNC void sfr_rasterize_tex(
             for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1,
                 invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep
             ) {
+                if (depth > sfrDepthBuf[i]) {
+                    continue;
+                }
+
                 // perspective correction for texture
                 const f32 zView = 1.f / invZ;
 
-                // skip if fully transparent
-                #ifndef SFR_NO_ALPHA
-                    const u8 a = (col >> 24) & 0xFF;
-                    if (0 == a) {
-                        continue;
-                    }
-                #endif
+                // recover texture coords
+                const f32 u = uoz * zView;
+                const f32 v = voz * zView;
+                
+                // wrap texture coords and clamp
+                i32 tx = (i32)(u * texW1);
+                i32 ty = (i32)(v * texH1);
+                tx = (tx < 0) ? 0 : ((tx >= texW) ? texW1 : tx);
+                ty = (ty < 0) ? 0 : ((ty >= texH) ? texH1 : ty);
+                
+                const u32 texCol = tex->pixels[ty * texW + tx];
+                const u8 tr = (texCol >> 16) & 0xFF;
+                const u8 tg = (texCol >> 8)  & 0xFF;
+                const u8 tb = (texCol >> 0)  & 0xFF;
+                SFR_DIV255(fr, tr, cr);
+                SFR_DIV255(fg, tg, cg);
+                SFR_DIV255(fb, tb, cb);
 
-                if (depth < sfrDepthBuf[i]) {
-                    // recover texture coords
-                    const f32 u = uoz * zView;
-                    const f32 v = voz * zView;
-                    
-                    // wrap texture coords and clamp
-                    i32 tx = (i32)(u * (tex->w - 1));
-                    i32 ty = (i32)(v * (tex->h - 1));
-                    tx = (tx < 0) ? 0 : ((tx >= tex->w) ? tex->w - 1 : tx);
-                    ty = (ty < 0) ? 0 : ((ty >= tex->h) ? tex->h - 1 : ty);
-                    
-                    const u32 texCol = tex->pixels[ty * tex->w + tx];
-                    const u8 tr = (texCol >> 16) & 0xFF;
-                    const u8 tg = (texCol >> 8)  & 0xFF;
-                    const u8 tb = (texCol >> 0)  & 0xFF;
-                    const u8 cr = (col >> 16) & 0xFF;
-                    const u8 cg = (col >> 8)  & 0xFF;
-                    const u8 cb = (col >> 0)  & 0xFF;
-                    const u8 fr = (tr * cr) / 255;
-                    const u8 fg = (tg * cg) / 255;
-                    const u8 fb = (tb * cb) / 255;
+                #ifdef SFR_NO_ALPHA
+                    sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
+                    sfrDepthBuf[i] = depth;
+                #else
+                    const u8 ta = (texCol >> 24) & 0xFF;
+                    SFR_DIV255(fa, ta, ca);
+                    if (0xFF != fa) {
+                        const u8 currAlpha = sfrAccumBuf[i].a;
+                        SFR_DIV255(contribution, 255 - currAlpha, fa);
 
-                    #ifdef SFR_NO_ALPHA
+                        // accumulate premultiplied color components
+                        SFR_DIV255(accumR, fr, contribution);
+                        SFR_DIV255(accumG, fg, contribution);
+                        SFR_DIV255(accumB, fb, contribution);
+                        sfrAccumBuf[i].r += accumR;
+                        sfrAccumBuf[i].g += accumG;
+                        sfrAccumBuf[i].b += accumB;
+
+                        // update accumulated alpha
+                        sfrAccumBuf[i].a = currAlpha + contribution;
+                        if (depth < sfrAccumBuf[i].depth) {
+                            sfrAccumBuf[i].depth = depth;
+                        }
+                    } else {
                         sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
                         sfrDepthBuf[i] = depth;
-                    #else
-                        const u8 ta = (texCol >> 24) & 0xFF;
-                        const u8 ca = (col >> 24) & 0xFF;
-                        const u8 fa = (ta * ca) / 255;
-                        if (0xFF != fa) {
-                            const u8 currAlpha = sfrAccumBuf[i].a;
-                            const u16 contribution = ((255 - currAlpha) * fa) / 255;
-
-                            // accumulate premultiplied color components
-                            sfrAccumBuf[i].r += (fr * contribution) / 255;
-                            sfrAccumBuf[i].g += (fg * contribution) / 255;
-                            sfrAccumBuf[i].b += (fb * contribution) / 255;
-
-                            // update accumulated alpha
-                            sfrAccumBuf[i].a = currAlpha + (u8)contribution;
-                            if (depth < sfrAccumBuf[i].depth) {
-                                sfrAccumBuf[i].depth = depth;
-                            }
-                        } else {
-                            sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
-                            sfrDepthBuf[i] = depth;
-                        }
-                    #endif
-                }
+                    }
+                #endif
             }
         }
     }
@@ -1354,66 +1141,59 @@ SFR_FUNC void sfr_rasterize_tex(
             for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1,
                 invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep
             ) {
+                if (depth > sfrDepthBuf[i]) {
+                    continue;
+                }
+
                 // perspective correction for texture
                 const f32 zView = 1.f / invZ;
 
-                // skip if fully transparent
-                #ifndef SFR_NO_ALPHA
-                    const u8 a = (col >> 24) & 0xFF;
-                    if (0 == a) {
-                        continue;
-                    }
-                #endif
+                // recover texture coords
+                const f32 u = uoz * zView;
+                const f32 v = voz * zView;
+                
+                // wrap texture coords and clamp
+                i32 tx = (i32)(u * texW1);
+                i32 ty = (i32)(v * texH1);
+                tx = (tx < 0) ? 0 : ((tx >= texW) ? texW1 : tx);
+                ty = (ty < 0) ? 0 : ((ty >= texH) ? texH1 : ty);
+                
+                const u32 texCol = tex->pixels[ty * texW + tx];
+                const u8 tr = (texCol >> 16) & 0xFF;
+                const u8 tg = (texCol >> 8)  & 0xFF;
+                const u8 tb = (texCol >> 0)  & 0xFF;
+                SFR_DIV255(fr, tr, cr);
+                SFR_DIV255(fg, tg, cg);
+                SFR_DIV255(fb, tb, cb);
 
-                if (depth < sfrDepthBuf[i]) {
-                    // recover texture coords
-                    const f32 u = uoz * zView;
-                    const f32 v = voz * zView;
-                    
-                    // wrap texture coords and clamp
-                    i32 tx = (i32)(u * (tex->w - 1));
-                    i32 ty = (i32)(v * (tex->h - 1));
-                    tx = (tx < 0) ? 0 : ((tx >= tex->w) ? tex->w - 1 : tx);
-                    ty = (ty < 0) ? 0 : ((ty >= tex->h) ? tex->h - 1 : ty);
-                    
-                    const u32 texCol = tex->pixels[ty * tex->w + tx];
-                    const u8 tr = (texCol >> 16) & 0xFF;
-                    const u8 tg = (texCol >> 8)  & 0xFF;
-                    const u8 tb = (texCol >> 0)  & 0xFF;
-                    const u8 cr = (col >> 16) & 0xFF;
-                    const u8 cg = (col >> 8)  & 0xFF;
-                    const u8 cb = (col >> 0)  & 0xFF;
-                    const u8 fr = (tr * cr) / 255;
-                    const u8 fg = (tg * cg) / 255;
-                    const u8 fb = (tb * cb) / 255;
+                #ifdef SFR_NO_ALPHA
+                    sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
+                    sfrDepthBuf[i] = depth;
+                #else
+                    const u8 ta = (texCol >> 24) & 0xFF;
+                    SFR_DIV255(fa, ta, ca);
+                    if (0xFF != fa) {
+                        const u8 currAlpha = sfrAccumBuf[i].a;
+                        SFR_DIV255(contribution, 255 - currAlpha, fa);
 
-                    #ifdef SFR_NO_ALPHA
+                        // accumulate premultiplied color components
+                        SFR_DIV255(accumR, fr, contribution);
+                        SFR_DIV255(accumG, fg, contribution);
+                        SFR_DIV255(accumB, fb, contribution);
+                        sfrAccumBuf[i].r += accumR;
+                        sfrAccumBuf[i].g += accumG;
+                        sfrAccumBuf[i].b += accumB;
+
+                        // update accumulated alpha
+                        sfrAccumBuf[i].a = currAlpha + contribution;
+                        if (depth < sfrAccumBuf[i].depth) {
+                            sfrAccumBuf[i].depth = depth;
+                        }
+                    } else {
                         sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
                         sfrDepthBuf[i] = depth;
-                    #else
-                        const u8 ta = (texCol >> 24) & 0xFF;
-                        const u8 ca = (col >> 24) & 0xFF;
-                        const u8 fa = (ta * ca) / 255;
-                        if (0xFF != fa) {
-                            const u8 currAlpha = sfrAccumBuf[i].a;
-                            const u16 contribution = ((255 - currAlpha) * fa) / 255;
-
-                            // accumulate premultiplied color components
-                            sfrAccumBuf[i].r += (fr * contribution) / 255;
-                            sfrAccumBuf[i].g += (fg * contribution) / 255;
-                            sfrAccumBuf[i].b += (fb * contribution) / 255;
-
-                            // update accumulated alpha
-                            sfrAccumBuf[i].a = currAlpha + (u8)contribution;
-                            if (depth < sfrAccumBuf[i].depth) {
-                                sfrAccumBuf[i].depth = depth;
-                            }
-                        } else {
-                            sfrPixelBuf[i] = (fr << 16) | (fg << 8) | fb;
-                            sfrDepthBuf[i] = depth;
-                        }
-                    #endif
-                }
+                    }
+                #endif
             }
         }
     }
@@ -1468,6 +1248,9 @@ SFR_FUNC void sfr_init(u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
     sfr_reset();
     sfr_set_fov(fovDeg);
     sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
+
+    sfrState.baseTexPixels[0] = 0xFFFFFFFF;
+    sfrState.baseTex = (Texture){ .w = 1, .h = 1, .pixels = sfrState.baseTexPixels };
 }
 
 #else
@@ -1483,6 +1266,9 @@ SFR_FUNC void sfr_init(SfrAccumCol* accumBuf, u32* pixelBuf, f32* depthBuf, i32 
     sfr_reset();
     sfr_set_fov(fovDeg);
     sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
+
+    sfrState.baseTexPixels[0] = 0xFFFFFFFF;
+    sfrState.baseTex = (Texture){ .w = 1, .h = 1, .pixels = sfrState.baseTexPixels };
 }
 
 // TODO: BUG: if there are two transparent objects separated by a solid object
@@ -1514,8 +1300,8 @@ SFR_FUNC void sfr_present_alpha(void) {
 SFR_FUNC void sfr_resize(i32 width, i32 height) {
     sfrWidth = width;
     sfrHeight = height;
-    sfrState.width2 = width / 2.f;
-    sfrState.height2 = height / 2.f;
+    sfrState.halfWidth = width / 2.f;
+    sfrState.halfHeight = height / 2.f;
 
     // top
     sfrState.clipPlanes[0][0] = (Vec){0.f, 0.5f, 0.f, 1.f};
@@ -1595,106 +1381,11 @@ SFR_FUNC void sfr_triangle(
     f32 cx, f32 cy, f32 cz,
     u32 col
 ) {
-    Tri tri = {{
-        {ax, ay, az, 1.f},
-        {bx, by, bz, 1.f},
-        {cx, cy, cz, 1.f},
-    }};
-
-    tri.p[0] = sfr_mat_mul_vec(sfrMatModel, tri.p[0]);
-    tri.p[1] = sfr_mat_mul_vec(sfrMatModel, tri.p[1]);
-    tri.p[2] = sfr_mat_mul_vec(sfrMatModel, tri.p[2]);
-
-    #ifndef SFR_NO_CULLING
-        const Vec line0 = sfr_vec_sub(tri.p[1], tri.p[0]);
-        const Vec line1 = sfr_vec_sub(tri.p[2], tri.p[0]);
-        const Vec normal = sfr_vec_cross(line0, line1);
-        const Vec camRay = sfr_vec_sub(tri.p[0], sfrCamPos);
-        if (sfr_vec_dot(normal, camRay) > 0.f) {
-            return;
-        }
-    #endif
-
-    tri.p[0] = sfr_mat_mul_vec(sfrMatView, tri.p[0]);
-    tri.p[1] = sfr_mat_mul_vec(sfrMatView, tri.p[1]);
-    tri.p[2] = sfr_mat_mul_vec(sfrMatView, tri.p[2]);
-
-    Tri clipped[2];
-    const i32 clippedCount = sfr_clip_against_plane(clipped,
-        (Vec){0.f, 0.f, sfrNearDist, 1.f},
-        (Vec){0.f, 0.f, 1.f, 1.f},
-        tri);
-
-    Tri queue[16];
-    for (i32 c = 0; c < clippedCount; c += 1) {
-        tri.p[0] = sfr_mat_mul_vec(sfrMatProj, clipped[c].p[0]);
-        tri.p[1] = sfr_mat_mul_vec(sfrMatProj, clipped[c].p[1]);
-        tri.p[2] = sfr_mat_mul_vec(sfrMatProj, clipped[c].p[2]);
-
-        tri.p[0] = sfr_vec_div(tri.p[0], tri.p[0].w);
-        tri.p[1] = sfr_vec_div(tri.p[1], tri.p[1].w);
-        tri.p[2] = sfr_vec_div(tri.p[2], tri.p[2].w);
-
-        for (i32 i = 0; i < 3; i += 1) {
-            tri.p[i].x =  (tri.p[i].x + 1.f) * sfrState.width2;
-            tri.p[i].y = (-tri.p[i].y + 1.f) * sfrState.height2;
-        }
-
-        queue[c] = tri;
-    }
-
-    Tri buffer[SFR_ARRLEN(queue)];
-    Tri* inputBuffer = queue;
-    Tri* outputBuffer = buffer;
-    i32 inputCount = clippedCount, outputCount;
-
-    for (i32 p = 0; p < 4; p += 1) {
-        outputCount = 0;
-        for (i32 i = 0; i < inputCount; i += 1) {
-            const Tri test = inputBuffer[i];
-            const i32 c = sfr_clip_against_plane(clipped, sfrState.clipPlanes[p][0], sfrState.clipPlanes[p][1], test);
-            for (i32 j = 0; j < c; j += 1) {
-                // if (outputCount < SFR_ARRLEN(queue)) {
-                outputBuffer[outputCount] = clipped[j];
-                outputCount += 1;
-                // }
-            }
-        }
-        
-        Tri* temp = inputBuffer;
-        inputBuffer = outputBuffer, outputBuffer = temp;
-        inputCount = outputCount, outputCount = 0;
-    }
-
-    if (sfrState.lightingEnabled) {
-        if (sfrState.normalMatDirty) {
-            sfr_update_normal_mat();
-        }
-
-        Vec normal = sfr_vec_face_normal(
-            (Vec){ax, ay, az},
-            (Vec){bx, by, bz},
-            (Vec){cx, cy, cz});
-        
-        normal = sfr_mat_mul_vec(sfrState.matNormal, normal);
-        normal = sfr_vec_norm(normal);
-
-        const f32 intensity = sfr_fmaxf(
-            sfrState.lightingAmbient, 
-            sfr_vec_dot(normal, sfrState.lightingDir));
-        
-        col = sfr_adjust_color_u32(col, intensity);
-    }
-
-    for (i32 i = 0; i < inputCount; i += 1) {
-        const Tri* tri = &inputBuffer[i];
-        sfr_rasterize(
-            tri->p[0].x, tri->p[0].y, tri->p[0].z,
-            tri->p[1].x, tri->p[1].y, tri->p[1].z,
-            tri->p[2].x, tri->p[2].y, tri->p[2].z,
-            col
-        );
-    }
+    sfr_triangle_tex(
+        ax, ay, az, 0.f, 0.f,
+        bx, by, bz, 0.f, 0.f,
+        cx, cy, cz, 0.f, 0.f,
+        col, &sfrState.baseTex);
 }
 
 SFR_FUNC void sfr_triangle_tex(
@@ -1709,12 +1400,13 @@ SFR_FUNC void sfr_triangle_tex(
     const Vec cModel = sfr_mat_mul_vec(sfrMatModel, (Vec){cx, cy, cz, 1.f});
 
     // backface culling
+    Vec triNormal;
     #ifndef SFR_NO_CULLING
-        Vec line0 = sfr_vec_sub(bModel, aModel);
-        Vec line1 = sfr_vec_sub(cModel, aModel);
-        Vec normal = sfr_vec_cross(line0, line1);
-        Vec camRay = sfr_vec_sub(aModel, sfrCamPos);
-        if (sfr_vec_dot(normal, camRay) > 0.f) {
+        const Vec line0 = sfr_vec_sub(bModel, aModel);
+        const Vec line1 = sfr_vec_sub(cModel, aModel);
+        triNormal = sfr_vec_cross(line0, line1);
+        const Vec camRay = sfr_vec_sub(aModel, sfrCamPos);
+        if (sfr_vec_dot(triNormal, camRay) > 0.f) {
             return;
         }
     #endif
@@ -1725,17 +1417,19 @@ SFR_FUNC void sfr_triangle_tex(
             sfr_update_normal_mat();
         }
 
-        Vec normal = sfr_vec_face_normal(
-            (Vec){ax, ay, az},
-            (Vec){bx, by, bz},
-            (Vec){cx, cy, cz});
-        
-        normal = sfr_mat_mul_vec(sfrState.matNormal, normal);
-        normal = sfr_vec_norm(normal);
+        #ifdef SFR_NO_CULLING
+            triNormal = sfr_vec_face_normal(
+                (Vec){ax, ay, az},
+                (Vec){bx, by, bz},
+                (Vec){cx, cy, cz});
+        #endif
+
+        triNormal = sfr_mat_mul_vec(sfrState.matNormal, triNormal);
+        triNormal = sfr_vec_norm(triNormal);
 
         const f32 intensity = sfr_fmaxf(
             sfrState.lightingAmbient, 
-            sfr_vec_dot(normal, sfrState.lightingDir));
+            sfr_vec_dot(triNormal, sfrState.lightingDir));
         
         col = sfr_adjust_color_u32(col, intensity);
     }
@@ -1750,13 +1444,33 @@ SFR_FUNC void sfr_triangle_tex(
         viewTri[i].viewZ = viewTri[i].pos.z;
     }
 
+    
     // prepare clip space verts and transform to clip space
     SfrTexVert clipTris[16][3];
+    SfrTexVert (*input)[3] = clipTris; i32 inputCount = 1; // used in rasterization
     for (i32 i = 0; i < 3; i += 1) {
         clipTris[0][i].pos = sfr_mat_mul_vec(sfrMatProj, viewTri[i].pos);
         clipTris[0][i].u = viewTri[i].u;
         clipTris[0][i].v = viewTri[i].v;
         clipTris[0][i].viewZ = viewTri[i].viewZ;
+    }
+
+    // check if clipping is needed at all
+    const f32 guardBand = 1.2f; // 20 percent    
+    u8 needsClipping = 0;
+    for (i32 i = 0; i < 3; i += 1) {
+        const Vec p = clipTris[0][i].pos;
+        const f32 wGuard = p.w * guardBand;
+        if (p.x < -wGuard || p.x > wGuard || 
+            p.y < -wGuard || p.y > wGuard ||
+            p.z < -p.w || p.z > p.w
+        ) {
+            needsClipping = 1;
+            break;
+        }
+    }
+    if (!needsClipping) {
+        goto SFR_TRI_TEX_RASTERIZE;
     }
 
     // frustum planes in homogeneous clip space
@@ -1765,22 +1479,20 @@ SFR_FUNC void sfr_triangle_tex(
         {-1.f, 0.f, 0.f, 1.f}, // right: -x + w >= 0
         {0.f, 1.f, 0.f, 1.f},  // bottom: y + w >= 0
         {0.f, -1.f, 0.f, 1.f}, // top:   -y + w >= 0
-        {0.f, 0.f, 1.f, 1.f},  // near:   z + w >= 0 (already clipped)
+        {0.f, 0.f, 1.f, 1.f},  // near:   z + w >= 0
         {0.f, 0.f, -1.f, 1.f}  // far:   -z + w >= 0
     };
 
     // clip against frustum planes
     SfrTexVert buffer[SFR_ARRLEN(clipTris)][3];
-    SfrTexVert (*input)[3] = clipTris;
     SfrTexVert (*output)[3] = buffer;
-    i32 inputCount = 1;
     
     // process each clipping plane
     for (i32 p = 0; p < 6; p += 1) {
         i32 outputCount = 0;
         for (i32 i = 0; i < inputCount; i += 1) {
             SfrTexVert clipped[2][3];
-            const i32 count = sfr_clip_tex_tri_homogeneous(
+            const i32 count = sfr_clip_tri_homogeneous(
                 clipped,
                 frustumPlanes[p],
                 input[i]
@@ -1803,6 +1515,8 @@ SFR_FUNC void sfr_triangle_tex(
     }
 
     // rasterize all final triangles
+    SFR_TRI_TEX_RASTERIZE:;
+    const Texture* texToUse = tex ? tex : &sfrState.baseTex;
     for (i32 i = 0; i < inputCount; i += 1) {
         SfrTexVert* tri = input[i];
         SfrTexVert screen[3];
@@ -1810,8 +1524,8 @@ SFR_FUNC void sfr_triangle_tex(
         // perspective divide and screen space conversion
         for (i32 j = 0; j < 3; j += 1) {
             const Vec ndc = sfr_vec_div(tri[j].pos, tri[j].pos.w);
-            screen[j].pos.x =  (ndc.x + 1.f) * sfrState.width2;
-            screen[j].pos.y = (-ndc.y + 1.f) * sfrState.height2;
+            screen[j].pos.x =  (ndc.x + 1.f) * sfrState.halfWidth;
+            screen[j].pos.y = (-ndc.y + 1.f) * sfrState.halfHeight;
             screen[j].pos.z = ndc.z;
             screen[j].u = tri[j].u;
             screen[j].v = tri[j].v;
@@ -1833,41 +1547,12 @@ SFR_FUNC void sfr_triangle_tex(
             screen[0].pos.x, screen[0].pos.y, screen[0].pos.z, aInvZ, auoz, avoz,
             screen[1].pos.x, screen[1].pos.y, screen[1].pos.z, bInvZ, buoz, bvoz,
             screen[2].pos.x, screen[2].pos.y, screen[2].pos.z, cInvZ, cuoz, cvoz,
-            col, tex
+            col, texToUse
         );
     }
 }
 
-SFR_FUNC void sfr_billboard(u32 col) {
-    const Mat savedModel = sfrMatModel;
-    sfrMatModel = sfr_mat_identity();
-
-    const Vec center = { savedModel.m[3][0], savedModel.m[3][1], savedModel.m[3][2], 1.f };
-
-    const f32 sx = 0.5f * sfr_sqrtf(
-        savedModel.m[0][0] * savedModel.m[0][0] + 
-        savedModel.m[0][1] * savedModel.m[0][1] + 
-        savedModel.m[0][2] * savedModel.m[0][2]);
-    const f32 sy = 0.5f * sfr_sqrtf(
-        savedModel.m[1][0] * savedModel.m[1][0] + 
-        savedModel.m[1][1] * savedModel.m[1][1] + 
-        savedModel.m[1][2] * savedModel.m[1][2]);
-
-    const Vec right = { sx * sfrMatView.m[0][0], sx * sfrMatView.m[1][0], sx * sfrMatView.m[2][0], 0.f };
-    const Vec up    = { sy * sfrMatView.m[0][1], sy * sfrMatView.m[1][1], sy * sfrMatView.m[2][1], 0.f };
-
-    const Vec a = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right, -1.f), sfr_vec_mul(up, -1.f)));
-    const Vec b = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right,  1.f), sfr_vec_mul(up, -1.f)));
-    const Vec c = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right,  1.f), sfr_vec_mul(up,  1.f)));
-    const Vec d = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right, -1.f), sfr_vec_mul(up,  1.f)));
-
-    sfr_triangle(a.x, a.y, a.z, c.x, c.y, c.z, b.x, b.y, b.z, col);
-    sfr_triangle(a.x, a.y, a.z, d.x, d.y, d.z, c.x, c.y, c.z, col);
-
-    sfrMatModel = savedModel;
-}
-
-SFR_FUNC void sfr_billboard_tex(u32 col, const Texture* tex) {
+SFR_FUNC void sfr_billboard(u32 col, const Texture* tex) {
     const Mat savedModel = sfrMatModel;
     sfrMatModel = sfr_mat_identity();
 
@@ -1904,37 +1589,7 @@ SFR_FUNC void sfr_billboard_tex(u32 col, const Texture* tex) {
     sfrMatModel = savedModel;
 }
 
-SFR_FUNC void sfr_cube(u32 col) {
-    sfr_triangle(-0.5,-0.5,-0.5, -0.5, 0.5,-0.5,  0.5, 0.5,-0.5, col);
-    sfr_triangle(-0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5,-0.5,-0.5, col);
-    sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5, 0.5, 0.5, col);
-    sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5, 0.5,  0.5,-0.5, 0.5, col);
-    sfr_triangle( 0.5,-0.5, 0.5,  0.5, 0.5, 0.5, -0.5, 0.5, 0.5, col);
-    sfr_triangle( 0.5,-0.5, 0.5, -0.5, 0.5, 0.5, -0.5,-0.5, 0.5, col);
-    sfr_triangle(-0.5,-0.5, 0.5, -0.5, 0.5, 0.5, -0.5, 0.5,-0.5, col);
-    sfr_triangle(-0.5,-0.5, 0.5, -0.5, 0.5,-0.5, -0.5,-0.5,-0.5, col);
-    sfr_triangle(-0.5, 0.5,-0.5, -0.5, 0.5, 0.5,  0.5, 0.5, 0.5, col);
-    sfr_triangle(-0.5, 0.5,-0.5,  0.5, 0.5, 0.5,  0.5, 0.5,-0.5, col);
-    sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5, 0.5, -0.5,-0.5,-0.5, col);
-    sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5,-0.5,  0.5,-0.5,-0.5, col);
-}
-
-SFR_FUNC void sfr_cube_ex(u32 col[12]) {
-    sfr_triangle(-0.5,-0.5,-0.5, -0.5, 0.5,-0.5,  0.5, 0.5,-0.5, col[0]);
-    sfr_triangle(-0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5,-0.5,-0.5, col[1]);
-    sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5, 0.5, 0.5, col[2]);
-    sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5, 0.5,  0.5,-0.5, 0.5, col[3]);
-    sfr_triangle( 0.5,-0.5, 0.5,  0.5, 0.5, 0.5, -0.5, 0.5, 0.5, col[4]);
-    sfr_triangle( 0.5,-0.5, 0.5, -0.5, 0.5, 0.5, -0.5,-0.5, 0.5, col[5]);
-    sfr_triangle(-0.5,-0.5, 0.5, -0.5, 0.5, 0.5, -0.5, 0.5,-0.5, col[6]);
-    sfr_triangle(-0.5,-0.5, 0.5, -0.5, 0.5,-0.5, -0.5,-0.5,-0.5, col[7]);
-    sfr_triangle(-0.5, 0.5,-0.5, -0.5, 0.5, 0.5,  0.5, 0.5, 0.5, col[8]);
-    sfr_triangle(-0.5, 0.5,-0.5,  0.5, 0.5, 0.5,  0.5, 0.5,-0.5, col[9]);
-    sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5, 0.5, -0.5,-0.5,-0.5, col[10]);
-    sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5,-0.5,  0.5,-0.5,-0.5, col[11]);
-}
-
-SFR_FUNC void sfr_cube_tex(u32 col, const Texture* tex) {
+SFR_FUNC void sfr_cube(u32 col, const Texture* tex) {
     // front face
     sfr_triangle_tex(
         -0.5f,-0.5f,-0.5f, 1.f,0.f, 
@@ -1996,17 +1651,22 @@ SFR_FUNC void sfr_cube_tex(u32 col, const Texture* tex) {
          0.5f,-0.5f,-0.5f, 0.f,0.f, col, tex);
 }
 
-SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col) {
-    for (i32 i = 0; i < mesh->vertCount; i += 9) {
-        sfr_triangle(
-            mesh->tris[i + 0], mesh->tris[i + 1], mesh->tris[i + 2],
-            mesh->tris[i + 3], mesh->tris[i + 4], mesh->tris[i + 5],
-            mesh->tris[i + 6], mesh->tris[i + 7], mesh->tris[i + 8],
-            col);
-    }
+SFR_FUNC void sfr_cube_ex(u32 col[12]) {
+    sfr_triangle(-0.5,-0.5,-0.5, -0.5, 0.5,-0.5,  0.5, 0.5,-0.5, col[0]);
+    sfr_triangle(-0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5,-0.5,-0.5, col[1]);
+    sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5, 0.5, 0.5, col[2]);
+    sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5, 0.5,  0.5,-0.5, 0.5, col[3]);
+    sfr_triangle( 0.5,-0.5, 0.5,  0.5, 0.5, 0.5, -0.5, 0.5, 0.5, col[4]);
+    sfr_triangle( 0.5,-0.5, 0.5, -0.5, 0.5, 0.5, -0.5,-0.5, 0.5, col[5]);
+    sfr_triangle(-0.5,-0.5, 0.5, -0.5, 0.5, 0.5, -0.5, 0.5,-0.5, col[6]);
+    sfr_triangle(-0.5,-0.5, 0.5, -0.5, 0.5,-0.5, -0.5,-0.5,-0.5, col[7]);
+    sfr_triangle(-0.5, 0.5,-0.5, -0.5, 0.5, 0.5,  0.5, 0.5, 0.5, col[8]);
+    sfr_triangle(-0.5, 0.5,-0.5,  0.5, 0.5, 0.5,  0.5, 0.5,-0.5, col[9]);
+    sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5, 0.5, -0.5,-0.5,-0.5, col[10]);
+    sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5,-0.5,  0.5,-0.5,-0.5, col[11]);
 }
 
-SFR_FUNC void sfr_mesh_tex(const Mesh* mesh, u32 col, const Texture* tex) {
+SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col, const Texture* tex) {
     for (i32 i = 0; i < mesh->vertCount; i += 9) {
         const i32 uv = (i / 9) * 6;
         const f32 ax = mesh->tris[i + 0];
@@ -2068,8 +1728,8 @@ SFR_FUNC i32 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY
     }
 
     p = sfr_vec_div(p, p.w);
-    p.x = (1.f + p.x) * sfrState.width2;
-    p.y = (1.f - p.y) * sfrState.height2;
+    p.x = (1.f + p.x) * sfrState.halfWidth;
+    p.y = (1.f - p.y) * sfrState.halfHeight;
 
     *screenX = (i32)(p.x + 0.5f);
     *screenY = (i32)(p.y + 0.5f);
@@ -2624,11 +2284,7 @@ SFR_FUNC void sfr_particles_draw(const ParticleSystem* sys) {
         sfr_reset();
         sfr_scale(size, size, size);
         sfr_translate(p->px, p->py, p->pz);
-        if (sys->tex) {
-            sfr_billboard_tex(col, sys->tex);
-        } else {
-            sfr_billboard(col);
-        }
+        sfr_billboard(col, sys->tex);
     }
 }
 
