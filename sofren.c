@@ -787,20 +787,22 @@ SFR_FUNC Mat sfr_mat_look_at(Vec pos, Vec target, Vec up) {
 //================================================
 
 SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const SfrTexVert in[3]) {
-    const Vec norm = sfr_vec_norm((Vec){plane.x, plane.y, plane.z, 0.f});
-    const f32 planeD = plane.w;
-    
-    SfrTexVert inside[3];
-    SfrTexVert outside[3];
+    SfrTexVert inside[3], outside[3];
+    f32 insideDists[3], outsideDists[3];
     i32 insideCount = 0, outsideCount = 0;
 
+    // precompute distances during classification
     for (i32 i = 0; i < 3; i += 1) {
         const Vec v = in[i].pos;
-        const f32 dist = norm.x * v.x + norm.y * v.y + norm.z * v.z + planeD * v.w;
-        if (dist >= 0) {
-            inside[insideCount++] = in[i];
+        const f32 dist = plane.x * v.x + plane.y * v.y + plane.z * v.z + plane.w * v.w;
+        if (dist >= 0.f) {
+            inside[insideCount] = in[i];
+            insideDists[insideCount] = dist;
+            insideCount += 1;
         } else {
-            outside[outsideCount++] = in[i];
+            outside[outsideCount] = in[i];
+            outsideDists[outsideCount] = dist;
+            outsideCount += 1;
         }
     }
 
@@ -816,11 +818,10 @@ SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const Sfr
         const SfrTexVert b = outside[0];
         const SfrTexVert c = outside[1];
 
-        // interpolation factors
-        const Vec vA = a.pos, vB = b.pos, vC = c.pos;
-        const f32 dA = norm.x * vA.x + norm.y * vA.y + norm.z * vA.z + planeD * vA.w;
-        const f32 dB = norm.x * vB.x + norm.y * vB.y + norm.z * vB.z + planeD * vB.w;
-        const f32 dC = norm.x * vC.x + norm.y * vC.y + norm.z * vC.z + planeD * vC.w;
+        // use precomputed distances
+        const f32 dA = insideDists[0];
+        const f32 dB = outsideDists[0];
+        const f32 dC = outsideDists[1];
         
         const f32 tAB = dA / (dA - dB);
         const f32 tAC = dA / (dA - dC);
@@ -862,11 +863,10 @@ SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const Sfr
         const SfrTexVert b = inside[1];
         const SfrTexVert c = outside[0];
 
-        // interpolation factors
-        const Vec vA = a.pos, vB = b.pos, vC = c.pos;
-        const f32 dA = norm.x * vA.x + norm.y * vA.y + norm.z * vA.z + planeD * vA.w;
-        const f32 dB = norm.x * vB.x + norm.y * vB.y + norm.z * vB.z + planeD * vB.w;
-        const f32 dC = norm.x * vC.x + norm.y * vC.y + norm.z * vC.z + planeD * vC.w;
+        // use precomputed distances
+        const f32 dA = insideDists[0];
+        const f32 dB = insideDists[1];
+        const f32 dC = outsideDists[0];
         
         const f32 tAC = dA / (dA - dC);
         const f32 tBC = dB / (dB - dC);
@@ -910,7 +910,7 @@ SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const Sfr
     return 0;
 }
 
-SFR_FUNC void sfr_rasterize_tex(
+SFR_FUNC void sfr_rasterize(
     f32 ax, f32 ay, f32 az, f32 aInvZ, f32 auoz, f32 avoz,
     f32 bx, f32 by, f32 bz, f32 bInvZ, f32 buoz, f32 bvoz,
     f32 cx, f32 cy, f32 cz, f32 cInvZ, f32 cuoz, f32 cvoz,
@@ -1237,12 +1237,17 @@ SFR_FUNC void sfr_update_normal_mat(void) {
 //================================================
 
 #ifdef SFR_NO_ALPHA
-
 SFR_FUNC void sfr_init(u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
+#else
+SFR_FUNC void sfr_init(SfrAccumCol* accumBuf, u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
+#endif
     sfr_resize(w, h);
     
     sfrPixelBuf = pixelBuf;
     sfrDepthBuf = depthBuf;
+    #ifndef SFR_NO_ALPHA
+        sfrAccumBuf = accumBuf;
+    #endif
 
     sfr_clear(0xFF000000);
     sfr_reset();
@@ -1253,23 +1258,7 @@ SFR_FUNC void sfr_init(u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
     sfrState.baseTex = (Texture){ .w = 1, .h = 1, .pixels = sfrState.baseTexPixels };
 }
 
-#else
-
-SFR_FUNC void sfr_init(SfrAccumCol* accumBuf, u32* pixelBuf, f32* depthBuf, i32 w, i32 h, f32 fovDeg) {
-    sfr_resize(w, h);
-
-    sfrPixelBuf = pixelBuf;
-    sfrDepthBuf = depthBuf;
-    sfrAccumBuf = accumBuf;
-
-    sfr_clear(0xFF000000);
-    sfr_reset();
-    sfr_set_fov(fovDeg);
-    sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
-
-    sfrState.baseTexPixels[0] = 0xFFFFFFFF;
-    sfrState.baseTex = (Texture){ .w = 1, .h = 1, .pixels = sfrState.baseTexPixels };
-}
+#ifndef SFR_NO_ALPHA
 
 // TODO: BUG: if there are two transparent objects separated by a solid object
 // and the scene is viewed so the transparent objects overlap one another through the wall,
@@ -1418,10 +1407,9 @@ SFR_FUNC void sfr_triangle_tex(
         }
 
         #ifdef SFR_NO_CULLING
-            triNormal = sfr_vec_face_normal(
-                (Vec){ax, ay, az},
-                (Vec){bx, by, bz},
-                (Vec){cx, cy, cz});
+            const Vec line0 = sfr_vec_sub(bModel, aModel);
+            const Vec line1 = sfr_vec_sub(cModel, aModel);
+            triNormal = sfr_vec_cross(line0, line1);
         #endif
 
         triNormal = sfr_mat_mul_vec(sfrState.matNormal, triNormal);
@@ -1475,12 +1463,12 @@ SFR_FUNC void sfr_triangle_tex(
 
     // frustum planes in homogeneous clip space
     const Vec frustumPlanes[6] = {
+        {0.f, 0.f, 1.f, 1.f},  // near:   z + w >= 0
+        {0.f, 0.f, -1.f, 1.f}, // far:   -z + w >= 0
         {1.f, 0.f, 0.f, 1.f},  // left:   x + w >= 0
         {-1.f, 0.f, 0.f, 1.f}, // right: -x + w >= 0
         {0.f, 1.f, 0.f, 1.f},  // bottom: y + w >= 0
-        {0.f, -1.f, 0.f, 1.f}, // top:   -y + w >= 0
-        {0.f, 0.f, 1.f, 1.f},  // near:   z + w >= 0
-        {0.f, 0.f, -1.f, 1.f}  // far:   -z + w >= 0
+        {0.f, -1.f, 0.f, 1.f}  // top:   -y + w >= 0
     };
 
     // clip against frustum planes
@@ -1543,7 +1531,7 @@ SFR_FUNC void sfr_triangle_tex(
         const f32 cuoz = screen[2].u * cInvZ;
         const f32 cvoz = screen[2].v * cInvZ;
         
-        sfr_rasterize_tex(
+        sfr_rasterize(
             screen[0].pos.x, screen[0].pos.y, screen[0].pos.z, aInvZ, auoz, avoz,
             screen[1].pos.x, screen[1].pos.y, screen[1].pos.z, bInvZ, buoz, bvoz,
             screen[2].pos.x, screen[2].pos.y, screen[2].pos.z, cInvZ, cuoz, cvoz,
