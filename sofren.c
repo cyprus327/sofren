@@ -335,7 +335,6 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max]
 //:         IMPLEMENTATION
 //================================================
 
-#define SFR_IMPL
 #ifdef SFR_IMPL
 
 #ifndef SFR_NO_STRING
