@@ -23,14 +23,15 @@
 For examples and good starting points rendering to an SDL2 window or console window, see the examples folder
 
 ## Features
-- As few a 0 other headers included, can be 100% standalone
-- Single file - just `#include "sofren.c"`
-- Primitive drawing (triangles, cubes, billboards)
+- As few a 0 other headers, can be 100% standalone
+- Single file, just `#include "sofren.c"`
+- Cross platform multithreading (Windows or pthreads)
 - Perspective correct texture mapping (currently only .bmp image support)
-- Transparency (with a known bug though, see the bottom of this README)
+- Transparency (known limitation / bug, see the bottom of this README)
 - OBJ mesh loading (requires `stdio.h`)
 - Flat shading with directional lighting
 - Customizable math implementations (system or bundled)
+- Primitive drawing (triangles, cubes, billboards)
 - Simplistic design, quick to learn and use
 - ARGB8888 color format support
 - Backface culling, depth buffering, and clipping
@@ -47,7 +48,11 @@ For examples and good starting points rendering to an SDL2 window or console win
 #define SFR_NO_STRING // don't include 'string.h'
 #define SFR_NO_STDINT // don't include 'stdint.h'
 
-#define SFR_NO_CULLING // disable culling triangles
+// disable culling triangles
+#define SFR_NO_CULLING
+
+// disable transparency, big FPS boost
+#define SFR_NO_ALPHA
 
 // types are defined as things like 'i32' or 'Vec' internally,
 // if this causes some issue define this for types
@@ -64,14 +69,25 @@ For examples and good starting points rendering to an SDL2 window or console win
 // defines SFR_FUNC as either 'static inline' default is 'static'
 #define SFR_USE_INLINE
 
+// max width and height of the window to avoid reallocations when resizing
+#define SFR_MAX_WIDTH  // default of 1920
+#define SFR_MAX_HEIGHT // default of 1080
+
 // only applicable when SFR_NO_MATH is defined, their values
 // dictate the accuracy of the bundled math functions
-#define SFR_SQRT_ACCURACY // defaults to 20 if not defined
-#define SFR_TRIG_ACCURACY // defaults to 10 if not defined
+#define SFR_SQRT_ACCURACY // default of 20
+#define SFR_TRIG_ACCURACY // default of 10
 
 // for text rendering
-#define SFR_FONT_GLYPH_MAX // max glyphs per font, defaults to 512
-#define SFR_FONT_VERT_MAX  // max verts per glyph, defaults to 72 (12 tris)
+#define SFR_FONT_GLYPH_MAX // max glyphs per font, default of 512
+#define SFR_FONT_VERT_MAX  // max verts per glyph, default of 72 (12 tris)
+
+// when SFR_THREAD_COUNT isn't 1, below is applicable
+#define SFR_THREAD_COUNT      // default of 1, i.e. single threaded
+#define SFR_TILE_WIDTH        // default of 64, in pixels
+#define SFR_TILE_HEIGHT       // default of 64, in pixels
+#define SFR_MAX_BINS_PER_TILE // default of 4096, max tris that can be rendered on one screen tile 
+#define SFR_MAX_BINNED_TRIS   // default of 256k, max tris that can be rendered per frame
 ```
 
 ## Global Variables
@@ -84,9 +100,9 @@ There are some global variables in sofren.c, those in the public API are:
 // just remember to call realloc on sfrPixelBuf and sfrDepthBuf
 extern i32 sfrWidth, sfrHeight;
 
-// the pixel and depth buffers, used interally but memory managed by you
-extern u32* sfrPixelBuf; // ARGB8888, i.e. 0xFF0000 == RED, 0x0000FF == BLUE
-extern f32* sfrDepthBuf;
+// all buffers, i.e. pixel, depth, accumulation, as well as threading
+// data (tiling system, work dispatch, and thread management)
+extern SfrBuffers* sfrBuffers;
 
 // how many triangles have been rasterized since the last call to clear
 extern i32 sfrRasterCount;
@@ -103,18 +119,18 @@ extern f32 sfrCamFov; // use 'sfr_set_fov' when changing
 extern f32 sfrNearDist, sfrFarDist;
 ```
 
-## Examples
+## Simple Example
 
 **For more in depth examples, see the examples folder**
 
 ### Red Rotating Cube
 ```c
-sfr_reset();                   // prepare to draw
+sfr_reset();                   // reset model matrix to identity
 sfr_rotate_y(time);            // rotate about y, radians not degrees
 sfr_rotate_x(time * 0.5f);     // rotate about x
 sfr_scale(1.f, 3.f, 0.5f);     // scale by x y z
 sfr_translate(0.f, 0.f, 2.5f); // move to x y z
-sfr_cube(0xFF0000);            // draw pure red cube
+sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors)
 ``` 
 
 ## TODO / Upcoming Features / Known Bugs
