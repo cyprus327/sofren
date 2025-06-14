@@ -27,9 +27,7 @@ small example showing usage of a Font struct and .srft file
 i32 main() {
     { // initialize sofren
         const i32 w = 1280 * RES_SCALE, h = 720 * RES_SCALE;
-        u32* pixelBuf = (u32*)malloc(sizeof(u32) * w * h);
-        f32* depthBuf = (f32*)malloc(sizeof(f32) * w * h);
-        sfr_init(pixelBuf, depthBuf, w, h, 50.f);
+        sfr_init(malloc(sizeof(SfrBuffers)), w, h, 50.f);
         sfr_set_lighting(1, sfr_vec_normf(-0.5f, 0.1f, -1.f), 0.4f);
     }
 
@@ -102,7 +100,7 @@ i32 main() {
         }
 
         { // update SDL window
-            SDL_UpdateTexture(texture, NULL, sfrPixelBuf, sfrWidth * 4);
+            SDL_UpdateTexture(texture, NULL, sfrBuffers->pixel, sfrWidth * 4);
             SDL_RenderClear(renderer);
             SDL_RenderCopy(renderer, texture, NULL, NULL);
             SDL_RenderPresent(renderer);
@@ -110,8 +108,7 @@ i32 main() {
     }
 
     { // cleanup
-        free(sfrPixelBuf);
-        free(sfrDepthBuf);
+        free(sfrBuffers);
         sfr_release_font(&font);
         
         SDL_DestroyTexture(texture);

@@ -2,6 +2,7 @@
 
 demonstrates:
     transparent drawing (alpha in use),
+    multithreaded rendering,
     loading textures and meshes and drawing them,
     ui with an FPS counter / text rendering,
     resizeable window,
@@ -10,7 +11,14 @@ demonstrates:
 */
 
 #define SFR_IMPL
-#define SFR_NO_ALPHA // ~15 more FPS when defined but no transparency
+#define SFR_THREAD_COUNT 8
+#define SFR_MAX_BINS_PER_TILE (1024 * 8)
+#define SFR_MAX_BINNED_TRIS (1024 * 16)
+#define SFR_TILE_WIDTH 64
+#define SFR_TILE_HEIGHT 64
+#define SFR_MAX_WIDTH 1280
+#define SFR_MAX_HEIGHT 720
+#define SFR_NO_ALPHA
 #include "../sofren.c"
 
 #include <SDL2/SDL.h>
@@ -49,7 +57,7 @@ i32 main() {
     cubeTex = sfr_load_texture("examples/res/test.bmp");
     particleTex = sfr_load_texture("tests/parrot.bmp");
     font = sfr_load_font("examples/res/basic-font.srft");
-    if (!mesh || !meshTex || !cubeTex || !font) {
+    if (!mesh || !meshTex || !cubeTex || !particleTex || !font) {
         return 1;
     }
 
@@ -59,20 +67,10 @@ i32 main() {
     // initial window dimensions
     const i32 startWidth = 1280 * RES_SCALE, startHeight = 720 * RES_SCALE;
     
-    { // initialize sofren
-        // in brackets so these variables aren't used anywhere else,
-        // use sfrPixelBuf, sfrDepthBuf, sfrAccumBuf
-        u32* pixelBuf = malloc(sizeof(u32) * startWidth * startHeight);
-        f32* depthBuf = malloc(sizeof(f32) * startWidth * startHeight);
-        #ifdef SFR_NO_ALPHA
-            sfr_init(pixelBuf, depthBuf, startWidth, startHeight, 50.f);
-        #else
-            // accumBuf is only needed when alpha blending is enabled
-            SfrAccumCol* accumBuf = malloc(sizeof(SfrAccumCol) * startWidth * startHeight);
-            sfr_init(accumBuf, pixelBuf, depthBuf, startWidth, startHeight, 50.0f);
-        #endif
-    }
-    
+    // initialize sofren, use 'sfrBuffers' for the malloced memory
+    // e.g. 'sfrBuffers->pixel[0] = 0xFFFFFFFF;' sets the first pixel to white
+    sfr_init(malloc(sizeof(SfrBuffers)), startWidth, startHeight, 50.f);
+
     // initialize SDL
     SDL_Init(SDL_INIT_VIDEO);
     SDL_Window* window = SDL_CreateWindow("Window", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -120,32 +118,34 @@ i32 main() {
         // clear previous frame and draw next one
         sfr_clear(0xFF041411);
         draw(time, frameTime);
+        #ifdef SFR_MULTITHREADED
+            sfr_flush_and_wait();
+        #endif
 
         // update SDL window
-        SDL_UpdateTexture(sdlTex, NULL, sfrPixelBuf, sfrWidth * 4);
+        SDL_UpdateTexture(sdlTex, NULL, sfrBuffers->pixel, sfrWidth * 4);
         SDL_RenderClear(renderer);
         SDL_RenderCopy(renderer, sdlTex, NULL, NULL);
         SDL_RenderPresent(renderer);
     }
 
     // cleanup and close SDL window
+    #ifdef SFR_MULTITHREADED
+        sfr_shutdown();
+    #endif
     sfr_release_font(&font);
     sfr_release_texture(&cubeTex);
     sfr_release_texture(&meshTex);
     sfr_release_texture(&particleTex);
     sfr_release_mesh(&mesh);
     free(particleBuf);
-    free(sfrPixelBuf);
-    free(sfrDepthBuf);
-    #ifndef SFR_NO_ALPHA
-        free(sfrAccumBuf);
-    #endif
+    free(sfrBuffers);
     
     SDL_DestroyTexture(sdlTex);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
-    
+
     return 0;
 }
 
@@ -176,12 +176,12 @@ static void draw(f32 time, f32 frameTime) {
         // col |= 0xFF000000;
     
         // lighting settings
-        sfr_set_lighting(1, sfr_vec_normf(0.6f, 1.f, -1.f), 0.4f);
-    
+        sfr_set_lighting(1, sfr_vec_normf(0.6f, -0.6f, -0.6f), 0.4f);
+
         // transparent hawk
         sfr_reset();
         sfr_rotate_x(SFR_PI * 1.5f);
-        sfr_rotate_y(time * 1.5f);
+        sfr_rotate_y(time);
         sfr_scale(0.125f, 0.125f, 0.125f);
         sfr_translate(-2.5f, -2.f, 8.f);
         sfr_mesh(mesh, col, meshTex);
@@ -189,7 +189,7 @@ static void draw(f32 time, f32 frameTime) {
         // solid untextured hawk
         sfr_reset();
         sfr_rotate_x(SFR_PI * 1.5f);
-        sfr_rotate_y(time * 1.5f);
+        sfr_rotate_y(time);
         sfr_scale(0.125f, 0.125f, 0.125f);
         sfr_translate(2.5f, -2.f, 8.f);
         sfr_mesh(mesh, col, cubeTex);
@@ -240,11 +240,14 @@ static void draw(f32 time, f32 frameTime) {
     #ifndef SFR_NO_ALPHA
         sfr_present_alpha();
     #endif
-
-    // reset depth buffer before drawing ui
-    memset(sfrDepthBuf, 0x7F, sizeof(f32) * sfrWidth * sfrHeight);
-
+    
     { // draw ui text
+        // reset depth buffer before drawing ui
+        sfr_clear_depth();
+        #ifdef SFR_MULTITHREADED
+            sfr_flush_and_wait();
+        #endif
+        
         static f32 fpsTimer = 0.f;
         static i32 fpsCounter = 0;
         fpsTimer += frameTime;
@@ -258,16 +261,17 @@ static void draw(f32 time, f32 frameTime) {
         static char trisBuf[24] = "";
         static i32 trisLen = 0;
 
-        if (fpsTimer >= 1.f) {
+        const f32 interval = 0.334f;
+        if (fpsTimer >= interval) {
             fpsLen = 0;
-            snprintf(fpsBuf, sizeof(fpsBuf), "%d", fpsCounter);
+            snprintf(fpsBuf, sizeof(fpsBuf), "%d", (i32)(fpsCounter / fpsTimer + 0.5f));
             while ('\0' != fpsBuf[fpsLen++]) { }
 
             trisLen = 0;
             snprintf(trisBuf, sizeof(trisBuf), "%d tris", trisCounter / fpsCounter);
             while ('\0' != trisBuf[trisLen++]) { }
 
-            fpsTimer -= 1.f;
+            fpsTimer -= interval;
             fpsCounter = 0;
             trisCounter = 0;
         }
@@ -291,7 +295,11 @@ static void draw(f32 time, f32 frameTime) {
         }
 
         // count tris from drawing text as well
-        trisCounter += sfrRasterCount;
+        #ifdef SFR_MULTITHREADED
+            trisCounter += sfr_atomic_get(&sfrRasterCount);
+        #else
+            trisCounter += sfrRasterCount;
+        #endif
     }
 }
 
@@ -302,6 +310,11 @@ static void handle_resize(SDL_Window* window, SDL_Renderer* renderer, SDL_Textur
     width *= RES_SCALE;
     height *= RES_SCALE;
 
+    // if the window is <= max size its fine
+    if (width > SFR_MAX_WIDTH || height > SFR_MAX_HEIGHT) {
+        return;
+    }
+
     // if the window hasn't resized don't resize it
     if (width == sfrWidth && height == sfrHeight) {
         return;
@@ -310,13 +323,6 @@ static void handle_resize(SDL_Window* window, SDL_Renderer* renderer, SDL_Textur
     // update sfr internals
     sfr_resize(width, height);
 
-    // update buffers
-    sfrPixelBuf = realloc(sfrPixelBuf, sizeof(u32) * width * height);
-    sfrDepthBuf = realloc(sfrDepthBuf, sizeof(f32) * width * height);
-    #ifndef SFR_NO_ALPHA
-        sfrAccumBuf = realloc(sfrAccumBuf, sizeof(SfrAccumCol) * width * height);
-    #endif
-    
     // update projection matrix
     sfr_set_fov(sfrCamFov);
 
