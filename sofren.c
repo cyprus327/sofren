@@ -1,3 +1,5 @@
+#define SFR_IMPL
+
 #ifndef SFR_H
 #define SFR_H
 
@@ -243,14 +245,14 @@ SFR_FUNC void sfr_clear_depth(void);
 
 // triangle drawing functions
 SFR_FUNC void sfr_triangle(
-    f32 ax, f32 ay, f32 az,
-    f32 bx, f32 by, f32 bz,
-    f32 cx, f32 cy, f32 cz,
+    f32 ax, f32 ay, f32 az, f32 anx, f32 any, f32 anz,
+    f32 bx, f32 by, f32 bz, f32 bnx, f32 bny, f32 bnz,
+    f32 cx, f32 cy, f32 cz, f32 cnx, f32 cny, f32 cnz,
     u32 col);
 SFR_FUNC void sfr_triangle_tex(
-    f32 ax, f32 ay, f32 az, f32 au, f32 av,
-    f32 bx, f32 by, f32 bz, f32 bu, f32 bv,
-    f32 cx, f32 cy, f32 cz, f32 cu, f32 cv,
+    f32 ax, f32 ay, f32 az, f32 au, f32 av, f32 anx, f32 any, f32 anz,
+    f32 bx, f32 by, f32 bz, f32 bu, f32 bv, f32 bnx, f32 bny, f32 bnz,
+    f32 cx, f32 cy, f32 cz, f32 cu, f32 cv, f32 cnx, f32 cny, f32 cnz,
     u32 col, const Texture* tex);
 
 // other drawing functions, if tex is null sfrState.baseTex (white 1x1 texture) will be used
@@ -455,6 +457,7 @@ typedef struct sfrtri {
 typedef struct sfrmesh {
     f32* tris;     // vertex positions
     f32* uvs;      // uv coordinates
+    f32* normals;  // vertex normals
     i32 vertCount; // total number of floats (3 per vertex)
 } Mesh;
 
@@ -483,10 +486,11 @@ typedef struct sfrparticles {
     const Texture* tex;
 } ParticleSystem;
 
+// GOURAUD: Triangle bin now stores per-vertex intensity
 typedef struct sfrTriangleBin {
-    f32 ax, ay, az, aInvZ, auoz, avoz;
-    f32 bx, by, bz, bInvZ, buoz, bvoz;
-    f32 cx, cy, cz, cInvZ, cuoz, cvoz;
+    f32 ax, ay, az, aInvZ, auoz, avoz, aIntensity;
+    f32 bx, by, bz, bInvZ, buoz, bvoz, bIntensity;
+    f32 cx, cy, cz, cInvZ, cuoz, cvoz, cIntensity;
     u32 col;
     const Texture* tex;
 } SfrTriangleBin;
@@ -560,9 +564,10 @@ typedef struct sfrState {
 
 // helper to track vertex attributes during clipping of textured triangles
 typedef struct sfrTexVert {
-    Vec pos;   // position in view space
-    f32 u, v;  // texture coords
-    f32 viewZ; // z in view space for perspective correction
+    Vec pos;       // position in view space
+    f32 u, v;      // texture coords
+    f32 viewZ;     // z in view space for perspective correction
+    f32 intensity; // lighting intensity
 } SfrTexVert;
 
 
@@ -775,12 +780,7 @@ SFR_FUNC Vec sfr_vec_cross(Vec a, Vec b) {
 
 SFR_FUNC Vec sfr_vec_norm(Vec v) {
     const f32 l = sfr_vec_length(v);
-    Vec r;
-    r.x = v.x / l;
-    r.y = v.y / l;
-    r.z = v.z / l;
-    r.w = 1.f;
-    return r;
+    return l > SFR_EPSILON ? sfr_vec_mul(v, 1.f / l) : SFR_VEC0;
 }
 
 SFR_FUNC Vec sfr_vec_normf(f32 x, f32 y, f32 z) {
@@ -990,7 +990,8 @@ SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const Sfr
             },
             .u = a.u + tAB * (b.u - a.u),
             .v = a.v + tAB * (b.v - a.v),
-            .viewZ = a.viewZ + tAB * (b.viewZ - a.viewZ)
+            .viewZ = a.viewZ + tAB * (b.viewZ - a.viewZ),
+            .intensity = a.intensity + tAB * (b.intensity - a.intensity)
         };
         
         // interpolate vertex c
@@ -1003,7 +1004,8 @@ SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const Sfr
             },
             .u = a.u + tAC * (c.u - a.u),
             .v = a.v + tAC * (c.v - a.v),
-            .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ)
+            .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ),
+            .intensity = a.intensity + tAC * (c.intensity - a.intensity)
         };
 
         out[0][0] = a;
@@ -1035,7 +1037,8 @@ SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const Sfr
             },
             .u = a.u + tAC * (c.u - a.u),
             .v = a.v + tAC * (c.v - a.v),
-            .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ)
+            .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ),
+            .intensity = a.intensity + tAC * (c.intensity - a.intensity)
         };
 
         SfrTexVert newBC = {
@@ -1047,7 +1050,8 @@ SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const Sfr
             },
             .u = b.u + tBC * (c.u - b.u),
             .v = b.v + tBC * (c.v - b.v),
-            .viewZ = b.viewZ + tBC * (c.viewZ - b.viewZ)
+            .viewZ = b.viewZ + tBC * (c.viewZ - b.viewZ),
+            .intensity = b.intensity + tBC * (c.intensity - b.intensity)
         };
 
         out[0][0] = a;
@@ -1081,9 +1085,9 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
     f32 bx = (f32)((i32)bin->bx), by = (f32)((i32)bin->by), bz = bin->bz;
     f32 cx = (f32)((i32)bin->cx), cy = (f32)((i32)bin->cy), cz = bin->cz;
     
-    f32 aInvZ = bin->aInvZ, auoz = bin->auoz, avoz = bin->avoz;
-    f32 bInvZ = bin->bInvZ, buoz = bin->buoz, bvoz = bin->bvoz;
-    f32 cInvZ = bin->cInvZ, cuoz = bin->cuoz, cvoz = bin->cvoz;
+    f32 aInvZ = bin->aInvZ, auoz = bin->auoz, avoz = bin->avoz, aIntensity = bin->aIntensity;
+    f32 bInvZ = bin->bInvZ, buoz = bin->buoz, bvoz = bin->bvoz, bIntensity = bin->bIntensity;
+    f32 cInvZ = bin->cInvZ, cuoz = bin->cuoz, cvoz = bin->cvoz, cIntensity = bin->cIntensity;
 
     const Texture* tex = bin->tex;
     
@@ -1091,14 +1095,17 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
     if (ay > by) {
         SFR_SWAPF(ax, bx); SFR_SWAPF(ay, by); SFR_SWAPF(az, bz);
         SFR_SWAPF(aInvZ, bInvZ); SFR_SWAPF(auoz, buoz); SFR_SWAPF(avoz, bvoz);
+        SFR_SWAPF(aIntensity, bIntensity);
     }
     if (ay > cy) {
         SFR_SWAPF(ax, cx); SFR_SWAPF(ay, cy); SFR_SWAPF(az, cz);
         SFR_SWAPF(aInvZ, cInvZ); SFR_SWAPF(auoz, cuoz); SFR_SWAPF(avoz, cvoz);
+        SFR_SWAPF(aIntensity, cIntensity);
     }
     if (by > cy) {
         SFR_SWAPF(bx, cx); SFR_SWAPF(by, cy); SFR_SWAPF(bz, cz);
         SFR_SWAPF(bInvZ, cInvZ); SFR_SWAPF(buoz, cuoz); SFR_SWAPF(bvoz, cvoz);
+        SFR_SWAPF(bIntensity, cIntensity);
     }
 
     const i32 texW = tex->w, texH = tex->h;
@@ -1110,6 +1117,7 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
     const f32 deltaACinvZ = cInvZ - aInvZ;
     const f32 deltaACuoz = cuoz - auoz;
     const f32 deltaACvoz = cvoz - avoz;
+    const f32 deltaACIntensity = cIntensity - aIntensity;
     const f32 invHeightAC = (cy != ay) ? 1.f / (cy - ay) : 0.f;
 
     { // lower triangle (A to B)
@@ -1118,6 +1126,7 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
         const f32 deltaABinvZ = bInvZ - aInvZ;
         const f32 deltaABuoz = buoz - auoz;
         const f32 deltaABvoz = bvoz - avoz;
+        const f32 deltaABIntensity = bIntensity - aIntensity;
         const f32 invHeightAB = (by != ay) ? 1.f / (by - ay) : 0.f;
 
         const i32 yStart = SFR_MAX(tile->minY, ay);
@@ -1133,6 +1142,7 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
             f32 sInvZ = aInvZ + deltaACinvZ * alpha;
             f32 su = auoz + deltaACuoz * alpha;
             f32 sv = avoz + deltaACvoz * alpha;
+            f32 sIntensity = aIntensity + deltaACIntensity * alpha;
     
             // interpolate along AB edge (end)
             f32 ex = ax + deltaABX * beta;
@@ -1140,11 +1150,13 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
             f32 eInvZ = aInvZ + deltaABinvZ * beta;
             f32 eu = auoz + deltaABuoz * beta;
             f32 ev = avoz + deltaABvoz * beta;
+            f32 eIntensity = aIntensity + deltaABIntensity * beta;
     
             // swap start/end if needed
             if (sx > ex) {
                 SFR_SWAPF(sx, ex); SFR_SWAPF(sz, ez);
                 SFR_SWAPF(sInvZ, eInvZ); SFR_SWAPF(su, eu); SFR_SWAPF(sv, ev);
+                SFR_SWAPF(sIntensity, eIntensity);
             }
     
             // clamp x coordinates
@@ -1161,16 +1173,18 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
             const f32 invZStep = (eInvZ - sInvZ) * tStep;
             const f32 uStep = (eu - su) * tStep;
             const f32 vStep = (ev - sv) * tStep;
+            const f32 intensityStep = (eIntensity - sIntensity) * tStep;
     
             // initialize current values
             f32 depth = sz + (xStart - sx) * depthStep; // NDC z for depth testing
             f32 invZ = sInvZ + (xStart - sx) * invZStep;
             f32 uoz = su + (xStart - sx) * uStep;
             f32 voz = sv + (xStart - sx) * vStep;
+            f32 intensity = sIntensity + (xStart - sx) * intensityStep;
     
             // rasterize scanline
             for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1,
-                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep
+                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep, intensity += intensityStep
             ) {
                 if (depth > sfrBuffers->depth[i]) {
                     continue;
@@ -1196,9 +1210,12 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
                 SFR_DIV255(fr, tr, cr);
                 SFR_DIV255(fg, tg, cg);
                 SFR_DIV255(fb, tb, cb);
+                const u8 lr = (u8)(fr * intensity);
+                const u8 lg = (u8)(fg * intensity);
+                const u8 lb = (u8)(fb * intensity);
 
                 #ifdef SFR_NO_ALPHA
-                    sfrBuffers->pixel[i] = (fr << 16) | (fg << 8) | fb;
+                    sfrBuffers->pixel[i] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
                     sfrBuffers->depth[i] = depth;
                 #else
                     const u8 ta = (texCol >> 24) & 0xFF;
@@ -1208,9 +1225,9 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
                         SFR_DIV255(contribution, 255 - currAlpha, fa);
 
                         // accumulate premultiplied color components
-                        SFR_DIV255(accumR, fr, contribution);
-                        SFR_DIV255(accumG, fg, contribution);
-                        SFR_DIV255(accumB, fb, contribution);
+                        SFR_DIV255(accumR, lr, contribution);
+                        SFR_DIV255(accumG, lg, contribution);
+                        SFR_DIV255(accumB, lb, contribution);
                         sfrBuffers->accum[i].r += accumR;
                         sfrBuffers->accum[i].g += accumG;
                         sfrBuffers->accum[i].b += accumB;
@@ -1221,7 +1238,7 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
                             sfrBuffers->accum[i].depth = depth;
                         }
                     } else {
-                        sfrBuffers->pixel[i] = (fr << 16) | (fg << 8) | fb;
+                        sfrBuffers->pixel[i] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
                         sfrBuffers->depth[i] = depth;
                     }
                 #endif
@@ -1235,6 +1252,7 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
         const f32 deltaBCinvZ = cInvZ - bInvZ;
         const f32 deltaBCuoz = cuoz - buoz;
         const f32 deltaBCvoz = cvoz - bvoz;
+        const f32 deltaBCIntensity = cIntensity - bIntensity;
         const f32 invHeightBC = (cy != by) ? 1.f / (cy - by) : 0.f;
     
         const i32 yStart = SFR_MAX(tile->minY, by);
@@ -1249,6 +1267,7 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
             f32 sInvZ = bInvZ + deltaBCinvZ * beta;
             f32 suoz = buoz + deltaBCuoz * beta;
             f32 svoz = bvoz + deltaBCvoz * beta;
+            f32 sIntensity = bIntensity + deltaBCIntensity * beta;
     
             // interpolate along AC edge (end)
             f32 ex = ax + deltaACX * alpha;
@@ -1256,14 +1275,13 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
             f32 eInvZ = aInvZ + deltaACinvZ * alpha;
             f32 euoz = auoz + deltaACuoz * alpha;
             f32 evoz = avoz + deltaACvoz * alpha;
+            f32 eIntensity = aIntensity + deltaACIntensity * alpha;
     
             // swap start/end if needed
             if (sx > ex) {
-                SFR_SWAPF(sx, ex);
-                SFR_SWAPF(sz, ez);
-                SFR_SWAPF(sInvZ, eInvZ);
-                SFR_SWAPF(suoz, euoz);
-                SFR_SWAPF(svoz, evoz);
+                SFR_SWAPF(sx, ex); SFR_SWAPF(sz, ez);
+                SFR_SWAPF(sInvZ, eInvZ); SFR_SWAPF(suoz, euoz); SFR_SWAPF(svoz, evoz);
+                SFR_SWAPF(sIntensity, eIntensity);
             }
     
             // clamp x coordinates
@@ -1280,16 +1298,18 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
             const f32 invZStep = (eInvZ - sInvZ) * tStep;
             const f32 uStep = (euoz - suoz) * tStep;
             const f32 vStep = (evoz - svoz) * tStep;
+            const f32 intensityStep = (eIntensity - sIntensity) * tStep;
     
             // initialize current values
             f32 depth = sz + (xStart - sx) * depthStep; // NDC z for depth testing
             f32 invZ = sInvZ + (xStart - sx) * invZStep;
             f32 uoz = suoz + (xStart - sx) * uStep;
             f32 voz = svoz + (xStart - sx) * vStep;
+            f32 intensity = sIntensity + (xStart - sx) * intensityStep;
     
             // rasterize scanline
             for (i32 x = xStart, i = y * sfrWidth + xStart; x < xEnd; x += 1, i += 1,
-                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep
+                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep, intensity += intensityStep
             ) {
                 if (depth > sfrBuffers->depth[i]) {
                     continue;
@@ -1315,9 +1335,12 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
                 SFR_DIV255(fr, tr, cr);
                 SFR_DIV255(fg, tg, cg);
                 SFR_DIV255(fb, tb, cb);
+                const u8 lr = (u8)(fr * intensity);
+                const u8 lg = (u8)(fg * intensity);
+                const u8 lb = (u8)(fb * intensity);
 
                 #ifdef SFR_NO_ALPHA
-                    sfrBuffers->pixel[i] = (fr << 16) | (fg << 8) | fb;
+                    sfrBuffers->pixel[i] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
                     sfrBuffers->depth[i] = depth;
                 #else
                     const u8 ta = (texCol >> 24) & 0xFF;
@@ -1327,9 +1350,9 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
                         SFR_DIV255(contribution, 255 - currAlpha, fa);
 
                         // accumulate premultiplied color components
-                        SFR_DIV255(accumR, fr, contribution);
-                        SFR_DIV255(accumG, fg, contribution);
-                        SFR_DIV255(accumB, fb, contribution);
+                        SFR_DIV255(accumR, lr, contribution);
+                        SFR_DIV255(accumG, lg, contribution);
+                        SFR_DIV255(accumB, lb, contribution);
                         sfrBuffers->accum[i].r += accumR;
                         sfrBuffers->accum[i].g += accumG;
                         sfrBuffers->accum[i].b += accumB;
@@ -1340,7 +1363,7 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
                             sfrBuffers->accum[i].depth = depth;
                         }
                     } else {
-                        sfrBuffers->pixel[i] = (fr << 16) | (fg << 8) | fb;
+                        sfrBuffers->pixel[i] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
                         sfrBuffers->depth[i] = depth;
                     }
                 #endif
@@ -1349,10 +1372,11 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
     }
 }
 
+// GOURAUD: Binning function now accepts per-vertex intensity
 SFR_FUNC void sfr__bin_triangle(
-    f32 ax, f32 ay, f32 az, f32 aInvZ, f32 auoz, f32 avoz,
-    f32 bx, f32 by, f32 bz, f32 bInvZ, f32 buoz, f32 bvoz,
-    f32 cx, f32 cy, f32 cz, f32 cInvZ, f32 cuoz, f32 cvoz,
+    f32 ax, f32 ay, f32 az, f32 aInvZ, f32 auoz, f32 avoz, f32 aIntensity,
+    f32 bx, f32 by, f32 bz, f32 bInvZ, f32 buoz, f32 bvoz, f32 bIntensity,
+    f32 cx, f32 cy, f32 cz, f32 cInvZ, f32 cuoz, f32 cvoz, f32 cIntensity,
     u32 col, const Texture* tex
 ) {
     #ifdef SFR_MULTITHREADED
@@ -1364,9 +1388,9 @@ SFR_FUNC void sfr__bin_triangle(
 
         SfrTriangleBin* bin = &sfrBuffers->triangleBinPool[binInd];
         *bin = (SfrTriangleBin){
-            ax, ay, az, aInvZ, auoz, avoz,
-            bx, by, bz, bInvZ, buoz, bvoz,
-            cx, cy, cz, cInvZ, cuoz, cvoz,
+            ax, ay, az, aInvZ, auoz, avoz, aIntensity,
+            bx, by, bz, bInvZ, buoz, bvoz, bIntensity,
+            cx, cy, cz, cInvZ, cuoz, cvoz, cIntensity,
             col, tex
         };
         sfr_atomic_add(&sfrRasterCount, 1);
@@ -1407,24 +1431,13 @@ SFR_FUNC void sfr__bin_triangle(
         sfrRasterCount += 1;
         const SfrTile fullTile = {0, 0, sfrWidth, sfrHeight};
         const SfrTriangleBin bin = {
-            ax, ay, az, aInvZ, auoz, avoz,
-            bx, by, bz, bInvZ, buoz, bvoz,
-            cx, cy, cz, cInvZ, cuoz, cvoz,
+            ax, ay, az, aInvZ, auoz, avoz, aIntensity,
+            bx, by, bz, bInvZ, buoz, bvoz, bIntensity,
+            cx, cy, cz, cInvZ, cuoz, cvoz, cIntensity,
             col, tex
         };
         sfr_rasterize_bin(&bin, &fullTile);
     #endif
-}
-
-// helper for when lighting is enabled
-SFR_FUNC i32 sfr_adjust_color_u32(u32 col, f32 intensity) {
-    const u8 r = (col >> 16) & 0xFF;
-    const u8 g = (col >> 8)  & 0xFF;
-    const u8 b = (col >> 0)  & 0xFF;
-    return (col & 0xFF000000)          | 
-           ((u8)(r * intensity) << 16) |
-           ((u8)(g * intensity) << 8)  |
-           ((u8)(b * intensity) << 0);
 }
 
 // helper for updating normal mat used for shading
@@ -1689,68 +1702,63 @@ SFR_FUNC void sfr_clear_depth(void) {
 }
 
 SFR_FUNC void sfr_triangle(
-    f32 ax, f32 ay, f32 az,
-    f32 bx, f32 by, f32 bz,
-    f32 cx, f32 cy, f32 cz,
+    f32 ax, f32 ay, f32 az, f32 anx, f32 any, f32 anz,
+    f32 bx, f32 by, f32 bz, f32 bnx, f32 bny, f32 bnz,
+    f32 cx, f32 cy, f32 cz, f32 cnx, f32 cny, f32 cnz,
     u32 col
 ) {
     sfr_triangle_tex(
-        ax, ay, az, 0.f, 0.f,
-        bx, by, bz, 0.f, 0.f,
-        cx, cy, cz, 0.f, 0.f,
+        ax, ay, az, 0.f, 0.f, anx, any, anz,
+        bx, by, bz, 0.f, 0.f, bnx, bny, bnz,
+        cx, cy, cz, 0.f, 0.f, cnx, cny, cnz,
         col, &sfrState.baseTex);
 }
 
 SFR_FUNC void sfr_triangle_tex(
-    f32 ax, f32 ay, f32 az, f32 au, f32 av,
-    f32 bx, f32 by, f32 bz, f32 bu, f32 bv,
-    f32 cx, f32 cy, f32 cz, f32 cu, f32 cv,
+    f32 ax, f32 ay, f32 az, f32 au, f32 av, f32 anx, f32 any, f32 anz,
+    f32 bx, f32 by, f32 bz, f32 bu, f32 bv, f32 bnx, f32 bny, f32 bnz,
+    f32 cx, f32 cy, f32 cz, f32 cu, f32 cv, f32 cnx, f32 cny, f32 cnz,
     u32 col, const Texture* tex
 ) {
-    // transform vertices to world space for culling
+    // transform vertices to world space
     const Vec aModel = sfr_mat_mul_vec(sfrMatModel, (Vec){ax, ay, az, 1.f});
     const Vec bModel = sfr_mat_mul_vec(sfrMatModel, (Vec){bx, by, bz, 1.f});
     const Vec cModel = sfr_mat_mul_vec(sfrMatModel, (Vec){cx, cy, cz, 1.f});
 
     // backface culling
-    Vec triNormal;
     #ifndef SFR_NO_CULLING
         const Vec line0 = sfr_vec_sub(bModel, aModel);
         const Vec line1 = sfr_vec_sub(cModel, aModel);
-        triNormal = sfr_vec_cross(line0, line1);
         const Vec camRay = sfr_vec_sub(aModel, sfrCamPos);
+        const Vec triNormal = sfr_vec_cross(line0, line1);
         if (sfr_vec_dot(triNormal, camRay) > 0.f) {
             return;
         }
     #endif
 
-    // lighting calculation
+    // per vertex lighting calculation
+    f32 aIntensity = 1.f, bIntensity = 1.f, cIntensity = 1.f;
     if (sfrState.lightingEnabled) {
         if (sfrState.normalMatDirty) {
             sfr_update_normal_mat();
         }
 
-        #ifdef SFR_NO_CULLING
-            const Vec line0 = sfr_vec_sub(bModel, aModel);
-            const Vec line1 = sfr_vec_sub(cModel, aModel);
-            triNormal = sfr_vec_cross(line0, line1);
-        #endif
-
-        triNormal = sfr_mat_mul_vec(sfrState.matNormal, triNormal);
-        triNormal = sfr_vec_norm(triNormal);
-
-        const f32 intensity = sfr_fmaxf(
-            sfrState.lightingAmbient, 
-            sfr_vec_dot(triNormal, sfrState.lightingDir));
+        // transform normals
+        const Vec nA = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (Vec){anx, any, anz, 0.f}));
+        const Vec nB = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (Vec){bnx, bny, bnz, 0.f}));
+        const Vec nC = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (Vec){cnx, cny, cnz, 0.f}));
         
-        col = sfr_adjust_color_u32(col, intensity);
+        // intensity for each vertex
+        aIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nA, sfrState.lightingDir));
+        bIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nB, sfrState.lightingDir));
+        cIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nC, sfrState.lightingDir));
     }
 
     // to view space
     SfrTexVert viewTri[3] = {
-        {sfr_mat_mul_vec(sfrMatView, aModel), au, av, 0},
-        {sfr_mat_mul_vec(sfrMatView, bModel), bu, bv, 0},
-        {sfr_mat_mul_vec(sfrMatView, cModel), cu, cv, 0}
+        {sfr_mat_mul_vec(sfrMatView, aModel), au, av, 0, aIntensity},
+        {sfr_mat_mul_vec(sfrMatView, bModel), bu, bv, 0, bIntensity},
+        {sfr_mat_mul_vec(sfrMatView, cModel), cu, cv, 0, cIntensity}
     };
     for (int i = 0; i < 3; i += 1) {
         viewTri[i].viewZ = viewTri[i].pos.z;
@@ -1764,6 +1772,7 @@ SFR_FUNC void sfr_triangle_tex(
         clipTris[0][i].u = viewTri[i].u;
         clipTris[0][i].v = viewTri[i].v;
         clipTris[0][i].viewZ = viewTri[i].viewZ;
+        clipTris[0][i].intensity = viewTri[i].intensity;
     }
 
     // check if clipping is needed at all
@@ -1846,6 +1855,7 @@ SFR_FUNC void sfr_triangle_tex(
             screen[j].u = tri[j].u;
             screen[j].v = tri[j].v;
             screen[j].viewZ = tri[j].viewZ;
+            screen[j].intensity = tri[j].intensity;
         }
 
         if (skip ||
@@ -1868,9 +1878,9 @@ SFR_FUNC void sfr_triangle_tex(
         const f32 cvoz = screen[2].v * cInvZ;
         
         sfr__bin_triangle(
-            screen[0].pos.x, screen[0].pos.y, screen[0].pos.z, aInvZ, auoz, avoz,
-            screen[1].pos.x, screen[1].pos.y, screen[1].pos.z, bInvZ, buoz, bvoz,
-            screen[2].pos.x, screen[2].pos.y, screen[2].pos.z, cInvZ, cuoz, cvoz,
+            screen[0].pos.x, screen[0].pos.y, screen[0].pos.z, aInvZ, auoz, avoz, screen[0].intensity,
+            screen[1].pos.x, screen[1].pos.y, screen[1].pos.z, bInvZ, buoz, bvoz, screen[1].intensity,
+            screen[2].pos.x, screen[2].pos.y, screen[2].pos.z, cInvZ, cuoz, cvoz, screen[2].intensity,
             col, texToUse
         );
     }
@@ -1899,15 +1909,17 @@ SFR_FUNC void sfr_billboard(u32 col, const Texture* tex) {
     const Vec c = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right,  1.f), sfr_vec_mul(up,  1.f)));
     const Vec d = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right, -1.f), sfr_vec_mul(up,  1.f)));
 
+    const Vec normal = sfr_vec_norm(sfr_vec_sub(sfrCamPos, center));
+
     sfr_triangle_tex(
-        a.x, a.y, a.z, 0.f, 1.f,
-        c.x, c.y, c.z, 1.f, 0.f,
-        b.x, b.y, b.z, 1.f, 1.f,
+        a.x, a.y, a.z, 0.f, 1.f, normal.x, normal.y, normal.z,
+        c.x, c.y, c.z, 1.f, 0.f, normal.x, normal.y, normal.z,
+        b.x, b.y, b.z, 1.f, 1.f, normal.x, normal.y, normal.z,
         col, tex);
     sfr_triangle_tex(
-        a.x, a.y, a.z, 0.f, 1.f,
-        d.x, d.y, d.z, 0.f, 0.f,
-        c.x, c.y, c.z, 1.f, 0.f,
+        a.x, a.y, a.z, 0.f, 1.f, normal.x, normal.y, normal.z,
+        d.x, d.y, d.z, 0.f, 0.f, normal.x, normal.y, normal.z,
+        c.x, c.y, c.z, 1.f, 0.f, normal.x, normal.y, normal.z,
         col, tex);
 
     sfrMatModel = savedModel;
@@ -1916,102 +1928,152 @@ SFR_FUNC void sfr_billboard(u32 col, const Texture* tex) {
 SFR_FUNC void sfr_cube(u32 col, const Texture* tex) {
     // front face
     sfr_triangle_tex(
-        -0.5f,-0.5f,-0.5f, 1.f,0.f, 
-        -0.5f, 0.5f,-0.5f, 1.f,1.f,
-         0.5f, 0.5f,-0.5f, 0.f,1.f, col, tex);
+        -0.5f,-0.5f,-0.5f, 1.f,0.f, 0,0,-1,
+        -0.5f, 0.5f,-0.5f, 1.f,1.f, 0,0,-1,
+         0.5f, 0.5f,-0.5f, 0.f,1.f, 0,0,-1, col, tex);
     sfr_triangle_tex(
-        -0.5f,-0.5f,-0.5f, 1.f,0.f,
-         0.5f, 0.5f,-0.5f, 0.f,1.f,
-         0.5f,-0.5f,-0.5f, 0.f,0.f, col, tex);
-
+        -0.5f,-0.5f,-0.5f, 1.f,0.f, 0,0,-1,
+         0.5f, 0.5f,-0.5f, 0.f,1.f, 0,0,-1,
+         0.5f,-0.5f,-0.5f, 0.f,0.f, 0,0,-1, col, tex);
     // right face
     sfr_triangle_tex(
-        0.5f,-0.5f,-0.5f, 1.f,0.f,
-        0.5f, 0.5f,-0.5f, 1.f,1.f,
-        0.5f, 0.5f, 0.5f, 0.f,1.f, col, tex);
+         0.5f,-0.5f,-0.5f, 1.f,0.f, 1,0,0,
+         0.5f, 0.5f,-0.5f, 1.f,1.f, 1,0,0,
+         0.5f, 0.5f, 0.5f, 0.f,1.f, 1,0,0, col, tex);
     sfr_triangle_tex(
-        0.5f,-0.5f,-0.5f, 1.f,0.f,
-        0.5f, 0.5f, 0.5f, 0.f,1.f,
-        0.5f,-0.5f, 0.5f, 0.f,0.f, col, tex);
-
+         0.5f,-0.5f,-0.5f, 1.f,0.f, 1,0,0,
+         0.5f, 0.5f, 0.5f, 0.f,1.f, 1,0,0,
+         0.5f,-0.5f, 0.5f, 0.f,0.f, 1,0,0, col, tex);
     // back face
     sfr_triangle_tex(
-         0.5f,-0.5f, 0.5f, 1.f,0.f,
-         0.5f, 0.5f, 0.5f, 1.f,1.f,
-        -0.5f, 0.5f, 0.5f, 0.f,1.f, col, tex);
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,0,1,
+         0.5f, 0.5f, 0.5f, 1.f,1.f, 0,0,1,
+        -0.5f, 0.5f, 0.5f, 0.f,1.f, 0,0,1, col, tex);
     sfr_triangle_tex(
-         0.5f,-0.5f, 0.5f, 1.f,0.f,
-        -0.5f, 0.5f, 0.5f, 0.f,1.f,
-        -0.5f,-0.5f, 0.5f, 0.f,0.f, col, tex);
-
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,0,1,
+        -0.5f, 0.5f, 0.5f, 0.f,1.f, 0,0,1,
+        -0.5f,-0.5f, 0.5f, 0.f,0.f, 0,0,1, col, tex);
     // left face
     sfr_triangle_tex(
-        -0.5f,-0.5f, 0.5f, 1.f,0.f,
-        -0.5f, 0.5f, 0.5f, 1.f,1.f,
-        -0.5f, 0.5f,-0.5f, 0.f,1.f, col, tex);
+        -0.5f,-0.5f, 0.5f, 1.f,0.f, -1,0,0,
+        -0.5f, 0.5f, 0.5f, 1.f,1.f, -1,0,0,
+        -0.5f, 0.5f,-0.5f, 0.f,1.f, -1,0,0, col, tex);
     sfr_triangle_tex(
-        -0.5f,-0.5f, 0.5f, 1.f,0.f,
-        -0.5f, 0.5f,-0.5f, 0.f,1.f,
-        -0.5f,-0.5f,-0.5f, 0.f,0.f, col, tex);
-
+        -0.5f,-0.5f, 0.5f, 1.f,0.f, -1,0,0,
+        -0.5f, 0.5f,-0.5f, 0.f,1.f, -1,0,0,
+        -0.5f,-0.5f,-0.5f, 0.f,0.f, -1,0,0, col, tex);
     // top face
     sfr_triangle_tex(
-        -0.5f, 0.5f,-0.5f, 1.f,0.f,
-        -0.5f, 0.5f, 0.5f, 1.f,1.f,
-         0.5f, 0.5f, 0.5f, 0.f,1.f, col, tex);
+        -0.5f, 0.5f,-0.5f, 1.f,0.f, 0,1,0,
+        -0.5f, 0.5f, 0.5f, 1.f,1.f, 0,1,0,
+         0.5f, 0.5f, 0.5f, 0.f,1.f, 0,1,0, col, tex);
     sfr_triangle_tex(
-        -0.5f, 0.5f,-0.5f, 1.f,0.f,
-         0.5f, 0.5f, 0.5f, 0.f,1.f,
-         0.5f, 0.5f,-0.5f, 0.f,0.f, col, tex);
-
+        -0.5f, 0.5f,-0.5f, 1.f,0.f, 0,1,0,
+         0.5f, 0.5f, 0.5f, 0.f,1.f, 0,1,0,
+         0.5f, 0.5f,-0.5f, 0.f,0.f, 0,1,0, col, tex);
     // bottom face
     sfr_triangle_tex(
-         0.5f,-0.5f, 0.5f, 1.f,0.f,
-        -0.5f,-0.5f, 0.5f, 1.f,1.f,
-        -0.5f,-0.5f,-0.5f, 0.f,1.f, col, tex);
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,-1,0,
+        -0.5f,-0.5f, 0.5f, 1.f,1.f, 0,-1,0,
+        -0.5f,-0.5f,-0.5f, 0.f,1.f, 0,-1,0, col, tex);
     sfr_triangle_tex(
-         0.5f,-0.5f, 0.5f, 1.f,0.f,
-        -0.5f,-0.5f,-0.5f, 0.f,1.f,
-         0.5f,-0.5f,-0.5f, 0.f,0.f, col, tex);
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,-1,0,
+        -0.5f,-0.5f,-0.5f, 0.f,1.f, 0,-1,0,
+         0.5f,-0.5f,-0.5f, 0.f,0.f, 0,-1,0, col, tex);
 }
 
 SFR_FUNC void sfr_cube_ex(u32 col[12]) {
-    sfr_triangle(-0.5,-0.5,-0.5, -0.5, 0.5,-0.5,  0.5, 0.5,-0.5, col[0]);
-    sfr_triangle(-0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5,-0.5,-0.5, col[1]);
-    sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5,-0.5,  0.5, 0.5, 0.5, col[2]);
-    sfr_triangle( 0.5,-0.5,-0.5,  0.5, 0.5, 0.5,  0.5,-0.5, 0.5, col[3]);
-    sfr_triangle( 0.5,-0.5, 0.5,  0.5, 0.5, 0.5, -0.5, 0.5, 0.5, col[4]);
-    sfr_triangle( 0.5,-0.5, 0.5, -0.5, 0.5, 0.5, -0.5,-0.5, 0.5, col[5]);
-    sfr_triangle(-0.5,-0.5, 0.5, -0.5, 0.5, 0.5, -0.5, 0.5,-0.5, col[6]);
-    sfr_triangle(-0.5,-0.5, 0.5, -0.5, 0.5,-0.5, -0.5,-0.5,-0.5, col[7]);
-    sfr_triangle(-0.5, 0.5,-0.5, -0.5, 0.5, 0.5,  0.5, 0.5, 0.5, col[8]);
-    sfr_triangle(-0.5, 0.5,-0.5,  0.5, 0.5, 0.5,  0.5, 0.5,-0.5, col[9]);
-    sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5, 0.5, -0.5,-0.5,-0.5, col[10]);
-    sfr_triangle( 0.5,-0.5, 0.5, -0.5,-0.5,-0.5,  0.5,-0.5,-0.5, col[11]);
+    // front face
+    sfr_triangle_tex(
+        -0.5f,-0.5f,-0.5f, 1.f,0.f, 0,0,-1,
+        -0.5f, 0.5f,-0.5f, 1.f,1.f, 0,0,-1,
+         0.5f, 0.5f,-0.5f, 0.f,1.f, 0,0,-1, col[0], &sfrState.baseTex);
+    sfr_triangle_tex(
+        -0.5f,-0.5f,-0.5f, 1.f,0.f, 0,0,-1,
+         0.5f, 0.5f,-0.5f, 0.f,1.f, 0,0,-1,
+         0.5f,-0.5f,-0.5f, 0.f,0.f, 0,0,-1, col[1], &sfrState.baseTex);
+    // right face
+    sfr_triangle_tex(
+         0.5f,-0.5f,-0.5f, 1.f,0.f, 1,0,0,
+         0.5f, 0.5f,-0.5f, 1.f,1.f, 1,0,0,
+         0.5f, 0.5f, 0.5f, 0.f,1.f, 1,0,0, col[2], &sfrState.baseTex);
+    sfr_triangle_tex(
+         0.5f,-0.5f,-0.5f, 1.f,0.f, 1,0,0,
+         0.5f, 0.5f, 0.5f, 0.f,1.f, 1,0,0,
+         0.5f,-0.5f, 0.5f, 0.f,0.f, 1,0,0, col[3], &sfrState.baseTex);
+    // back face
+    sfr_triangle_tex(
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,0,1,
+         0.5f, 0.5f, 0.5f, 1.f,1.f, 0,0,1,
+        -0.5f, 0.5f, 0.5f, 0.f,1.f, 0,0,1, col[4], &sfrState.baseTex);
+    sfr_triangle_tex(
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,0,1,
+        -0.5f, 0.5f, 0.5f, 0.f,1.f, 0,0,1,
+        -0.5f,-0.5f, 0.5f, 0.f,0.f, 0,0,1, col[5], &sfrState.baseTex);
+    // left face
+    sfr_triangle_tex(
+        -0.5f,-0.5f, 0.5f, 1.f,0.f, -1,0,0,
+        -0.5f, 0.5f, 0.5f, 1.f,1.f, -1,0,0,
+        -0.5f, 0.5f,-0.5f, 0.f,1.f, -1,0,0, col[6], &sfrState.baseTex);
+    sfr_triangle_tex(
+        -0.5f,-0.5f, 0.5f, 1.f,0.f, -1,0,0,
+        -0.5f, 0.5f,-0.5f, 0.f,1.f, -1,0,0,
+        -0.5f,-0.5f,-0.5f, 0.f,0.f, -1,0,0, col[7], &sfrState.baseTex);
+    // top face
+    sfr_triangle_tex(
+        -0.5f, 0.5f,-0.5f, 1.f,0.f, 0,1,0,
+        -0.5f, 0.5f, 0.5f, 1.f,1.f, 0,1,0,
+         0.5f, 0.5f, 0.5f, 0.f,1.f, 0,1,0, col[8], &sfrState.baseTex);
+    sfr_triangle_tex(
+        -0.5f, 0.5f,-0.5f, 1.f,0.f, 0,1,0,
+         0.5f, 0.5f, 0.5f, 0.f,1.f, 0,1,0,
+         0.5f, 0.5f,-0.5f, 0.f,0.f, 0,1,0, col[9], &sfrState.baseTex);
+    // bottom face
+    sfr_triangle_tex(
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,-1,0,
+        -0.5f,-0.5f, 0.5f, 1.f,1.f, 0,-1,0,
+        -0.5f,-0.5f,-0.5f, 0.f,1.f, 0,-1,0, col[10], &sfrState.baseTex);
+    sfr_triangle_tex(
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,-1,0,
+        -0.5f,-0.5f,-0.5f, 0.f,1.f, 0,-1,0,
+         0.5f,-0.5f,-0.5f, 0.f,0.f, 0,-1,0, col[11], &sfrState.baseTex);
 }
 
 SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col, const Texture* tex) {
     for (i32 i = 0; i < mesh->vertCount; i += 9) {
         const i32 uv = (i / 9) * 6;
+
         const f32 ax = mesh->tris[i + 0];
         const f32 ay = mesh->tris[i + 1];
         const f32 az = mesh->tris[i + 2];
-        const f32 au = mesh->uvs[uv + 0];
-        const f32 av = mesh->uvs[uv + 1];
+        const f32 au = mesh->uvs ? mesh->uvs[uv + 0] : 0.f;
+        const f32 av = mesh->uvs ? mesh->uvs[uv + 1] : 0.f;
+        const f32 anx = mesh->normals[i + 0];
+        const f32 any = mesh->normals[i + 1];
+        const f32 anz = mesh->normals[i + 2];
+
         const f32 bx = mesh->tris[i + 3];
         const f32 by = mesh->tris[i + 4];
         const f32 bz = mesh->tris[i + 5];
-        const f32 bu = mesh->uvs[uv + 2];
-        const f32 bv = mesh->uvs[uv + 3];
+        const f32 bu = mesh->uvs ? mesh->uvs[uv + 2] : 0.f;
+        const f32 bv = mesh->uvs ? mesh->uvs[uv + 3] : 0.f;
+        const f32 bnx = mesh->normals[i + 3];
+        const f32 bny = mesh->normals[i + 4];
+        const f32 bnz = mesh->normals[i + 5];
+
         const f32 cx = mesh->tris[i + 6];
         const f32 cy = mesh->tris[i + 7];
         const f32 cz = mesh->tris[i + 8];
-        const f32 cu = mesh->uvs[uv + 4];
-        const f32 cv = mesh->uvs[uv + 5];
+        const f32 cu = mesh->uvs ? mesh->uvs[uv + 4] : 0.f;
+        const f32 cv = mesh->uvs ? mesh->uvs[uv + 5] : 0.f;
+        const f32 cnx = mesh->normals[i + 6];
+        const f32 cny = mesh->normals[i + 7];
+        const f32 cnz = mesh->normals[i + 8];
+
         sfr_triangle_tex(
-            ax, ay, az, au, av,
-            bx, by, bz, bu, bv,
-            cx, cy, cz, cu, cv,
+            ax, ay, az, au, av, anx, any, anz,
+            bx, by, bz, bu, bv, bnx, bny, bnz,
+            cx, cy, cz, cu, cv, cnx, cny, cnz,
             col, tex
         );
     }
@@ -2033,9 +2095,10 @@ SFR_FUNC void sfr_glyph(const Font* font, u16 id, u32 col) {
         }
 
         sfr_triangle(
-            t[i + 0], t[i + 1], 0.f,
-            t[i + 2], t[i + 3], 0.f,
-            t[i + 4], t[i + 5], 0.f, col);
+            t[i + 0], t[i + 1], 0.f, 0,0,1,
+            t[i + 2], t[i + 3], 0.f, 0,0,1,
+            t[i + 4], t[i + 5], 0.f, 0,0,1,
+            col);
     }
 }
 
@@ -2084,7 +2147,7 @@ SFR_FUNC void sfr_set_fov(f32 fovDeg) {
 
 SFR_FUNC void sfr_set_lighting(i32 on, Vec dir, f32 ambientIntensity) {
     sfrState.lightingEnabled = on;
-    sfrState.lightingDir = dir;
+    sfrState.lightingDir = sfr_vec_norm(dir);
     sfrState.lightingAmbient = ambientIntensity;
 }
 
@@ -2093,224 +2156,179 @@ SFR_FUNC void sfr_set_lighting(i32 on, Vec dir, f32 ambientIntensity) {
 SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
     Mesh* mesh = (Mesh*)malloc(sizeof(Mesh));
     if (!mesh) {
-        SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate Mesh struct\n");
+        SFR_ERR_RET(NULL, "sfr_load_mesh: failed to allocate Mesh struct\n");
     }
+    *mesh = (Mesh){.tris = NULL, .uvs = NULL, .normals = NULL, .vertCount = 0};
 
-    mesh->tris = NULL;
-    mesh->uvs = NULL;
-    mesh->vertCount = 0;
-
-    FILE* objFile = fopen(filename, "r");
+    FILE* objFile = fopen(filename, "rb");
     if (!objFile) {
         free(mesh);
-        SFR_ERR_RET(0, "sfr_load_mesh: failed to open file '%s'\n", filename);
+        SFR_ERR_RET(NULL, "sfr_load_mesh: failed to open file '%s'\n", filename);
     }
 
-    // read verts and uvs
-    f32* verts = NULL;
-    f32* uvCoords = NULL;
-    i32 vi = 0, uvi = 0;
-    char line[128];
+    // read all raw data into temporary dynamic arrays
+    // TODO make dynamic array macros
+    Vec* tempVerts = NULL; i32 tempVertsCap = 0; i32 vertCount = 0;
+    Vec* tempUVs = NULL; i32 tempUVsCap = 0; i32 uvCount = 0;
+    Vec* tempNormals = NULL; i32 tempNormalsCap = 0; i32 normalCount = 0;
+    
+    // store face data as indices
+    typedef struct { i32 v[4], vt[4], vn[4], count; } FaceIndices;
+    FaceIndices* tempFaces = NULL; i32 tempFacesCap = 0; i32 faceCount = 0;
 
+    // TODO handle failing and free
+    char line[256];
     while (fgets(line, sizeof(line), objFile)) {
-        if ('v' != line[0]) {
-            continue;
-        }
-
-        f32 x, y, z;
-        if (' ' == line[1] && 3 == sscanf(line, "v %f %f %f", &x, &y, &z)) {
-            verts = realloc(verts, (vi + 3) * sizeof(f32));
-            if (!verts) {
-                fclose(objFile);
-                free(mesh);
-                SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate vertices\n");
+        if ('v' == line[0]) {
+            if (' ' == line[1]) { // vertex position
+                if (vertCount >= tempVertsCap) {
+                    tempVertsCap = (0 == tempVertsCap) ? 128 : tempVertsCap * 2;
+                    tempVerts = (Vec*)realloc(tempVerts, tempVertsCap * sizeof(Vec));
+                    if (!tempVerts) {
+                        SFR_ERR_EXIT("sfr_load_mesh: realloc failed for tempVerts\n");
+                    }
+                }
+                sscanf(line, "v %f %f %f", &tempVerts[vertCount].x, &tempVerts[vertCount].y, &tempVerts[vertCount].z);
+                vertCount += 1;
+            } else if ('t' == line[1]) { // texture coordinate
+                if (uvCount >= tempUVsCap) {
+                    tempUVsCap = (0 == tempUVsCap) ? 128 : tempUVsCap * 2;
+                    tempUVs = (Vec*)realloc(tempUVs, tempUVsCap * sizeof(Vec));
+                    if (!tempUVs) {
+                        SFR_ERR_EXIT("sfr_load_mesh: realloc failed for tempUVs\n");
+                    }
+                }
+                sscanf(line, "vt %f %f", &tempUVs[uvCount].x, &tempUVs[uvCount].y);
+                uvCount += 1;
+            } else if ('n' == line[1]) { // vertex normal
+                if (normalCount >= tempNormalsCap) {
+                    tempNormalsCap = (0 == tempNormalsCap) ? 128 : tempNormalsCap * 2;
+                    tempNormals = (Vec*)realloc(tempNormals, tempNormalsCap * sizeof(Vec));
+                    if (!tempNormals) {
+                        SFR_ERR_EXIT("sfr_load_mesh: realloc failed for tempNormals\n");
+                    }
+                }
+                sscanf(line, "vn %f %f %f", &tempNormals[normalCount].x, &tempNormals[normalCount].y, &tempNormals[normalCount].z);
+                normalCount += 1;
             }
-            verts[vi + 0] = x;
-            verts[vi + 1] = y;
-            verts[vi + 2] = z;
-            vi += 3;
-        } else if ('t' == line[1] && 2 == sscanf(line, "vt %f %f", &x, &y)) {
-            uvCoords = realloc(uvCoords, (uvi + 2) * sizeof(f32));
-            if (!uvCoords) {
-                fclose(objFile);
-                free(verts);
-                free(mesh);
-                SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate UVs\n");
+        } else if ('f' == line[0]) { // face
+            if (faceCount >= tempFacesCap) {
+                tempFacesCap = (0 == tempFacesCap) ? 128 : tempFacesCap * 2;
+                tempFaces = (FaceIndices*)realloc(tempFaces, tempFacesCap * sizeof(FaceIndices));
+                if (!tempFaces) {
+                    SFR_ERR_EXIT("sfr_load_mesh: realloc failed for tempFaces\n");
+                }
             }
-            uvCoords[uvi + 0] = x;
-            uvCoords[uvi + 1] = y;
-            uvi += 2;
+            FaceIndices* f = &tempFaces[faceCount];
+            f->count = 0;
+            char* token = sfr_strtok(line + 1, " \t\n");
+            while (token && f->count < 4) {
+                f->v[f->count] = f->vt[f->count] = f->vn[f->count] = 0;
+                if (sscanf(token, "%d/%d/%d", &f->v[f->count], &f->vt[f->count], &f->vn[f->count]) != 3) {
+                    if (sscanf(token, "%d//%d", &f->v[f->count], &f->vn[f->count]) != 2) {
+                        if (sscanf(token, "%d/%d", &f->v[f->count], &f->vt[f->count]) != 2) {
+                            sscanf(token, "%d", &f->v[f->count]);
+                        }
+                    }
+                }
+                f->v[f->count] -= 1;
+                f->vt[f->count] -= 1;
+                f->vn[f->count] -= 1;
+                token = sfr_strtok(NULL, " \t\n");
+                f->count += 1;
+            }
+            faceCount += 1;
         }
     }
-
-    rewind(objFile);
-
-    // process faces
-    i32 triInd = 0, uvInd = 0;
-    u8 meshHasUVs = 0;
-
-    while (fgets(line, sizeof(line), objFile)) {
-        if (line[0] != 'f') {
-            continue;
-        }
-
-        char* tokens[4];
-        i32 tokenCount = 0;
-        char* token = sfr_strtok(line, " \t\n"); // skip 'f'
-        while ((token = sfr_strtok(NULL, " \t\n")) != NULL && tokenCount < 4) {
-            tokens[tokenCount] = token;
-            tokenCount += 1;
-        }
-        
-        // skip lines with less than 3 or more than 4 vertices
-        if (tokenCount < 3 || tokenCount > 4) {
-            continue;
-        }
-
-        i32 vIndices[4], uvIndices[4];
-        u8 currentFaceHasUV = 0;
-
-        for (i32 i = 0; i < tokenCount; i += 1) {
-            vIndices[i] = uvIndices[i] = -1;
-            char* parts[3] = {0};
-            char* part = sfr_strtok(tokens[i], "/");
-            for (i32 j = 0; part && j < 3; j += 1) {
-                parts[j] = part;
-                part = sfr_strtok(NULL, "/");
-            }
-            if (parts[0]) vIndices[i]  = atoi(parts[0]) - 1;
-            if (parts[1]) uvIndices[i] = atoi(parts[1]) - 1;
-
-            if (-1 != uvIndices[i]) {
-                currentFaceHasUV = 1;
-            }
-        }
-
-        // determine the number of triangles and their vertex inds
-        i32 numTriangles = (tokenCount == 3) ? 1 : 2;
-        i32 triVertices[2][3];
-        if (tokenCount == 3) {
-            triVertices[0][0] = 0;
-            triVertices[0][1] = 1;
-            triVertices[0][2] = 2;
-        } else {
-            // quad => split into two triangles (0,1,2) and (0,2,3)
-            triVertices[0][0] = 0;
-            triVertices[0][1] = 1;
-            triVertices[0][2] = 2;
-            triVertices[1][0] = 0;
-            triVertices[1][1] = 2;
-            triVertices[1][2] = 3;
-        }
-
-        // process each triangle
-        for (i32 t = 0; t < numTriangles; t += 1) {
-            // check uv consistency
-            if (currentFaceHasUV) {
-                for (i32 i = 0; i < 3; i += 1) {
-                    const i32 ind = triVertices[t][i];
-                    if (-1 == uvIndices[ind]) {
-                        fclose(objFile);
-                        free(verts);
-                        free(uvCoords);
-                        free(mesh->tris);
-                        free(mesh->uvs);
-                        free(mesh);
-                        SFR_ERR_RET(0, "sfr_load_mesh: inconsistent UV indices\n");
-                    }
-                }
-            }
-
-            if (currentFaceHasUV) {
-                if (!meshHasUVs) {
-                    meshHasUVs = 1;
-                    if (!uvCoords) {
-                        fclose(objFile);
-                        free(verts);
-                        free(mesh->tris);
-                        free(mesh);
-                        SFR_ERR_RET(0, "sfr_load_mesh: UVs missing\n");
-                    }
-                }
-
-                // add uvs for this triangle
-                for (i32 i = 0; i < 3; i += 1) {
-                    const i32 ind = triVertices[t][i];
-                    const i32 currUVInd = uvIndices[ind];
-                    if (currUVInd < 0 || currUVInd >= uvi / 2) {
-                        fclose(objFile);
-                        free(verts);
-                        free(uvCoords);
-                        free(mesh->uvs);
-                        free(mesh->tris);
-                        free(mesh);
-                        SFR_ERR_RET(0, "sfr_load_mesh: invalid UV index\n");
-                    }
-
-                    const f32 u =       uvCoords[currUVInd * 2 + 0];
-                    const f32 v = 1.f - uvCoords[currUVInd * 2 + 1];
-
-                    mesh->uvs = realloc(mesh->uvs, (uvInd + 2) * sizeof(f32));
-                    if (!mesh->uvs) {
-                        fclose(objFile);
-                        free(verts);
-                        free(uvCoords);
-                        free(mesh->tris);
-                        free(mesh);
-                        SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate UVs\n");
-                    }
-
-                    mesh->uvs[uvInd + 0] = u;
-                    mesh->uvs[uvInd + 1] = v;
-                    uvInd += 2;
-                }
-            } else if (meshHasUVs) {
-                fclose(objFile);
-                free(verts);
-                free(uvCoords);
-                free(mesh->uvs);
-                free(mesh->tris);
-                free(mesh);
-                SFR_ERR_RET(0, "sfr_load_mesh: face missing UVs\n");
-            }
-
-            // add vertices to mesh->tris
-            for (i32 i = 0; i < 3; i += 1) {
-                const i32 ind = triVertices[t][i];
-                const i32 vInd = vIndices[ind];
-                if (vInd < 0 || vInd >= vi / 3) {
-                    fclose(objFile);
-                    free(verts);
-                    free(uvCoords);
-                    free(mesh->uvs);
-                    free(mesh->tris);
-                    free(mesh);
-                    SFR_ERR_RET(0, "sfr_load_mesh: invalid vertex index\n");
-                }
-
-                mesh->tris = realloc(mesh->tris, (triInd + 3) * sizeof(f32));
-                if (!mesh->tris) {
-                    fclose(objFile);
-                    free(verts);
-                    free(uvCoords);
-                    free(mesh->uvs);
-                    free(mesh);
-                    SFR_ERR_RET(0, "sfr_load_mesh: failed to allocate vertices\n");
-                }
-
-                const f32* v = &verts[vInd * 3];
-                mesh->tris[triInd + 0] = v[0];
-                mesh->tris[triInd + 1] = v[1];
-                mesh->tris[triInd + 2] = v[2];
-                triInd += 3;
-            }
-        }
-    }
-
-    free(verts);
-    free(uvCoords);
     fclose(objFile);
-    mesh->vertCount = triInd;
+
+    // process faces and build final mesh data
+    i32 finalVertCount = 0;
+    for (i32 i = 0; i < faceCount; i += 1) {
+        finalVertCount += (3 == tempFaces[i].count) ? 3 : 6;
+    }
+
+    mesh->vertCount = finalVertCount * 3;
+    mesh->tris = (f32*)malloc(mesh->vertCount * sizeof(f32));
+    mesh->uvs = (f32*)malloc(finalVertCount * 2 * sizeof(f32));
+    mesh->normals = (f32*)malloc(mesh->vertCount * sizeof(f32));
+
+    if (!mesh->tris || !mesh->uvs || !mesh->normals) {
+        SFR_ERR_EXIT("sfr_load_mesh: failed to allocate final mesh buffers\n");
+    }
+
+    Vec* computedNormals = NULL;
+    if (0 == normalCount && vertCount > 0) { // if no normals in file
+        computedNormals = (Vec*)calloc(vertCount, sizeof(Vec));
+        if (!computedNormals) {
+            SFR_ERR_EXIT("sfr_load_mesh: calloc failed for computedNormals\n");
+        }
+        for (i32 i = 0; i < faceCount; i += 1) {
+            const FaceIndices* f = &tempFaces[i];
+            const Vec v0 = tempVerts[f->v[0]];
+            const Vec v1 = tempVerts[f->v[1]];
+            const Vec v2 = tempVerts[f->v[2]];
+            const Vec faceNormal = sfr_vec_face_normal(v0, v1, v2);
+            for (i32 j = 0; j < f->count; j += 1) {
+                computedNormals[f->v[j]] = sfr_vec_add(computedNormals[f->v[j]], faceNormal);
+            }
+        }
+        for (i32 i = 0; i < vertCount; i += 1) {
+            computedNormals[i] = sfr_vec_norm(computedNormals[i]);
+        }
+    }
+    
+    i32 triInd = 0;
+    for (i32 i = 0; i < faceCount; i += 1) {
+        const FaceIndices* f = &tempFaces[i];
+        const i32 indices[6] = {0, 1, 2, 0, 2, 3};
+        const i32 n = (f->count < 4) ? 1 : 2;
+        for (i32 t = 0; t < n; t += 1) {
+            for (i32 v = 0; v < 3; v += 1) {
+                const i32 ind = indices[t * 3 + v];
+                const i32 vInd = f->v[ind];
+                const i32 vtInd = f->vt[ind];
+                const i32 vnInd = f->vn[ind];
+                
+                // position
+                mesh->tris[triInd * 9 + v * 3 + 0] = tempVerts[vInd].x;
+                mesh->tris[triInd * 9 + v * 3 + 1] = tempVerts[vInd].y;
+                mesh->tris[triInd * 9 + v * 3 + 2] = tempVerts[vInd].z;
+                
+                // uvs
+                if (vtInd >= 0 && vtInd < uvCount) {
+                    mesh->uvs[triInd * 6 + v * 2 + 0] = tempUVs[vtInd].x;
+                    mesh->uvs[triInd * 6 + v * 2 + 1] = 1.f - tempUVs[vtInd].y;
+                } else {
+                    mesh->uvs[triInd * 6 + v * 2 + 0] = 0;
+                    mesh->uvs[triInd * 6 + v * 2 + 1] = 0;
+                }
+
+                // normals
+                if (vnInd >= 0 && vnInd < normalCount) {
+                    mesh->normals[triInd * 9 + v * 3 + 0] = tempNormals[vnInd].x;
+                    mesh->normals[triInd * 9 + v * 3 + 1] = tempNormals[vnInd].y;
+                    mesh->normals[triInd * 9 + v * 3 + 2] = tempNormals[vnInd].z;
+                } else if (computedNormals) {
+                    mesh->normals[triInd * 9 + v * 3 + 0] = computedNormals[vInd].x;
+                    mesh->normals[triInd * 9 + v * 3 + 1] = computedNormals[vInd].y;
+                    mesh->normals[triInd * 9 + v * 3 + 2] = computedNormals[vInd].z;
+                } else { // fallback
+                    mesh->normals[triInd * 9 + v * 3 + 0] = 0;
+                    mesh->normals[triInd * 9 + v * 3 + 1] = 1;
+                    mesh->normals[triInd * 9 + v * 3 + 2] = 0;
+                }
+            }
+            triInd += 1;
+        }
+    }
+
+    // free temporary memory
+    free(tempVerts);
+    free(tempUVs);
+    free(tempNormals);
+    free(tempFaces);
+    free(computedNormals);
 
     return mesh;
 }
@@ -2328,6 +2346,11 @@ SFR_FUNC void sfr_release_mesh(Mesh** mesh) {
     if ((*mesh)->uvs) {
         free((*mesh)->uvs);
         (*mesh)->uvs = NULL;
+    }
+
+    if ((*mesh)->normals) {
+        free((*mesh)->normals);
+        (*mesh)->normals = NULL;
     }
 
     free(*mesh);
