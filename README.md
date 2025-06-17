@@ -28,13 +28,13 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Cross platform multithreading (Windows or pthreads)
 - Perspective correct texture mapping (currently only .bmp image support)
 - Transparency (known limitation / bug, see the bottom of this README)
+- Gouraud shading with a directional light
 - OBJ mesh loading (requires `stdio.h`)
-- Flat shading with directional lighting
 - Customizable math implementations (system or bundled)
 - Primitive drawing (triangles, cubes, billboards)
-- Simplistic design, quick to learn and use
 - ARGB8888 color format support
 - Backface culling, depth buffering, and clipping
+- Simplistic design, quick to learn and use
 
 ## Pre Processing Configuration 
 ```c
