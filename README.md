@@ -135,10 +135,9 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors)
 
 ## TODO / Upcoming Features / Known Bugs
 - Fix bug with transparency where if there are two transparent objects separated by a solid object and the scene is viewed so the transparent objects overlap one another through the solid object, the object behind the wall will be visible inside of the closer object, e.g.. the following scene 0 | 0 in 2D viewed from a side where the 0s overlap one another, the second 0 is visible inside the first one
-- More advanced lighting
+- Further optimized rendering/rasterizing
 - Per vertex colors
-- Some support for multithreading
-- Particles
+- Change to fixed point math
 - AA, maybe
 - Stencil buffer, maybe
 - Shadows, maybe maybe
