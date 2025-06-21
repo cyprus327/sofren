@@ -42,13 +42,13 @@ static struct {
     u8 turnUp, turnDown, turnLeft, turnRight;
 } inputs = {0};
 
-static Mesh* mesh;
-static Texture* meshTex;
-static Texture* cubeTex;
-static Font* font;
+static SfrMesh* mesh;
+static SfrTexture* meshTex;
+static SfrTexture* cubeTex;
+static SfrFont* font;
 
-static Texture* particleTex;
-static ParticleSystem particles;
+static SfrTexture* particleTex;
+static SfrParticleSystem particles;
 
 i32 main() {    
     // load mesh, textures, font
@@ -61,7 +61,7 @@ i32 main() {
         return 1;
     }
 
-    Particle* particleBuf = malloc(sizeof(Particle) * 200);
+    SfrParticle* particleBuf = malloc(sizeof(SfrParticle) * 200);
     particles = sfr_particles_create(particleBuf, 200, particleTex);
 
     // initial window dimensions
@@ -210,7 +210,7 @@ static void draw(f32 time, f32 frameTime) {
     }
 
     { // draw particle system
-        sfr_set_lighting(0, SFR_VEC0, 0.f);
+        sfr_set_lighting(0, (sfrvec){0}, 0.f);
 
         static f32 timer = 0.f;
         timer += frameTime;

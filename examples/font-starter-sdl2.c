@@ -1,6 +1,6 @@
 /* SOFREN EXAMPLES, font-starter-sdl2.c
 
-small example showing usage of a Font struct and .srft file
+small example showing usage of a SfrFont struct and .srft file
 
 .srft file format:
     [0..4] header:
@@ -42,7 +42,7 @@ i32 main() {
     }
 
     // load font
-    Font* font = sfr_load_font("examples/res/basic-font.srft");
+    SfrFont* font = sfr_load_font("examples/res/basic-font.srft");
     if (!font) {
         SFR_ERR_RET(1, "Failed to load font\n");
     }

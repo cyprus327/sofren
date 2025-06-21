@@ -46,9 +46,7 @@ i32 main() {
             return 1;
         }
 
-        u32* pixelBuf = (u32*)malloc(sizeof(u32) * w * h);
-        f32* depthBuf = (f32*)malloc(sizeof(f32) * w * h);
-        sfr_init(pixelBuf, depthBuf, w, h, 80.f);
+        sfr_init(malloc(sizeof(SfrBuffers)), w, h, 80.f);
     
         // super cheap function, can be set before rendering every individual
         // triangle if you want, but it isn't reset so may as well just set it once now
@@ -78,12 +76,7 @@ i32 main() {
 
         { // handle resizing
             if (width != sfrWidth || height != sfrHeight) {
-                sfrWidth = width;
-                sfrHeight = height;
-                sfrPixelBuf = (u32*)realloc(sfrPixelBuf, sizeof(u32) * width * height);
-                sfrDepthBuf = (f32*)realloc(sfrDepthBuf, sizeof(f32) * width * height);
-                sfr_set_fov(sfrCamFov);
-
+                sfr_resize(width, height);
                 screenBuf = (i8*)realloc(screenBuf, sizeof(i8) * (width + 1) * height + 1);
             }
         }
@@ -112,7 +105,7 @@ i32 main() {
             i8* out = screenBuf;
             for (i32 y = 0, i = 0; y < sfrHeight; y += 1) {
                 for (i32 x = 0; x < sfrWidth; x += 1, i += 1) {
-                    *out = color_to_ascii(sfrPixelBuf[i]);
+                    *out = color_to_ascii(sfrBuffers->pixel[i]);
                     out += 1;
                 }
                 *out = '\n';
@@ -127,8 +120,7 @@ i32 main() {
 
     // release resources
     free(screenBuf);
-    free(sfrPixelBuf);
-    free(sfrDepthBuf);
+    free(sfrBuffers);
 
     return 0;
 }
