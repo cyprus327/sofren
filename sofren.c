@@ -1,5 +1,3 @@
-#define SFR_IMPL
-
 #ifndef SFR_H
 #define SFR_H
 
@@ -87,16 +85,6 @@ extern "C" {
 
 //: types
 #ifdef SFR_PREFIXED_TYPES
-    #define Vec     sfrvec_t
-    #define Mat     sfrmat_t
-    #define Tri     sfrtri_t
-    #define Mesh    sfrmesh_t
-    #define Texture sfrtexture_t
-    #define Font    sfrfont_t
-
-    #define Particle       sfrparticle_t;
-    #define ParticleSystem sfrparticles_t;
-    
     #define i8  sfri8_t
     #define u8  sfru8_t
     #define i16 sfri16_t
@@ -132,14 +120,14 @@ extern "C" {
 typedef float  f32;
 typedef double f64;
 
-typedef struct sfrvec  Vec;
-typedef struct sfrmat  Mat;
-typedef struct sfrmesh Mesh;
-typedef struct sfrtex  Texture;
-typedef struct sfrfont Font;
+typedef struct sfrvec  sfrvec;
+typedef struct sfrmat  sfrmat;
+typedef struct sfrmesh SfrMesh;
+typedef struct sfrtex  SfrTexture;
+typedef struct sfrfont SfrFont;
 
-typedef struct sfrparticle  Particle;
-typedef struct sfrparticles ParticleSystem;
+typedef struct sfrparticle  SfrParticle;
+typedef struct sfrparticles SfrParticleSystem;
 
 typedef struct sfrBuffers SfrBuffers;
 
@@ -158,8 +146,8 @@ extern SfrBuffers* sfrBuffers;
 
 extern SfrAtomic32 sfrRasterCount; // how many triangles have been rasterized since the last call to clear
 
-extern Mat sfrMatModel, sfrMatView, sfrMatProj;
-extern Vec sfrCamPos;
+extern sfrmat sfrMatModel, sfrMatView, sfrMatProj;
+extern sfrvec sfrCamPos;
 extern f32 sfrCamFov;
 extern f32 sfrNearDist, sfrFarDist;
 
@@ -194,28 +182,28 @@ extern f32 sfrNearDist, sfrFarDist;
 #define SFR_FONT_VERT_EMPTY 1234321
 
 //: math functions
-SFR_FUNC Vec sfr_vec_add(Vec a, Vec b);
-SFR_FUNC Vec sfr_vec_sub(Vec a, Vec b);
-SFR_FUNC Vec sfr_vec_mul(Vec a, f32 b);
-SFR_FUNC Vec sfr_vec_div(Vec a, f32 b);
-SFR_FUNC f32 sfr_vec_dot(Vec a, Vec b);
-SFR_FUNC f32 sfr_vec_length(Vec v);
-SFR_FUNC f32 sfr_vec_length2(Vec v);
-SFR_FUNC Vec sfr_vec_cross(Vec a, Vec b);
-SFR_FUNC Vec sfr_vec_norm(Vec v);
-SFR_FUNC Vec sfr_vec_normf(f32 x, f32 y, f32 z);
-SFR_FUNC Vec sfr_vec_face_normal(Vec a, Vec b, Vec c);
-SFR_FUNC Mat sfr_mat_identity();
-SFR_FUNC Mat sfr_mat_rot_x(f32 a);
-SFR_FUNC Mat sfr_mat_rot_y(f32 a);
-SFR_FUNC Mat sfr_mat_rot_z(f32 a);
-SFR_FUNC Mat sfr_mat_translate(f32 x, f32 y, f32 z);
-SFR_FUNC Mat sfr_mat_scale(f32 x, f32 y, f32 z);
-SFR_FUNC Mat sfr_mat_proj(f32 fovDeg, f32 aspect, f32 near, f32 far);
-SFR_FUNC Mat sfr_mat_mul(Mat a, Mat b);
-SFR_FUNC Vec sfr_mat_mul_vec(Mat m, Vec v);
-SFR_FUNC Mat sfr_mat_qinv(Mat m);
-SFR_FUNC Mat sfr_mat_look_at(Vec pos, Vec target, Vec up);
+SFR_FUNC sfrvec sfr_vec_add(sfrvec a, sfrvec b);
+SFR_FUNC sfrvec sfr_vec_sub(sfrvec a, sfrvec b);
+SFR_FUNC sfrvec sfr_vec_mul(sfrvec a, f32 b);
+SFR_FUNC sfrvec sfr_vec_div(sfrvec a, f32 b);
+SFR_FUNC f32 sfr_vec_dot(sfrvec a, sfrvec b);
+SFR_FUNC f32 sfr_vec_length(sfrvec v);
+SFR_FUNC f32 sfr_vec_length2(sfrvec v);
+SFR_FUNC sfrvec sfr_vec_cross(sfrvec a, sfrvec b);
+SFR_FUNC sfrvec sfr_vec_norm(sfrvec v);
+SFR_FUNC sfrvec sfr_vec_normf(f32 x, f32 y, f32 z);
+SFR_FUNC sfrvec sfr_vec_face_normal(sfrvec a, sfrvec b, sfrvec c);
+SFR_FUNC sfrmat sfr_mat_identity();
+SFR_FUNC sfrmat sfr_mat_rot_x(f32 a);
+SFR_FUNC sfrmat sfr_mat_rot_y(f32 a);
+SFR_FUNC sfrmat sfr_mat_rot_z(f32 a);
+SFR_FUNC sfrmat sfr_mat_translate(f32 x, f32 y, f32 z);
+SFR_FUNC sfrmat sfr_mat_scale(f32 x, f32 y, f32 z);
+SFR_FUNC sfrmat sfr_mat_proj(f32 fovDeg, f32 aspect, f32 near, f32 far);
+SFR_FUNC sfrmat sfr_mat_mul(sfrmat a, sfrmat b);
+SFR_FUNC sfrvec sfr_mat_mul_vec(sfrmat m, sfrvec v);
+SFR_FUNC sfrmat sfr_mat_qinv(sfrmat m);
+SFR_FUNC sfrmat sfr_mat_look_at(sfrvec pos, sfrvec target, sfrvec up);
 
 //: core functions
 SFR_FUNC void sfr_init(SfrBuffers* buffers, i32 w, i32 h, f32 fovDeg);
@@ -253,15 +241,15 @@ SFR_FUNC void sfr_triangle_tex(
     f32 ax, f32 ay, f32 az, f32 au, f32 av, f32 anx, f32 any, f32 anz,
     f32 bx, f32 by, f32 bz, f32 bu, f32 bv, f32 bnx, f32 bny, f32 bnz,
     f32 cx, f32 cy, f32 cz, f32 cu, f32 cv, f32 cnx, f32 cny, f32 cnz,
-    u32 col, const Texture* tex);
+    u32 col, const SfrTexture* tex);
 
 // other drawing functions, if tex is null sfrState.baseTex (white 1x1 texture) will be used
-SFR_FUNC void sfr_billboard(u32 col, const Texture* tex);
-SFR_FUNC void sfr_cube(u32 col, const Texture* tex);
+SFR_FUNC void sfr_billboard(u32 col, const SfrTexture* tex);
+SFR_FUNC void sfr_cube(u32 col, const SfrTexture* tex);
 SFR_FUNC void sfr_cube_ex(u32 col[12]);
-SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col, const Texture* tex);
-SFR_FUNC void sfr_string(const Font* font, const char* s, i32 sLength, u32 col); // not yet implemented
-SFR_FUNC void sfr_glyph(const Font* font, u16 id, u32 col); // draw a single character
+SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex);
+SFR_FUNC void sfr_string(const SfrFont* font, const char* s, i32 sLength, u32 col); // not yet implemented
+SFR_FUNC void sfr_glyph(const SfrFont* font, u16 id, u32 col); // draw a single character
 
 // project the world position specified to screen coordinates
 SFR_FUNC i32 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY);    
@@ -270,28 +258,28 @@ SFR_FUNC i32 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY
 SFR_FUNC void sfr_set_camera(f32 x, f32 y, f32 z, f32 yaw, f32 pitch, f32 roll);
 SFR_FUNC void sfr_set_fov(f32 fovDeg); // update projection matrix with new fov
 SFR_FUNC void sfr_set_lighting( // update internal lighting state for simple shading on triangles
-    i32 on, Vec dir, f32 ambientIntensity);
+    i32 on, sfrvec dir, f32 ambientIntensity);
 
 // things requiring malloc / stdio
 #ifndef SFR_NO_STD
     #include <stdio.h>
     #include <stdlib.h>
 
-    SFR_FUNC Mesh* sfr_load_mesh(const char* filename); // load an obj file into a struct that sofren can use
-    SFR_FUNC void sfr_release_mesh(Mesh** mesh);        // release loaded mesh's memory
+    SFR_FUNC SfrMesh* sfr_load_mesh(const char* filename); // load an obj file into a struct that sofren can use
+    SFR_FUNC void sfr_release_mesh(SfrMesh** mesh);        // release loaded mesh's memory
 
-    SFR_FUNC Texture* sfr_load_texture(const char* filename); // load a BMP texture
-    SFR_FUNC void sfr_release_texture(Texture** texture);     // release loaded texture's memory
+    SFR_FUNC SfrTexture* sfr_load_texture(const char* filename); // load a BMP texture
+    SFR_FUNC void sfr_release_texture(SfrTexture** texture);     // release loaded texture's memory
 
-    SFR_FUNC Font* sfr_load_font(const char* filename); // load a .srft (sofren font type) font, see 'sfr-fontmaker'
-    SFR_FUNC void sfr_release_font(Font** font);        // release loaded font's memory
+    SFR_FUNC SfrFont* sfr_load_font(const char* filename); // load a .srft (sofren font type) font, see 'sfr-fontmaker'
+    SFR_FUNC void sfr_release_font(SfrFont** font);        // release loaded font's memory
 #endif
 
 // all particle related functions
-SFR_FUNC ParticleSystem sfr_particles_create(Particle* buffer, i32 count, const Texture* tex);
-SFR_FUNC void sfr_particles_update(ParticleSystem* sys, f32 frameTime);
-SFR_FUNC void sfr_particles_draw(const ParticleSystem* sys);
-SFR_FUNC void sfr_particles_emit(ParticleSystem* sys,
+SFR_FUNC SfrParticleSystem sfr_particles_create(SfrParticle* buffer, i32 count, const SfrTexture* tex);
+SFR_FUNC void sfr_particles_update(SfrParticleSystem* sys, f32 frameTime);
+SFR_FUNC void sfr_particles_draw(const SfrParticleSystem* sys);
+SFR_FUNC void sfr_particles_emit(SfrParticleSystem* sys,
     f32 px, f32 py, f32 pz,
     f32 vx, f32 vy, f32 vz,
     f32 ax, f32 ay, f32 az,
@@ -444,32 +432,28 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max]
 
 typedef struct sfrvec {
     f32 x, y, z, w;
-} Vec;
+} sfrvec;
 
 typedef struct sfrmat {
     f32 m[4][4];
-} Mat;
-
-typedef struct sfrtri {
-    Vec p[3];
-} Tri;
+} sfrmat;
 
 typedef struct sfrmesh {
     f32* tris;     // vertex positions
     f32* uvs;      // uv coordinates
     f32* normals;  // vertex normals
     i32 vertCount; // total number of floats (3 per vertex)
-} Mesh;
+} SfrMesh;
 
 typedef struct sfrtex {
     u32* pixels;
     i32 w, h;
-} Texture;
+} SfrTexture;
 
 typedef struct sfrfont {
     // xy pairs [x0, y0, x1, y1, x2, ...]
     f32 verts[SFR_FONT_GLYPH_MAX][SFR_FONT_VERT_MAX];
-} Font;
+} SfrFont;
 
 typedef struct sfrparticle {
     f32 px, py, pz; // position
@@ -478,21 +462,20 @@ typedef struct sfrparticle {
     f32 startSize, endSize;
     u32 startCol, endCol;
     f32 lifetime, age;
-} Particle;
+} SfrParticle;
 
 typedef struct sfrparticles {
-    Particle* particles;
+    SfrParticle* particles;
     i32 total, active;
-    const Texture* tex;
-} ParticleSystem;
+    const SfrTexture* tex;
+} SfrParticleSystem;
 
-// GOURAUD: Triangle bin now stores per-vertex intensity
 typedef struct sfrTriangleBin {
     f32 ax, ay, az, aInvZ, auoz, avoz, aIntensity;
     f32 bx, by, bz, bInvZ, buoz, bvoz, bIntensity;
     f32 cx, cy, cz, cInvZ, cuoz, cvoz, cIntensity;
     u32 col;
-    const Texture* tex;
+    const SfrTexture* tex;
 } SfrTriangleBin;
 
 typedef struct sfrTile {
@@ -542,20 +525,20 @@ typedef struct sfrBuffers {
 
 typedef struct sfrState {
     i32 lightingEnabled;
-    Vec lightingDir;
+    sfrvec lightingDir;
     f32 lightingAmbient;
 
-    Mat matNormal;
+    sfrmat matNormal;
     i32 normalMatDirty;
 
     u32 randState;
 
     f32 halfWidth, halfHeight;
 
-    Vec clipPlanes[4][2];
+    sfrvec clipPlanes[4][2];
 
     u32 baseTexPixels[1];
-    Texture baseTex;
+    SfrTexture baseTex;
 
     #ifdef SFR_MULTITHREADED
         i32 shutdown;
@@ -564,7 +547,7 @@ typedef struct sfrState {
 
 // helper to track vertex attributes during clipping of textured triangles
 typedef struct sfrTexVert {
-    Vec pos;       // position in view space
+    sfrvec pos;       // position in view space
     f32 u, v;      // texture coords
     f32 viewZ;     // z in view space for perspective correction
     f32 intensity; // lighting intensity
@@ -579,8 +562,8 @@ i32 sfrWidth, sfrHeight;
 SfrBuffers* sfrBuffers;
 SfrAtomic32 sfrRasterCount;
 
-Mat sfrMatModel, sfrMatView, sfrMatProj;
-Vec sfrCamPos;
+sfrmat sfrMatModel, sfrMatView, sfrMatProj;
+sfrvec sfrCamPos;
 f32 sfrCamFov;
 f32 sfrNearDist = 0.1f, sfrFarDist = 100.f;
 
@@ -592,12 +575,11 @@ SfrState sfrState = {0};
 //:         MISC HELPER MACROS
 //================================================
 
-#define SFR_PI ((f32)3.14159265358979323846)
-#define SFR_EPSILON ((f32)1e-10)
+#define SFR_PI (3.14159265358979323846)
+#define SFR_EPSILON (1e-10)
 
 #define SFR_SWAPF(_a, _b) { const f32 _swapTemp = (_a); (_a) = (_b); (_b) = _swapTemp; }
 #define SFR_LERPF(_a, _b, _t) ((_a) + (_t) * ((_b) - (_a)))
-#define SFR_VEC0 ((Vec){0.f, 0.f, 0.f, 0.f})
 
 #define SFR_DIV255(_r, _a, _b) \
     const u32 _##_r##Temp = (u32)(_a) * (u32)(_b) + 128; \
@@ -721,8 +703,8 @@ SFR_FUNC u32 sfr_lerp_col(u32 c1, u32 c2, f32 t) {
     }
 #endif
 
-SFR_FUNC Vec sfr_vec_add(Vec a, Vec b) {
-    Vec r;
+SFR_FUNC sfrvec sfr_vec_add(sfrvec a, sfrvec b) {
+    sfrvec r;
     r.x = a.x + b.x;
     r.y = a.y + b.y;
     r.z = a.z + b.z;
@@ -730,8 +712,8 @@ SFR_FUNC Vec sfr_vec_add(Vec a, Vec b) {
     return r;
 }
 
-SFR_FUNC Vec sfr_vec_sub(Vec a, Vec b) {
-    Vec r;
+SFR_FUNC sfrvec sfr_vec_sub(sfrvec a, sfrvec b) {
+    sfrvec r;
     r.x = a.x - b.x;
     r.y = a.y - b.y;
     r.z = a.z - b.z;
@@ -739,8 +721,8 @@ SFR_FUNC Vec sfr_vec_sub(Vec a, Vec b) {
     return r;
 }
 
-SFR_FUNC Vec sfr_vec_mul(Vec a, f32 b) {
-    Vec r;
+SFR_FUNC sfrvec sfr_vec_mul(sfrvec a, f32 b) {
+    sfrvec r;
     r.x = a.x * b;
     r.y = a.y * b;
     r.z = a.z * b;
@@ -748,8 +730,8 @@ SFR_FUNC Vec sfr_vec_mul(Vec a, f32 b) {
     return r;
 }
 
-SFR_FUNC Vec sfr_vec_div(Vec a, f32 b) {
-    Vec r;
+SFR_FUNC sfrvec sfr_vec_div(sfrvec a, f32 b) {
+    sfrvec r;
     r.x = a.x / b;
     r.y = a.y / b;
     r.z = a.z / b;
@@ -757,20 +739,20 @@ SFR_FUNC Vec sfr_vec_div(Vec a, f32 b) {
     return r;
 }
 
-SFR_FUNC f32 sfr_vec_dot(Vec a, Vec b) {
+SFR_FUNC f32 sfr_vec_dot(sfrvec a, sfrvec b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-SFR_FUNC f32 sfr_vec_length(Vec v) {
+SFR_FUNC f32 sfr_vec_length(sfrvec v) {
     return sfr_sqrtf(sfr_vec_dot(v, v));
 }
 
-SFR_FUNC f32 sfr_vec_length2(Vec v) {
+SFR_FUNC f32 sfr_vec_length2(sfrvec v) {
     return sfr_vec_dot(v, v);
 }
 
-SFR_FUNC Vec sfr_vec_cross(Vec a, Vec b) {
-    Vec r;
+SFR_FUNC sfrvec sfr_vec_cross(sfrvec a, sfrvec b) {
+    sfrvec r;
     r.x = a.y * b.z - a.z * b.y;
     r.y = a.z * b.x - a.x * b.z;
     r.z = a.x * b.y - a.y * b.x;
@@ -778,23 +760,23 @@ SFR_FUNC Vec sfr_vec_cross(Vec a, Vec b) {
     return r;
 }
 
-SFR_FUNC Vec sfr_vec_norm(Vec v) {
+SFR_FUNC sfrvec sfr_vec_norm(sfrvec v) {
     const f32 l = sfr_vec_length(v);
-    return l > SFR_EPSILON ? sfr_vec_mul(v, 1.f / l) : SFR_VEC0;
+    return l > SFR_EPSILON ? sfr_vec_mul(v, 1.f / l) : (sfrvec){0};
 }
 
-SFR_FUNC Vec sfr_vec_normf(f32 x, f32 y, f32 z) {
-    return sfr_vec_norm((Vec){x, y, z, 1.f});
+SFR_FUNC sfrvec sfr_vec_normf(f32 x, f32 y, f32 z) {
+    return sfr_vec_norm((sfrvec){x, y, z, 1.f});
 }
 
-SFR_FUNC Vec sfr_vec_face_normal(Vec a, Vec b, Vec c) {
-    const Vec edge1 = sfr_vec_sub(b, a);
-    const Vec edge2 = sfr_vec_sub(c, a);
+SFR_FUNC sfrvec sfr_vec_face_normal(sfrvec a, sfrvec b, sfrvec c) {
+    const sfrvec edge1 = sfr_vec_sub(b, a);
+    const sfrvec edge2 = sfr_vec_sub(c, a);
     return sfr_vec_norm(sfr_vec_cross(edge1, edge2));
 }
 
-SFR_FUNC Mat sfr_mat_identity() {
-    Mat r = {0};
+SFR_FUNC sfrmat sfr_mat_identity() {
+    sfrmat r = {0};
     r.m[0][0] = 1.f;
     r.m[1][1] = 1.f;
     r.m[2][2] = 1.f;
@@ -802,8 +784,8 @@ SFR_FUNC Mat sfr_mat_identity() {
     return r;
 }
 
-SFR_FUNC Mat sfr_mat_rot_x(f32 a) {
-    Mat r = {0};
+SFR_FUNC sfrmat sfr_mat_rot_x(f32 a) {
+    sfrmat r = {0};
     r.m[0][0] = 1.f;
     r.m[1][1] = sfr_cosf(a);
     r.m[1][2] = sfr_sinf(a);
@@ -813,8 +795,8 @@ SFR_FUNC Mat sfr_mat_rot_x(f32 a) {
     return r;
 }
 
-SFR_FUNC Mat sfr_mat_rot_y(f32 a) {
-    Mat r = {0};
+SFR_FUNC sfrmat sfr_mat_rot_y(f32 a) {
+    sfrmat r = {0};
     r.m[0][0] = sfr_cosf(a);
     r.m[0][2] = sfr_sinf(a);
     r.m[1][1] = 1.f;
@@ -824,8 +806,8 @@ SFR_FUNC Mat sfr_mat_rot_y(f32 a) {
     return r;
 }
 
-SFR_FUNC Mat sfr_mat_rot_z(f32 a) {
-    Mat r = {0};
+SFR_FUNC sfrmat sfr_mat_rot_z(f32 a) {
+    sfrmat r = {0};
     r.m[0][0] = sfr_cosf(a);
     r.m[0][1] = sfr_sinf(a);
     r.m[1][0] = -sfr_sinf(a);
@@ -835,8 +817,8 @@ SFR_FUNC Mat sfr_mat_rot_z(f32 a) {
     return r;
 }
 
-SFR_FUNC Mat sfr_mat_translate(f32 x, f32 y, f32 z) {
-    Mat r = {0};
+SFR_FUNC sfrmat sfr_mat_translate(f32 x, f32 y, f32 z) {
+    sfrmat r = {0};
     r.m[0][0] = 1.f;
     r.m[1][1] = 1.f;
     r.m[2][2] = 1.f;
@@ -847,8 +829,8 @@ SFR_FUNC Mat sfr_mat_translate(f32 x, f32 y, f32 z) {
     return r;
 }
 
-SFR_FUNC Mat sfr_mat_scale(f32 x, f32 y, f32 z) {
-    Mat r = {0};
+SFR_FUNC sfrmat sfr_mat_scale(f32 x, f32 y, f32 z) {
+    sfrmat r = {0};
     r.m[0][0] = x;
     r.m[1][1] = y;
     r.m[2][2] = z;
@@ -856,9 +838,9 @@ SFR_FUNC Mat sfr_mat_scale(f32 x, f32 y, f32 z) {
     return r;
 }
 
-SFR_FUNC Mat sfr_mat_proj(f32 fovDev, f32 aspect, f32 near, f32 far) {
+SFR_FUNC sfrmat sfr_mat_proj(f32 fovDev, f32 aspect, f32 near, f32 far) {
     const f32 fov = 1.f / sfr_tanf(fovDev * 0.5f / 180.f * SFR_PI);
-    Mat r = {0};
+    sfrmat r = {0};
     r.m[0][0] = aspect * fov;
     r.m[1][1] = fov;
     r.m[2][2] = far / (far - near);
@@ -868,8 +850,8 @@ SFR_FUNC Mat sfr_mat_proj(f32 fovDev, f32 aspect, f32 near, f32 far) {
     return r;
 }
 
-SFR_FUNC Mat sfr_mat_mul(Mat a, Mat b) {
-    Mat r;
+SFR_FUNC sfrmat sfr_mat_mul(sfrmat a, sfrmat b) {
+    sfrmat r;
     for (i32 i = 0; i < 4; i += 1) {
         const f32 a0 = a.m[i][0], a1 = a.m[i][1], a2 = a.m[i][2], a3 = a.m[i][3];
         r.m[i][0] = a0 * b.m[0][0] + a1 * b.m[1][0] + a2 * b.m[2][0] + a3 * b.m[3][0];
@@ -880,8 +862,8 @@ SFR_FUNC Mat sfr_mat_mul(Mat a, Mat b) {
     return r;
 }
 
-SFR_FUNC Vec sfr_mat_mul_vec(Mat m, Vec v) {
-    Vec r;
+SFR_FUNC sfrvec sfr_mat_mul_vec(sfrmat m, sfrvec v) {
+    sfrvec r;
     r.x = v.x * m.m[0][0] + v.y * m.m[1][0] + v.z * m.m[2][0] + v.w * m.m[3][0];
     r.y = v.x * m.m[0][1] + v.y * m.m[1][1] + v.z * m.m[2][1] + v.w * m.m[3][1];
     r.z = v.x * m.m[0][2] + v.y * m.m[1][2] + v.z * m.m[2][2] + v.w * m.m[3][2];
@@ -889,8 +871,8 @@ SFR_FUNC Vec sfr_mat_mul_vec(Mat m, Vec v) {
     return r;
 }
 
-SFR_FUNC Mat sfr_mat_qinv(Mat m) {
-    Mat r;
+SFR_FUNC sfrmat sfr_mat_qinv(sfrmat m) {
+    sfrmat r;
     r.m[0][0] = m.m[0][0];
     r.m[0][1] = m.m[1][0];
     r.m[0][2] = m.m[2][0];
@@ -910,12 +892,12 @@ SFR_FUNC Mat sfr_mat_qinv(Mat m) {
     return r;
 }
 
-SFR_FUNC Mat sfr_mat_look_at(Vec pos, Vec target, Vec up) {
-    const Vec forward = sfr_vec_norm(sfr_vec_sub(target, pos));
+SFR_FUNC sfrmat sfr_mat_look_at(sfrvec pos, sfrvec target, sfrvec up) {
+    const sfrvec forward = sfr_vec_norm(sfr_vec_sub(target, pos));
     up = sfr_vec_norm(sfr_vec_sub(up, sfr_vec_mul(forward, sfr_vec_dot(up, forward))));
-    const Vec right = sfr_vec_cross(up, forward);
+    const sfrvec right = sfr_vec_cross(up, forward);
 
-    Mat r;
+    sfrmat r;
     r.m[0][0] = right.x;
     r.m[0][1] = right.y;
     r.m[0][2] = right.z;
@@ -940,14 +922,14 @@ SFR_FUNC Mat sfr_mat_look_at(Vec pos, Vec target, Vec up) {
 //:         RENDERING
 //================================================
 
-SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], Vec plane, const SfrTexVert in[3]) {
+SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const SfrTexVert in[3]) {
     SfrTexVert inside[3], outside[3];
     f32 insideDists[3], outsideDists[3];
     i32 insideCount = 0, outsideCount = 0;
 
     // precompute distances during classification
     for (i32 i = 0; i < 3; i += 1) {
-        const Vec v = in[i].pos;
+        const sfrvec v = in[i].pos;
         const f32 dist = plane.x * v.x + plane.y * v.y + plane.z * v.z + plane.w * v.w;
         if (dist >= 0.f) {
             inside[insideCount] = in[i];
@@ -1089,7 +1071,7 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
     f32 bInvZ = bin->bInvZ, buoz = bin->buoz, bvoz = bin->bvoz, bIntensity = bin->bIntensity;
     f32 cInvZ = bin->cInvZ, cuoz = bin->cuoz, cvoz = bin->cvoz, cIntensity = bin->cIntensity;
 
-    const Texture* tex = bin->tex;
+    const SfrTexture* tex = bin->tex;
     
     // sort vertices by y coord
     if (ay > by) {
@@ -1197,11 +1179,9 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
                 const f32 u = uoz * zView;
                 const f32 v = voz * zView;
                 
-                // wrap texture coords and clamp
-                i32 tx = (i32)(u * texW1);
-                i32 ty = (i32)(v * texH1);
-                tx = (tx < 0) ? 0 : ((tx >= texW) ? texW1 : tx);
-                ty = (ty < 0) ? 0 : ((ty >= texH) ? texH1 : ty);
+                // wrap texture coords
+                const i32 tx = (i32)(u * texW) % texW;
+                const i32 ty = (i32)(v * texH) % texH;
                 
                 const u32 texCol = tex->pixels[ty * texW + tx];
                 const u8 tr = (texCol >> 16) & 0xFF;
@@ -1322,11 +1302,9 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
                 const f32 u = uoz * zView;
                 const f32 v = voz * zView;
                 
-                // wrap texture coords and clamp
-                i32 tx = (i32)(u * texW1);
-                i32 ty = (i32)(v * texH1);
-                tx = (tx < 0) ? 0 : ((tx >= texW) ? texW1 : tx);
-                ty = (ty < 0) ? 0 : ((ty >= texH) ? texH1 : ty);
+                // wrap texture coords
+                const i32 tx = (i32)(u * texW) % texW;
+                const i32 ty = (i32)(v * texH) % texH;
                 
                 const u32 texCol = tex->pixels[ty * texW + tx];
                 const u8 tr = (texCol >> 16) & 0xFF;
@@ -1372,12 +1350,11 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
     }
 }
 
-// GOURAUD: Binning function now accepts per-vertex intensity
 SFR_FUNC void sfr__bin_triangle(
     f32 ax, f32 ay, f32 az, f32 aInvZ, f32 auoz, f32 avoz, f32 aIntensity,
     f32 bx, f32 by, f32 bz, f32 bInvZ, f32 buoz, f32 bvoz, f32 bIntensity,
     f32 cx, f32 cy, f32 cz, f32 cInvZ, f32 cuoz, f32 cvoz, f32 cIntensity,
-    u32 col, const Texture* tex
+    u32 col, const SfrTexture* tex
 ) {
     #ifdef SFR_MULTITHREADED
         // get a new triangle bin from the global pool
@@ -1451,7 +1428,7 @@ SFR_FUNC void sfr_update_normal_mat(void) {
     const f32 det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
     const f32 invDet = (0 != det) ? 1.f / det : 0.f;
 
-    sfrState.matNormal = (Mat){{
+    sfrState.matNormal = (sfrmat){{
         { (e * i - f * h) * invDet, (c * h - b * i) * invDet, (b * f - c * e) * invDet, 0.f },
         { (f * g - d * i) * invDet, (a * i - c * g) * invDet, (c * d - a * f) * invDet, 0.f },
         { (d * h - e * g) * invDet, (b * g - a * h) * invDet, (a * e - b * d) * invDet, 0.f },
@@ -1496,7 +1473,7 @@ SFR_FUNC void sfr_init(SfrBuffers* buffers, i32 w, i32 h, f32 fovDeg) {
     sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
 
     sfrState.baseTexPixels[0] = 0xFFFFFFFF;
-    sfrState.baseTex = (Texture){ .w = 1, .h = 1, .pixels = sfrState.baseTexPixels };
+    sfrState.baseTex = (SfrTexture){ .w = 1, .h = 1, .pixels = sfrState.baseTexPixels };
 }
 
 #ifdef SFR_MULTITHREADED
@@ -1588,20 +1565,20 @@ SFR_FUNC void sfr_resize(i32 width, i32 height) {
     sfrState.halfHeight = height / 2.f;
 
     // top
-    sfrState.clipPlanes[0][0] = (Vec){0.f, 0.5f, 0.f, 1.f};
-    sfrState.clipPlanes[0][1] = (Vec){0.f, 1.f,  0.f, 1.f};
+    sfrState.clipPlanes[0][0] = (sfrvec){0.f, 0.5f, 0.f, 1.f};
+    sfrState.clipPlanes[0][1] = (sfrvec){0.f, 1.f,  0.f, 1.f};
     
     // bottom
-    sfrState.clipPlanes[1][0] = (Vec){0.f, height, 0.f, 1.f};
-    sfrState.clipPlanes[1][1] = (Vec){0.f, -1.f,   0.f, 1.f};
+    sfrState.clipPlanes[1][0] = (sfrvec){0.f, height, 0.f, 1.f};
+    sfrState.clipPlanes[1][1] = (sfrvec){0.f, -1.f,   0.f, 1.f};
 
     // left
-    sfrState.clipPlanes[2][0] = (Vec){0.5f, 0.f, 0.f, 1.f};
-    sfrState.clipPlanes[2][1] = (Vec){1.f,  0.f, 0.f, 1.f};
+    sfrState.clipPlanes[2][0] = (sfrvec){0.5f, 0.f, 0.f, 1.f};
+    sfrState.clipPlanes[2][1] = (sfrvec){1.f,  0.f, 0.f, 1.f};
     
     // right
-    sfrState.clipPlanes[3][0] = (Vec){width, 0.f, 0.f, 1.f};
-    sfrState.clipPlanes[3][1] = (Vec){-1.f,  0.f, 0.f, 1.f};
+    sfrState.clipPlanes[3][0] = (sfrvec){width, 0.f, 0.f, 1.f};
+    sfrState.clipPlanes[3][1] = (sfrvec){-1.f,  0.f, 0.f, 1.f};
 
     #ifdef SFR_MULTITHREADED
         sfrBuffers->tileCols = (width + SFR_TILE_WIDTH - 1) / SFR_TILE_WIDTH;
@@ -1627,38 +1604,38 @@ SFR_FUNC void sfr_reset(void) {
 }
 
 SFR_FUNC void sfr_rotate_x(f32 theta) {
-    const Mat rot = sfr_mat_rot_x(theta);
+    const sfrmat rot = sfr_mat_rot_x(theta);
     sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
     sfrState.normalMatDirty = 1;
 }
 
 SFR_FUNC void sfr_rotate_y(f32 theta) {
-    const Mat rot = sfr_mat_rot_y(theta);
+    const sfrmat rot = sfr_mat_rot_y(theta);
     sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
     sfrState.normalMatDirty = 1;
 }
 
 SFR_FUNC void sfr_rotate_z(f32 theta) {
-    const Mat rot = sfr_mat_rot_z(theta);
+    const sfrmat rot = sfr_mat_rot_z(theta);
     sfrMatModel = sfr_mat_mul(sfrMatModel, rot);
     sfrState.normalMatDirty = 1;
 }
 
 SFR_FUNC void sfr_translate(f32 x, f32 y, f32 z) {
-    const Mat trans = sfr_mat_translate(x, y, z);
+    const sfrmat trans = sfr_mat_translate(x, y, z);
     sfrMatModel = sfr_mat_mul(sfrMatModel, trans);
     sfrState.normalMatDirty = 1;
 }
 
 SFR_FUNC void sfr_scale(f32 x, f32 y, f32 z) {
-    const Mat scale = sfr_mat_scale(x, y, z);
+    const sfrmat scale = sfr_mat_scale(x, y, z);
     sfrMatModel = sfr_mat_mul(sfrMatModel, scale);
     sfrState.normalMatDirty = 1;
 }
 
 SFR_FUNC void sfr_look_at(f32 x, f32 y, f32 z) {
-    const Vec up = {0.f, 1.f, 0.f, 1.f};
-    const Mat view = sfr_mat_look_at(sfrCamPos, (Vec){x, y, z, 1.f}, up);
+    const sfrvec up = {0.f, 1.f, 0.f, 1.f};
+    const sfrmat view = sfr_mat_look_at(sfrCamPos, (sfrvec){x, y, z, 1.f}, up);
     sfrMatView = sfr_mat_qinv(view);
 }
 
@@ -1718,19 +1695,19 @@ SFR_FUNC void sfr_triangle_tex(
     f32 ax, f32 ay, f32 az, f32 au, f32 av, f32 anx, f32 any, f32 anz,
     f32 bx, f32 by, f32 bz, f32 bu, f32 bv, f32 bnx, f32 bny, f32 bnz,
     f32 cx, f32 cy, f32 cz, f32 cu, f32 cv, f32 cnx, f32 cny, f32 cnz,
-    u32 col, const Texture* tex
+    u32 col, const SfrTexture* tex
 ) {
     // transform vertices to world space
-    const Vec aModel = sfr_mat_mul_vec(sfrMatModel, (Vec){ax, ay, az, 1.f});
-    const Vec bModel = sfr_mat_mul_vec(sfrMatModel, (Vec){bx, by, bz, 1.f});
-    const Vec cModel = sfr_mat_mul_vec(sfrMatModel, (Vec){cx, cy, cz, 1.f});
+    const sfrvec aModel = sfr_mat_mul_vec(sfrMatModel, (sfrvec){ax, ay, az, 1.f});
+    const sfrvec bModel = sfr_mat_mul_vec(sfrMatModel, (sfrvec){bx, by, bz, 1.f});
+    const sfrvec cModel = sfr_mat_mul_vec(sfrMatModel, (sfrvec){cx, cy, cz, 1.f});
 
     // backface culling
     #ifndef SFR_NO_CULLING
-        const Vec line0 = sfr_vec_sub(bModel, aModel);
-        const Vec line1 = sfr_vec_sub(cModel, aModel);
-        const Vec camRay = sfr_vec_sub(aModel, sfrCamPos);
-        const Vec triNormal = sfr_vec_cross(line0, line1);
+        const sfrvec line0 = sfr_vec_sub(bModel, aModel);
+        const sfrvec line1 = sfr_vec_sub(cModel, aModel);
+        const sfrvec camRay = sfr_vec_sub(aModel, sfrCamPos);
+        const sfrvec triNormal = sfr_vec_cross(line0, line1);
         if (sfr_vec_dot(triNormal, camRay) > 0.f) {
             return;
         }
@@ -1744,9 +1721,9 @@ SFR_FUNC void sfr_triangle_tex(
         }
 
         // transform normals
-        const Vec nA = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (Vec){anx, any, anz, 0.f}));
-        const Vec nB = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (Vec){bnx, bny, bnz, 0.f}));
-        const Vec nC = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (Vec){cnx, cny, cnz, 0.f}));
+        const sfrvec nA = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (sfrvec){anx, any, anz, 0.f}));
+        const sfrvec nB = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (sfrvec){bnx, bny, bnz, 0.f}));
+        const sfrvec nC = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (sfrvec){cnx, cny, cnz, 0.f}));
         
         // intensity for each vertex
         aIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nA, sfrState.lightingDir));
@@ -1779,7 +1756,7 @@ SFR_FUNC void sfr_triangle_tex(
     const f32 guardBand = 1.2f; // 20 percent    
     u8 needsClipping = 0;
     for (i32 i = 0; i < 3; i += 1) {
-        const Vec p = clipTris[0][i].pos;
+        const sfrvec p = clipTris[0][i].pos;
         const f32 wGuard = p.w * guardBand;
         if (p.x < -wGuard || p.x > wGuard || 
             p.y < -wGuard || p.y > wGuard ||
@@ -1794,7 +1771,7 @@ SFR_FUNC void sfr_triangle_tex(
     }
 
     // frustum planes in homogeneous clip space
-    const Vec frustumPlanes[6] = {
+    const sfrvec frustumPlanes[6] = {
         {0.f, 0.f, 1.f, 1.f},  // near:   z + w >= 0
         {0.f, 0.f, -1.f, 1.f}, // far:   -z + w >= 0
         {1.f, 0.f, 0.f, 1.f},  // left:   x + w >= 0
@@ -1836,7 +1813,7 @@ SFR_FUNC void sfr_triangle_tex(
 
     // bin all final triangles
     SFR_TRI_TEX_BIN:;
-    const Texture* texToUse = tex ? tex : &sfrState.baseTex;
+    const SfrTexture* texToUse = tex ? tex : &sfrState.baseTex;
     for (i32 i = 0; i < inputCount; i += 1) {
         SfrTexVert* tri = input[i];
         SfrTexVert screen[3];
@@ -1848,7 +1825,7 @@ SFR_FUNC void sfr_triangle_tex(
                 skip = 1;
                 break;
             }
-            const Vec ndc = sfr_vec_div(tri[j].pos, tri[j].pos.w);
+            const sfrvec ndc = sfr_vec_div(tri[j].pos, tri[j].pos.w);
             screen[j].pos.x =  (ndc.x + 1.f) * sfrState.halfWidth;
             screen[j].pos.y = (-ndc.y + 1.f) * sfrState.halfHeight;
             screen[j].pos.z = ndc.z;
@@ -1886,11 +1863,11 @@ SFR_FUNC void sfr_triangle_tex(
     }
 }
 
-SFR_FUNC void sfr_billboard(u32 col, const Texture* tex) {
-    const Mat savedModel = sfrMatModel;
+SFR_FUNC void sfr_billboard(u32 col, const SfrTexture* tex) {
+    const sfrmat savedModel = sfrMatModel;
     sfrMatModel = sfr_mat_identity();
 
-    const Vec center = { savedModel.m[3][0], savedModel.m[3][1], savedModel.m[3][2], 1.f };
+    const sfrvec center = { savedModel.m[3][0], savedModel.m[3][1], savedModel.m[3][2], 1.f };
 
     const f32 sx = 0.5f * sfr_sqrtf(
         savedModel.m[0][0] * savedModel.m[0][0] + 
@@ -1901,15 +1878,15 @@ SFR_FUNC void sfr_billboard(u32 col, const Texture* tex) {
         savedModel.m[1][1] * savedModel.m[1][1] + 
         savedModel.m[1][2] * savedModel.m[1][2]);
 
-    const Vec right = { sx * sfrMatView.m[0][0], sx * sfrMatView.m[1][0], sx * sfrMatView.m[2][0], 0.f };
-    const Vec up    = { sy * sfrMatView.m[0][1], sy * sfrMatView.m[1][1], sy * sfrMatView.m[2][1], 0.f };
+    const sfrvec right = { sx * sfrMatView.m[0][0], sx * sfrMatView.m[1][0], sx * sfrMatView.m[2][0], 0.f };
+    const sfrvec up    = { sy * sfrMatView.m[0][1], sy * sfrMatView.m[1][1], sy * sfrMatView.m[2][1], 0.f };
 
-    const Vec a = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right, -1.f), sfr_vec_mul(up, -1.f)));
-    const Vec b = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right,  1.f), sfr_vec_mul(up, -1.f)));
-    const Vec c = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right,  1.f), sfr_vec_mul(up,  1.f)));
-    const Vec d = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right, -1.f), sfr_vec_mul(up,  1.f)));
+    const sfrvec a = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right, -1.f), sfr_vec_mul(up, -1.f)));
+    const sfrvec b = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right,  1.f), sfr_vec_mul(up, -1.f)));
+    const sfrvec c = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right,  1.f), sfr_vec_mul(up,  1.f)));
+    const sfrvec d = sfr_vec_add(center, sfr_vec_add(sfr_vec_mul(right, -1.f), sfr_vec_mul(up,  1.f)));
 
-    const Vec normal = sfr_vec_norm(sfr_vec_sub(sfrCamPos, center));
+    const sfrvec normal = sfr_vec_norm(sfr_vec_sub(sfrCamPos, center));
 
     sfr_triangle_tex(
         a.x, a.y, a.z, 0.f, 1.f, normal.x, normal.y, normal.z,
@@ -1925,7 +1902,7 @@ SFR_FUNC void sfr_billboard(u32 col, const Texture* tex) {
     sfrMatModel = savedModel;
 }
 
-SFR_FUNC void sfr_cube(u32 col, const Texture* tex) {
+SFR_FUNC void sfr_cube(u32 col, const SfrTexture* tex) {
     // front face
     sfr_triangle_tex(
         -0.5f,-0.5f,-0.5f, 1.f,0.f, 0,0,-1,
@@ -2039,7 +2016,7 @@ SFR_FUNC void sfr_cube_ex(u32 col[12]) {
          0.5f,-0.5f,-0.5f, 0.f,0.f, 0,-1,0, col[11], &sfrState.baseTex);
 }
 
-SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col, const Texture* tex) {
+SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
     for (i32 i = 0; i < mesh->vertCount; i += 9) {
         const i32 uv = (i / 9) * 6;
 
@@ -2079,11 +2056,11 @@ SFR_FUNC void sfr_mesh(const Mesh* mesh, u32 col, const Texture* tex) {
     }
 }
 
-SFR_FUNC void sfr_string(const Font* font, const char* s, i32 sLength, u32 col) {
+SFR_FUNC void sfr_string(const SfrFont* font, const char* s, i32 sLength, u32 col) {
     SFR_ERR_RET(, "sfr_string: TODO not implemented, 'sfr_glyph' is implemented\n");
 }
 
-SFR_FUNC void sfr_glyph(const Font* font, u16 id, u32 col) {
+SFR_FUNC void sfr_glyph(const SfrFont* font, u16 id, u32 col) {
     if (id >= SFR_FONT_GLYPH_MAX) {
         SFR_ERR_RET(, "sfr_glyph: invalid id (%d >= %d)\n", id, SFR_FONT_GLYPH_MAX);
     }
@@ -2103,7 +2080,7 @@ SFR_FUNC void sfr_glyph(const Font* font, u16 id, u32 col) {
 }
 
 SFR_FUNC i32 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY) {
-    Vec p = {x, y, z, 1.f};
+    sfrvec p = {x, y, z, 1.f};
     p = sfr_mat_mul_vec(sfrMatView, p);
     p = sfr_mat_mul_vec(sfrMatProj, p);
 
@@ -2123,13 +2100,13 @@ SFR_FUNC i32 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY
 }
 
 SFR_FUNC void sfr_set_camera(f32 x, f32 y, f32 z, f32 yaw, f32 pitch, f32 roll) {
-    sfrCamPos = (Vec){x, y, z, 1.f};
-    Vec up = {0.f, 1.f, 0.f, 1.f};
-    Vec target = {0.f, 0.f, 1.f, 1.f};
+    sfrCamPos = (sfrvec){x, y, z, 1.f};
+    sfrvec up = {0.f, 1.f, 0.f, 1.f};
+    sfrvec target = {0.f, 0.f, 1.f, 1.f};
 
-    const Mat rotX = sfr_mat_rot_x(pitch);
-    const Mat rotY = sfr_mat_rot_y(yaw);
-    const Mat rotZ = sfr_mat_rot_z(roll);
+    const sfrmat rotX = sfr_mat_rot_x(pitch);
+    const sfrmat rotY = sfr_mat_rot_y(yaw);
+    const sfrmat rotZ = sfr_mat_rot_z(roll);
 
     up = sfr_mat_mul_vec(rotZ, up);
     target = sfr_mat_mul_vec(rotX, target);
@@ -2145,7 +2122,7 @@ SFR_FUNC void sfr_set_fov(f32 fovDeg) {
     sfrCamFov = fovDeg;
 }
 
-SFR_FUNC void sfr_set_lighting(i32 on, Vec dir, f32 ambientIntensity) {
+SFR_FUNC void sfr_set_lighting(i32 on, sfrvec dir, f32 ambientIntensity) {
     sfrState.lightingEnabled = on;
     sfrState.lightingDir = sfr_vec_norm(dir);
     sfrState.lightingAmbient = ambientIntensity;
@@ -2153,12 +2130,12 @@ SFR_FUNC void sfr_set_lighting(i32 on, Vec dir, f32 ambientIntensity) {
 
 #ifndef SFR_NO_STD
 
-SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
-    Mesh* mesh = (Mesh*)malloc(sizeof(Mesh));
+SFR_FUNC SfrMesh* sfr_load_mesh(const char* filename) {
+    SfrMesh* mesh = (SfrMesh*)malloc(sizeof(SfrMesh));
     if (!mesh) {
-        SFR_ERR_RET(NULL, "sfr_load_mesh: failed to allocate Mesh struct\n");
+        SFR_ERR_RET(NULL, "sfr_load_mesh: failed to allocate SfrMesh struct\n");
     }
-    *mesh = (Mesh){.tris = NULL, .uvs = NULL, .normals = NULL, .vertCount = 0};
+    *mesh = (SfrMesh){.tris = NULL, .uvs = NULL, .normals = NULL, .vertCount = 0};
 
     FILE* objFile = fopen(filename, "rb");
     if (!objFile) {
@@ -2168,9 +2145,9 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
 
     // read all raw data into temporary dynamic arrays
     // TODO make dynamic array macros
-    Vec* tempVerts = NULL; i32 tempVertsCap = 0; i32 vertCount = 0;
-    Vec* tempUVs = NULL; i32 tempUVsCap = 0; i32 uvCount = 0;
-    Vec* tempNormals = NULL; i32 tempNormalsCap = 0; i32 normalCount = 0;
+    sfrvec* tempVerts = NULL; i32 tempVertsCap = 0; i32 vertCount = 0;
+    sfrvec* tempUVs = NULL; i32 tempUVsCap = 0; i32 uvCount = 0;
+    sfrvec* tempNormals = NULL; i32 tempNormalsCap = 0; i32 normalCount = 0;
     
     // store face data as indices
     typedef struct { i32 v[4], vt[4], vn[4], count; } FaceIndices;
@@ -2183,7 +2160,7 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
             if (' ' == line[1]) { // vertex position
                 if (vertCount >= tempVertsCap) {
                     tempVertsCap = (0 == tempVertsCap) ? 128 : tempVertsCap * 2;
-                    tempVerts = (Vec*)realloc(tempVerts, tempVertsCap * sizeof(Vec));
+                    tempVerts = (sfrvec*)realloc(tempVerts, tempVertsCap * sizeof(sfrvec));
                     if (!tempVerts) {
                         SFR_ERR_EXIT("sfr_load_mesh: realloc failed for tempVerts\n");
                     }
@@ -2193,7 +2170,7 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
             } else if ('t' == line[1]) { // texture coordinate
                 if (uvCount >= tempUVsCap) {
                     tempUVsCap = (0 == tempUVsCap) ? 128 : tempUVsCap * 2;
-                    tempUVs = (Vec*)realloc(tempUVs, tempUVsCap * sizeof(Vec));
+                    tempUVs = (sfrvec*)realloc(tempUVs, tempUVsCap * sizeof(sfrvec));
                     if (!tempUVs) {
                         SFR_ERR_EXIT("sfr_load_mesh: realloc failed for tempUVs\n");
                     }
@@ -2203,7 +2180,7 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
             } else if ('n' == line[1]) { // vertex normal
                 if (normalCount >= tempNormalsCap) {
                     tempNormalsCap = (0 == tempNormalsCap) ? 128 : tempNormalsCap * 2;
-                    tempNormals = (Vec*)realloc(tempNormals, tempNormalsCap * sizeof(Vec));
+                    tempNormals = (sfrvec*)realloc(tempNormals, tempNormalsCap * sizeof(sfrvec));
                     if (!tempNormals) {
                         SFR_ERR_EXIT("sfr_load_mesh: realloc failed for tempNormals\n");
                     }
@@ -2257,18 +2234,18 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
         SFR_ERR_EXIT("sfr_load_mesh: failed to allocate final mesh buffers\n");
     }
 
-    Vec* computedNormals = NULL;
+    sfrvec* computedNormals = NULL;
     if (0 == normalCount && vertCount > 0) { // if no normals in file
-        computedNormals = (Vec*)calloc(vertCount, sizeof(Vec));
+        computedNormals = (sfrvec*)calloc(vertCount, sizeof(sfrvec));
         if (!computedNormals) {
             SFR_ERR_EXIT("sfr_load_mesh: calloc failed for computedNormals\n");
         }
         for (i32 i = 0; i < faceCount; i += 1) {
             const FaceIndices* f = &tempFaces[i];
-            const Vec v0 = tempVerts[f->v[0]];
-            const Vec v1 = tempVerts[f->v[1]];
-            const Vec v2 = tempVerts[f->v[2]];
-            const Vec faceNormal = sfr_vec_face_normal(v0, v1, v2);
+            const sfrvec v0 = tempVerts[f->v[0]];
+            const sfrvec v1 = tempVerts[f->v[1]];
+            const sfrvec v2 = tempVerts[f->v[2]];
+            const sfrvec faceNormal = sfr_vec_face_normal(v0, v1, v2);
             for (i32 j = 0; j < f->count; j += 1) {
                 computedNormals[f->v[j]] = sfr_vec_add(computedNormals[f->v[j]], faceNormal);
             }
@@ -2333,7 +2310,7 @@ SFR_FUNC Mesh* sfr_load_mesh(const char* filename) {
     return mesh;
 }
 
-SFR_FUNC void sfr_release_mesh(Mesh** mesh) {
+SFR_FUNC void sfr_release_mesh(SfrMesh** mesh) {
     if (!mesh || !(*mesh)) {
         return;
     }
@@ -2357,7 +2334,7 @@ SFR_FUNC void sfr_release_mesh(Mesh** mesh) {
     *mesh = NULL;
 }
 
-SFR_FUNC Texture* sfr_load_texture(const char* filename) {
+SFR_FUNC SfrTexture* sfr_load_texture(const char* filename) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
         SFR_ERR_RET(NULL, "sfr_load_texture: failed to open file '%s'\n", filename);
@@ -2430,7 +2407,7 @@ SFR_FUNC Texture* sfr_load_texture(const char* filename) {
     fclose(file);
 
     // create texture
-    Texture* tex = (Texture*)malloc(sizeof(Texture));
+    SfrTexture* tex = (SfrTexture*)malloc(sizeof(SfrTexture));
     if (!tex) {
         free(pixelData);
         SFR_ERR_RET(NULL, "sfr_load_texture: failed to allocate texture struct\n");
@@ -2496,7 +2473,7 @@ SFR_FUNC Texture* sfr_load_texture(const char* filename) {
     return tex;
 }
 
-SFR_FUNC void sfr_release_texture(Texture** tex) {
+SFR_FUNC void sfr_release_texture(SfrTexture** tex) {
     if (!tex || !(*tex)) {
         return;
     }
@@ -2510,7 +2487,7 @@ SFR_FUNC void sfr_release_texture(Texture** tex) {
     *tex = NULL;
 }
 
-SFR_FUNC Font* sfr_load_font(const char* filename) {
+SFR_FUNC SfrFont* sfr_load_font(const char* filename) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
         SFR_ERR_RET(NULL, "sfr_load_font: failed to open file '%s'\n", filename);
@@ -2537,7 +2514,7 @@ SFR_FUNC Font* sfr_load_font(const char* filename) {
     }
 
     // allocate space for font
-    Font* font = (Font*)malloc(sizeof(Font));
+    SfrFont* font = (SfrFont*)malloc(sizeof(SfrFont));
     if (!font) {
         fclose(file);
         SFR_ERR_RET(NULL, "sfr_load_font: failed to allocate struct\n");
@@ -2573,7 +2550,7 @@ SFR_FUNC Font* sfr_load_font(const char* filename) {
     return font;
 }
 
-SFR_FUNC void sfr_release_font(Font** font) {
+SFR_FUNC void sfr_release_font(SfrFont** font) {
     if (!font || !(*font)) {
         return;
     }
@@ -2584,17 +2561,17 @@ SFR_FUNC void sfr_release_font(Font** font) {
 
 #endif // !SFR_NO_STD
 
-SFR_FUNC ParticleSystem sfr_particles_create(Particle* buffer, i32 count, const Texture* tex) {
-    return (ParticleSystem){
+SFR_FUNC SfrParticleSystem sfr_particles_create(SfrParticle* buffer, i32 count, const SfrTexture* tex) {
+    return (SfrParticleSystem){
         .particles = buffer,
         .active = 0, .total = count,
         .tex = tex
     };
 }
 
-SFR_FUNC void sfr_particles_update(ParticleSystem* sys, f32 frameTime) {
+SFR_FUNC void sfr_particles_update(SfrParticleSystem* sys, f32 frameTime) {
     for (i32 i = 0; i < sys->active;) {
-        Particle* p = &sys->particles[i];
+        SfrParticle* p = &sys->particles[i];
         p->age += frameTime;
 
         // remove dead particles
@@ -2616,9 +2593,9 @@ SFR_FUNC void sfr_particles_update(ParticleSystem* sys, f32 frameTime) {
     }
 }
 
-SFR_FUNC void sfr_particles_draw(const ParticleSystem* sys) {
+SFR_FUNC void sfr_particles_draw(const SfrParticleSystem* sys) {
     for (i32 i = 0; i < sys->active; i += 1) {
-        Particle* p = &sys->particles[i];
+        SfrParticle* p = &sys->particles[i];
 
         // interpolate properties
         const f32 t = p->age / p->lifetime;
@@ -2633,7 +2610,7 @@ SFR_FUNC void sfr_particles_draw(const ParticleSystem* sys) {
     }
 }
 
-SFR_FUNC void sfr_particles_emit(ParticleSystem* sys,
+SFR_FUNC void sfr_particles_emit(SfrParticleSystem* sys,
     f32 px, f32 py, f32 pz,
     f32 vx, f32 vy, f32 vz,
     f32 ax, f32 ay, f32 az,
@@ -2646,7 +2623,7 @@ SFR_FUNC void sfr_particles_emit(ParticleSystem* sys,
     }
 
     // create new particle
-    Particle* p = &sys->particles[sys->active++];
+    SfrParticle* p = &sys->particles[sys->active++];
     p->px = px, p->py = py, p->pz = pz;
     p->vx = vx, p->vy = vy, p->vz = vz;
     p->ax = ax, p->ay = ay, p->az = az;
@@ -2868,16 +2845,6 @@ SFR_FUNC void sfr_semaphore_post(SfrSemaphore* s, i32 n) {
 #endif // SFR_IMPL
 
 #ifdef SFR_PREFIXED_TYPES
-    #undef Vec
-    #undef Mat
-    #undef Tri
-    #undef Mesh
-    #undef Texture
-    #undef Font
-
-    #undef Particle
-    #undef ParticleSystem
-
     #undef i8
     #undef u8
     #undef i16
