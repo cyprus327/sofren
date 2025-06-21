@@ -54,9 +54,9 @@ For examples and good starting points rendering to an SDL2 window or console win
 // disable transparency, big FPS boost
 #define SFR_NO_ALPHA
 
-// types are defined as things like 'i32' or 'Vec' internally,
+// types are defined as things like 'i32' or 'u64' internally,
 // if this causes some issue define this for types
-// to now be defined as 'sfri32_t', 'sfrvec_t', etc.
+// to now be defined as 'sfri32_t', 'sfru64_t', etc.
 #define SFR_PREFIXED_TYPES
 
 // don't use #warning for reporting potential comp time problems
