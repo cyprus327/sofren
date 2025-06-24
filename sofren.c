@@ -1,3 +1,6 @@
+#define SFR_IMPL
+#define SFR_USE_SIMD
+
 #ifndef SFR_H
 #define SFR_H
 
@@ -83,6 +86,10 @@ extern "C" {
     #define SfrAtomic64 i64
 #endif
 
+#ifdef SFR_USE_SIMD
+    #include <smmintrin.h> // SSE 4.1
+#endif
+
 //: types
 #ifdef SFR_PREFIXED_TYPES
     #define i8  sfri8_t
@@ -120,8 +127,13 @@ extern "C" {
 typedef float  f32;
 typedef double f64;
 
-typedef struct sfrvec  sfrvec;
-typedef struct sfrmat  sfrmat;
+#ifdef SFR_USE_SIMD
+    typedef union sfrvec sfrvec;
+#else
+    typedef struct sfrvec sfrvec;
+#endif
+typedef union sfrmat sfrmat;
+
 typedef struct sfrmesh SfrMesh;
 typedef struct sfrtex  SfrTexture;
 typedef struct sfrfont SfrFont;
@@ -430,12 +442,25 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max]
 //:         TYPES
 //================================================
 
-typedef struct sfrvec {
-    f32 x, y, z, w;
-} sfrvec;
+#ifdef SFR_USE_SIMD
+    #ifdef _MSC_VER
+        typedef union __declspec(align(16)) sfrvec {
+            struct { f32 x, y, z, w; };
+            __m128 v;
+        } sfrvec;
+    #else
+        typedef union __attribute__((aligned(16))) sfrvec {
+            struct { f32 x, y, z, w; };
+            __m128 v;
+        } sfrvec;
+    #endif
+#else
+    typedef struct sfrvec { f32 x, y, z, w; } sfrvec;
+#endif
 
-typedef struct sfrmat {
-    f32 m[4][4];
+typedef union sfrmat {
+    struct { f32 m[4][4]; };
+    sfrvec rows[4];
 } sfrmat;
 
 typedef struct sfrmesh {
@@ -705,42 +730,68 @@ SFR_FUNC u32 sfr_lerp_col(u32 c1, u32 c2, f32 t) {
 
 SFR_FUNC sfrvec sfr_vec_add(sfrvec a, sfrvec b) {
     sfrvec r;
-    r.x = a.x + b.x;
-    r.y = a.y + b.y;
-    r.z = a.z + b.z;
-    r.w = a.w + b.w;
+    #ifdef SFR_USE_SIMD
+        r.v = _mm_add_ps(a.v, b.v);
+    #else
+        r.x = a.x + b.x;
+        r.y = a.y + b.y;
+        r.z = a.z + b.z;
+        r.w = a.w + b.w;
+    #endif
     return r;
 }
 
 SFR_FUNC sfrvec sfr_vec_sub(sfrvec a, sfrvec b) {
     sfrvec r;
-    r.x = a.x - b.x;
-    r.y = a.y - b.y;
-    r.z = a.z - b.z;
-    r.w = a.w - b.w;
+    #ifdef SFR_USE_SIMD
+        r.v = _mm_sub_ps(a.v, b.v);
+    #else
+        r.x = a.x - b.x;
+        r.y = a.y - b.y;
+        r.z = a.z - b.z;
+        r.w = a.w - b.w;
+    #endif
     return r;
 }
 
 SFR_FUNC sfrvec sfr_vec_mul(sfrvec a, f32 b) {
     sfrvec r;
-    r.x = a.x * b;
-    r.y = a.y * b;
-    r.z = a.z * b;
-    r.w = a.w * b;
+    #ifdef SFR_USE_SIMD
+        const __m128 t = _mm_set1_ps(b);
+        r.v = _mm_mul_ps(a.v, t);
+    #else
+        r.x = a.x * b;
+        r.y = a.y * b;
+        r.z = a.z * b;
+        r.w = a.w * b;
+    #endif
     return r;
 }
 
 SFR_FUNC sfrvec sfr_vec_div(sfrvec a, f32 b) {
     sfrvec r;
-    r.x = a.x / b;
-    r.y = a.y / b;
-    r.z = a.z / b;
-    r.w = 1.f;
+    #ifdef SFR_USE_SIMD
+        const __m128 t = _mm_set1_ps(b);
+        r.v = _mm_div_ps(a.v, t);
+        r.w = 1.f;
+    #else
+        r.x = a.x / b;
+        r.y = a.y / b;
+        r.z = a.z / b;
+        r.w = 1.f;
+    #endif
     return r;
 }
 
 SFR_FUNC f32 sfr_vec_dot(sfrvec a, sfrvec b) {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
+    #ifdef SFR_USE_SIMD
+        // 0x71 => multiply first 3 components (0111), sum them,
+        // store result in first component of output (0001)
+        const __m128 r = _mm_dp_ps(a.v, b.v, 0x71);
+        return _mm_cvtss_f32(r);
+    #else
+        return a.x * b.x + a.y * b.y + a.z * b.z;
+    #endif
 }
 
 SFR_FUNC f32 sfr_vec_length(sfrvec v) {
@@ -753,10 +804,21 @@ SFR_FUNC f32 sfr_vec_length2(sfrvec v) {
 
 SFR_FUNC sfrvec sfr_vec_cross(sfrvec a, sfrvec b) {
     sfrvec r;
-    r.x = a.y * b.z - a.z * b.y;
-    r.y = a.z * b.x - a.x * b.z;
-    r.z = a.x * b.y - a.y * b.x;
-    r.w = 1.f;
+    #ifdef SFR_USE_SIMD
+        const __m128 as1 = _mm_shuffle_ps(a.v, a.v, _MM_SHUFFLE(3, 0, 2, 1)); // {a.y, a.z, a.x, a.w}
+        const __m128 bs1 = _mm_shuffle_ps(b.v, b.v, _MM_SHUFFLE(3, 1, 0, 2)); // {b.z, b.x, b.y, b.w}
+        const __m128 mul1 = _mm_mul_ps(as1, bs1);
+        const __m128 as2 = _mm_shuffle_ps(a.v, a.v, _MM_SHUFFLE(3, 1, 0, 2)); // {a.z, a.x, a.y, a.w}
+        const __m128 bs2 = _mm_shuffle_ps(b.v, b.v, _MM_SHUFFLE(3, 0, 2, 1)); // {b.y, b.z, b.x, b.w}
+        const __m128 mul2 = _mm_mul_ps(as2, bs2);
+        r.v = _mm_sub_ps(mul1, mul2);
+        r.w = 1.f;
+    #else
+        r.x = a.y * b.z - a.z * b.y;
+        r.y = a.z * b.x - a.x * b.z;
+        r.z = a.x * b.y - a.y * b.x;
+        r.w = 1.f;
+    #endif
     return r;
 }
 
@@ -852,22 +914,51 @@ SFR_FUNC sfrmat sfr_mat_proj(f32 fovDev, f32 aspect, f32 near, f32 far) {
 
 SFR_FUNC sfrmat sfr_mat_mul(sfrmat a, sfrmat b) {
     sfrmat r;
-    for (i32 i = 0; i < 4; i += 1) {
-        const f32 a0 = a.m[i][0], a1 = a.m[i][1], a2 = a.m[i][2], a3 = a.m[i][3];
-        r.m[i][0] = a0 * b.m[0][0] + a1 * b.m[1][0] + a2 * b.m[2][0] + a3 * b.m[3][0];
-        r.m[i][1] = a0 * b.m[0][1] + a1 * b.m[1][1] + a2 * b.m[2][1] + a3 * b.m[3][1];
-        r.m[i][2] = a0 * b.m[0][2] + a1 * b.m[1][2] + a2 * b.m[2][2] + a3 * b.m[3][2];
-        r.m[i][3] = a0 * b.m[0][3] + a1 * b.m[1][3] + a2 * b.m[2][3] + a3 * b.m[3][3];
-    }
+    #ifdef SFR_USE_SIMD
+        const __m128 b0 = b.rows[0].v;
+        const __m128 b1 = b.rows[1].v;
+        const __m128 b2 = b.rows[2].v;
+        const __m128 b3 = b.rows[3].v;
+
+        for (i32 i = 0; i < 4; i += 1) {
+            const __m128 ar = a.rows[i].v;
+            
+            const __m128 x = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(0, 0, 0, 0));
+            const __m128 y = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(1, 1, 1, 1));
+            const __m128 z = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(2, 2, 2, 2));
+            const __m128 w = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(3, 3, 3, 3));
+            
+            __m128 res = _mm_mul_ps(x, b0);
+            res = _mm_add_ps(res, _mm_mul_ps(y, b1));
+            res = _mm_add_ps(res, _mm_mul_ps(z, b2));
+            res = _mm_add_ps(res, _mm_mul_ps(w, b3));
+            
+            r.rows[i].v = res;
+        }
+    #else
+        for (i32 i = 0; i < 4; i += 1) {
+            const f32 a0 = a.m[i][0], a1 = a.m[i][1], a2 = a.m[i][2], a3 = a.m[i][3];
+            r.m[i][0] = a0 * b.m[0][0] + a1 * b.m[1][0] + a2 * b.m[2][0] + a3 * b.m[3][0];
+            r.m[i][1] = a0 * b.m[0][1] + a1 * b.m[1][1] + a2 * b.m[2][1] + a3 * b.m[3][1];
+            r.m[i][2] = a0 * b.m[0][2] + a1 * b.m[1][2] + a2 * b.m[2][2] + a3 * b.m[3][2];
+            r.m[i][3] = a0 * b.m[0][3] + a1 * b.m[1][3] + a2 * b.m[2][3] + a3 * b.m[3][3];
+        }
+    #endif
     return r;
 }
 
 SFR_FUNC sfrvec sfr_mat_mul_vec(sfrmat m, sfrvec v) {
     sfrvec r;
-    r.x = v.x * m.m[0][0] + v.y * m.m[1][0] + v.z * m.m[2][0] + v.w * m.m[3][0];
-    r.y = v.x * m.m[0][1] + v.y * m.m[1][1] + v.z * m.m[2][1] + v.w * m.m[3][1];
-    r.z = v.x * m.m[0][2] + v.y * m.m[1][2] + v.z * m.m[2][2] + v.w * m.m[3][2];
-    r.w = v.x * m.m[0][3] + v.y * m.m[1][3] + v.z * m.m[2][3] + v.w * m.m[3][3];
+    #ifdef SFR_USE_SIMD
+        r.v = _mm_add_ps(
+            _mm_add_ps(_mm_mul_ps(_mm_set1_ps(v.x), m.rows[0].v), _mm_mul_ps(_mm_set1_ps(v.y), m.rows[1].v)),
+            _mm_add_ps(_mm_mul_ps(_mm_set1_ps(v.z), m.rows[2].v), _mm_mul_ps(_mm_set1_ps(v.w), m.rows[3].v)));
+    #else
+        r.x = v.x * m.m[0][0] + v.y * m.m[1][0] + v.z * m.m[2][0] + v.w * m.m[3][0];
+        r.y = v.x * m.m[0][1] + v.y * m.m[1][1] + v.z * m.m[2][1] + v.w * m.m[3][1];
+        r.z = v.x * m.m[0][2] + v.y * m.m[1][2] + v.z * m.m[2][2] + v.w * m.m[3][2];
+        r.w = v.x * m.m[0][3] + v.y * m.m[1][3] + v.z * m.m[2][3] + v.w * m.m[3][3];
+    #endif
     return r;
 }
 
@@ -921,6 +1012,11 @@ SFR_FUNC sfrmat sfr_mat_look_at(sfrvec pos, sfrvec target, sfrvec up) {
 //================================================
 //:         RENDERING
 //================================================
+
+// used in rasterizing to wrap texture coords
+SFR_FUNC i32 sfr_wrap_coord(i32 x, i32 max) {
+    return (x % max + max) % max;
+}
 
 SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const SfrTexVert in[3]) {
     SfrTexVert inside[3], outside[3];
@@ -1180,8 +1276,8 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
                 const f32 v = voz * zView;
                 
                 // wrap texture coords
-                const i32 tx = (i32)(u * texW) % texW;
-                const i32 ty = (i32)(v * texH) % texH;
+                const i32 tx = sfr_wrap_coord(u * texW1, texW);
+                const i32 ty = sfr_wrap_coord(v * texH1, texH);
                 
                 const u32 texCol = tex->pixels[ty * texW + tx];
                 const u8 tr = (texCol >> 16) & 0xFF;
@@ -1303,8 +1399,8 @@ SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) 
                 const f32 v = voz * zView;
                 
                 // wrap texture coords
-                const i32 tx = (i32)(u * texW) % texW;
-                const i32 ty = (i32)(v * texH) % texH;
+                const i32 tx = sfr_wrap_coord(u * texW1, texW);
+                const i32 ty = sfr_wrap_coord(v * texH1, texH);
                 
                 const u32 texCol = tex->pixels[ty * texW + tx];
                 const u8 tr = (texCol >> 16) & 0xFF;
@@ -1428,12 +1524,10 @@ SFR_FUNC void sfr_update_normal_mat(void) {
     const f32 det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
     const f32 invDet = (0 != det) ? 1.f / det : 0.f;
 
-    sfrState.matNormal = (sfrmat){{
-        { (e * i - f * h) * invDet, (c * h - b * i) * invDet, (b * f - c * e) * invDet, 0.f },
-        { (f * g - d * i) * invDet, (a * i - c * g) * invDet, (c * d - a * f) * invDet, 0.f },
-        { (d * h - e * g) * invDet, (b * g - a * h) * invDet, (a * e - b * d) * invDet, 0.f },
-        { 0.f, 0.f, 0.f, 1.f }
-    }};
+    sfrState.matNormal.rows[0] = (sfrvec){ (e * i - f * h) * invDet, (c * h - b * i) * invDet, (b * f - c * e) * invDet, 0.f };
+    sfrState.matNormal.rows[1] = (sfrvec){ (f * g - d * i) * invDet, (a * i - c * g) * invDet, (c * d - a * f) * invDet, 0.f };
+    sfrState.matNormal.rows[2] = (sfrvec){ (d * h - e * g) * invDet, (b * g - a * h) * invDet, (a * e - b * d) * invDet, 0.f };
+    sfrState.matNormal.rows[3] = (sfrvec){ 0.f, 0.f, 0.f, 1.f };
 
     sfrState.normalMatDirty = 0;
 }
