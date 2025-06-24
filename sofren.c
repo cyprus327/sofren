@@ -1,6 +1,3 @@
-#define SFR_IMPL
-#define SFR_USE_SIMD
-
 #ifndef SFR_H
 #define SFR_H
 
