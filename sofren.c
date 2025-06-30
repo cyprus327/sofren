@@ -35,11 +35,19 @@ extern "C" {
     #endif
     #ifndef SFR_MAX_BINS_PER_TILE
         // max triangles binned to a single tile
-        #define SFR_MAX_BINS_PER_TILE (4096)
+        #define SFR_MAX_BINS_PER_TILE (1024 * 8)
     #endif
-    #ifndef SFR_MAX_BINNED_TRIS
+    #ifndef SFR_MAX_BINS_PER_FRAME
         // max triangles binned per frame
-        #define SFR_MAX_BINNED_TRIS (1024 * 256)
+        #define SFR_MAX_BINS_PER_FRAME (1024 * 256)
+    #endif
+    #ifndef SFR_MAX_GEOMETRY_JOBS
+        // max mesh chunks to be processed per frame
+        #define SFR_MAX_GEOMETRY_JOBS (1024 * 1)
+    #endif
+    #ifndef SFR_GEOMETRY_JOB_SIZE
+        // number of triangles per geometry job
+        #define SFR_GEOMETRY_JOB_SIZE 64
     #endif
 #endif
 
@@ -144,6 +152,7 @@ typedef struct sfrTriangleBin SfrTriangleBin;
 typedef struct sfrTile SfrTile;
 #ifdef SFR_MULTITHREADED
     typedef struct sfrThreadData SfrThreadData;
+    typedef struct sfrMeshChunkJob SfrMeshChunkJob;
 #endif
 
 //: extern variables
@@ -513,6 +522,16 @@ typedef struct sfrTile {
         SfrThread handle;
         i32 threadInd;
     } SfrThreadData;
+    
+    typedef struct sfrMeshChunkJob {
+        const SfrMesh* mesh;
+        sfrmat matModel;
+        sfrmat matNormal;
+        u32 col;
+        const SfrTexture* tex;
+        i32 startTriangle;
+        i32 triangleCount;
+    } SfrMeshChunkJob;
 #endif
 
 typedef struct sfrBuffers {
@@ -530,18 +549,27 @@ typedef struct sfrBuffers {
             ((SFR_MAX_HEIGHT + SFR_TILE_WIDTH - 1) / SFR_TILE_WIDTH) *
             ((SFR_MAX_WIDTH + SFR_TILE_WIDTH - 1) / SFR_TILE_WIDTH)];
         i32 tileCols, tileRows, tileCount;
-        SfrTriangleBin triangleBinPool[SFR_MAX_BINNED_TRIS];
+        SfrTriangleBin triangleBinPool[SFR_MAX_BINS_PER_FRAME];
         SfrAtomic32 triangleBinAllocator;
         
-        // work dispatch data
-        i32 workQueue[(SFR_MAX_WIDTH / SFR_TILE_WIDTH + 1) * (SFR_MAX_HEIGHT / SFR_TILE_HEIGHT + 1)];
-        SfrAtomic32 workQueueCount;
-        SfrAtomic32 workQueueHead;
+        // rasterizer work dispatch data
+        i32 rasterWorkQueue[(SFR_MAX_WIDTH / SFR_TILE_WIDTH + 1) * (SFR_MAX_HEIGHT / SFR_TILE_HEIGHT + 1)];
+        SfrAtomic32 rasterWorkQueueCount;
+        SfrAtomic32 rasterWorkQueueHead;
+
+        // geometry job system data
+        SfrMeshChunkJob meshJobPool[SFR_MAX_GEOMETRY_JOBS];
+        SfrAtomic32 meshJobAllocator;
+        i32 geometryWorkQueue[SFR_MAX_GEOMETRY_JOBS];
+        SfrAtomic32 geometryWorkQueueCount;
+        SfrAtomic32 geometryWorkQueueHead;
 
         // thread management data
         struct sfrThreadData threads[SFR_THREAD_COUNT];
-        SfrSemaphore workStartSem; // wakes threads to start a batch of work
-        SfrSemaphore workDoneSem;  // signaled by threads when they finish a batch
+        SfrSemaphore geometryStartSem;
+        SfrSemaphore geometryDoneSem;
+        SfrSemaphore rasterStartSem;
+        SfrSemaphore rasterDoneSem;
     #endif
 } SfrBuffers;
 
@@ -1452,7 +1480,7 @@ SFR_FUNC void sfr__bin_triangle(
     #ifdef SFR_MULTITHREADED
         // get a new triangle bin from the global pool
         const i32 binInd = sfr_atomic_add(&sfrBuffers->triangleBinAllocator, 1) - 1;
-        if (binInd >= SFR_MAX_BINNED_TRIS) {
+        if (binInd >= SFR_MAX_BINS_PER_FRAME) {
             return;
         }
 
@@ -1488,10 +1516,10 @@ SFR_FUNC void sfr__bin_triangle(
                     continue;
                 }
 
-                if (tileBinInd == 0) {
-                    const i32 workInd = sfr_atomic_add(&sfrBuffers->workQueueCount, 1) - 1;
-                    if (workInd < SFR_ARRLEN(sfrBuffers->workQueue)) {
-                        sfrBuffers->workQueue[workInd] = tileInd;
+                if (0 == tileBinInd) {
+                    const i32 workInd = sfr_atomic_add(&sfrBuffers->rasterWorkQueueCount, 1) - 1;
+                    if (workInd < SFR_ARRLEN(sfrBuffers->rasterWorkQueue)) {
+                        sfrBuffers->rasterWorkQueue[workInd] = tileInd;
                     }
                 }
                 tile->bins[tileBinInd] = bin;
@@ -1508,6 +1536,176 @@ SFR_FUNC void sfr__bin_triangle(
         };
         sfr_rasterize_bin(&bin, &fullTile);
     #endif
+}
+
+// core geometry pipeline for a single triangle
+SFR_FUNC void sfr__process_and_bin_triangle(
+    const sfrmat* model, const sfrmat* normalMat,
+    f32 ax, f32 ay, f32 az, f32 au, f32 av, f32 anx, f32 any, f32 anz,
+    f32 bx, f32 by, f32 bz, f32 bu, f32 bv, f32 bnx, f32 bny, f32 bnz,
+    f32 cx, f32 cy, f32 cz, f32 cu, f32 cv, f32 cnx, f32 cny, f32 cnz,
+    u32 col, const SfrTexture* tex
+) {
+    // transform vertices to world space
+    const sfrvec aModel = sfr_mat_mul_vec(*model, (sfrvec){ax, ay, az, 1.f});
+    const sfrvec bModel = sfr_mat_mul_vec(*model, (sfrvec){bx, by, bz, 1.f});
+    const sfrvec cModel = sfr_mat_mul_vec(*model, (sfrvec){cx, cy, cz, 1.f});
+
+    // backface culling
+    #ifndef SFR_NO_CULLING
+        const sfrvec line0 = sfr_vec_sub(bModel, aModel);
+        const sfrvec line1 = sfr_vec_sub(cModel, aModel);
+        const sfrvec camRay = sfr_vec_sub(aModel, sfrCamPos);
+        const sfrvec triNormal = sfr_vec_cross(line0, line1);
+        if (sfr_vec_dot(triNormal, camRay) > 0.f) {
+            return;
+        }
+    #endif
+
+    // per vertex lighting calculation
+    f32 aIntensity = 1.f, bIntensity = 1.f, cIntensity = 1.f;
+    if (sfrState.lightingEnabled) {
+        // transform normals
+        const sfrvec nA = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){anx, any, anz, 0.f}));
+        const sfrvec nB = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){bnx, bny, bnz, 0.f}));
+        const sfrvec nC = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){cnx, cny, cnz, 0.f}));
+        
+        // intensity for each vertex
+        aIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nA, sfrState.lightingDir));
+        bIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nB, sfrState.lightingDir));
+        cIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nC, sfrState.lightingDir));
+    }
+
+    // to view space
+    SfrTexVert viewTri[3] = {
+        {sfr_mat_mul_vec(sfrMatView, aModel), au, av, 0, aIntensity},
+        {sfr_mat_mul_vec(sfrMatView, bModel), bu, bv, 0, bIntensity},
+        {sfr_mat_mul_vec(sfrMatView, cModel), cu, cv, 0, cIntensity}
+    };
+    for (int i = 0; i < 3; i += 1) {
+        viewTri[i].viewZ = viewTri[i].pos.z;
+    }
+
+    // prepare clip space verts and transform to clip space
+    SfrTexVert clipTris[16][3];
+    SfrTexVert (*input)[3] = clipTris; i32 inputCount = 1; // used in rasterization
+    for (i32 i = 0; i < 3; i += 1) {
+        clipTris[0][i].pos = sfr_mat_mul_vec(sfrMatProj, viewTri[i].pos);
+        clipTris[0][i].u = viewTri[i].u;
+        clipTris[0][i].v = viewTri[i].v;
+        clipTris[0][i].viewZ = viewTri[i].viewZ;
+        clipTris[0][i].intensity = viewTri[i].intensity;
+    }
+
+    // check if clipping is needed at all
+    const f32 guardBand = 1.2f; // 20 percent    
+    u8 needsClipping = 0;
+    for (i32 i = 0; i < 3; i += 1) {
+        const sfrvec p = clipTris[0][i].pos;
+        const f32 wGuard = p.w * guardBand;
+        if (p.x < -wGuard || p.x > wGuard || 
+            p.y < -wGuard || p.y > wGuard ||
+            p.z < -p.w || p.z > p.w
+        ) {
+            needsClipping = 1;
+            break;
+        }
+    }
+    if (!needsClipping) {
+        goto SFR_TRI_TEX_BIN;
+    }
+
+    // frustum planes in homogeneous clip space
+    const sfrvec frustumPlanes[6] = {
+        {0.f, 0.f, 1.f, 1.f},  // near:   z + w >= 0
+        {0.f, 0.f, -1.f, 1.f}, // far:   -z + w >= 0
+        {1.f, 0.f, 0.f, 1.f},  // left:   x + w >= 0
+        {-1.f, 0.f, 0.f, 1.f}, // right: -x + w >= 0
+        {0.f, 1.f, 0.f, 1.f},  // bottom: y + w >= 0
+        {0.f, -1.f, 0.f, 1.f}  // top:   -y + w >= 0
+    };
+
+    // clip against frustum planes
+    SfrTexVert buffer[SFR_ARRLEN(clipTris)][3];
+    SfrTexVert (*output)[3] = buffer;
+    
+    // process each clipping plane
+    for (i32 p = 0; p < 6; p += 1) {
+        i32 outputCount = 0;
+        for (i32 i = 0; i < inputCount; i += 1) {
+            SfrTexVert clipped[2][3];
+            const i32 count = sfr_clip_tri_homogeneous(
+                clipped,
+                frustumPlanes[p],
+                input[i]
+            );
+            
+            // add clipped triangles to output
+            for (i32 j = 0; j < count; j += 1) {
+                output[outputCount][0] = clipped[j][0];
+                output[outputCount][1] = clipped[j][1];
+                output[outputCount][2] = clipped[j][2];
+                outputCount += 1;
+            }
+        }
+        
+        // swap buffers
+        SfrTexVert (*temp)[3] = input;
+        input = output;
+        output = temp;
+        inputCount = outputCount;
+    }
+
+    // bin all final triangles
+    SFR_TRI_TEX_BIN:;
+    const SfrTexture* texToUse = tex ? tex : &sfrState.baseTex;
+    for (i32 i = 0; i < inputCount; i += 1) {
+        SfrTexVert* tri = input[i];
+        SfrTexVert screen[3];
+        
+        // perspective divide and screen space conversion
+        u8 skip = 0;
+        for (i32 j = 0; j < 3; j += 1) {
+            if (tri[j].pos.w <= SFR_EPSILON) {
+                skip = 1;
+                break;
+            }
+            const sfrvec ndc = sfr_vec_div(tri[j].pos, tri[j].pos.w);
+            screen[j].pos.x =  (ndc.x + 1.f) * sfrState.halfWidth;
+            screen[j].pos.y = (-ndc.y + 1.f) * sfrState.halfHeight;
+            screen[j].pos.z = ndc.z;
+            screen[j].u = tri[j].u;
+            screen[j].v = tri[j].v;
+            screen[j].viewZ = tri[j].viewZ;
+            screen[j].intensity = tri[j].intensity;
+        }
+
+        if (skip ||
+            screen[0].viewZ <= SFR_EPSILON ||
+            screen[1].viewZ <= SFR_EPSILON ||
+            screen[2].viewZ <= SFR_EPSILON
+        ) {
+            continue;
+        }
+
+        const f32 aInvZ = 1.f / screen[0].viewZ;
+        const f32 bInvZ = 1.f / screen[1].viewZ;
+        const f32 cInvZ = 1.f / screen[2].viewZ;
+        
+        const f32 auoz = screen[0].u * aInvZ;
+        const f32 avoz = screen[0].v * aInvZ;
+        const f32 buoz = screen[1].u * bInvZ;
+        const f32 bvoz = screen[1].v * bInvZ;
+        const f32 cuoz = screen[2].u * cInvZ;
+        const f32 cvoz = screen[2].v * cInvZ;
+        
+        sfr__bin_triangle(
+            screen[0].pos.x, screen[0].pos.y, screen[0].pos.z, aInvZ, auoz, avoz, screen[0].intensity,
+            screen[1].pos.x, screen[1].pos.y, screen[1].pos.z, bInvZ, buoz, bvoz, screen[1].intensity,
+            screen[2].pos.x, screen[2].pos.y, screen[2].pos.z, cInvZ, cuoz, cvoz, screen[2].intensity,
+            col, texToUse
+        );
+    }
 }
 
 // helper for updating normal mat used for shading
@@ -1540,11 +1738,17 @@ SFR_FUNC void sfr_init(SfrBuffers* buffers, i32 w, i32 h, f32 fovDeg) {
     #ifdef SFR_MULTITHREADED
         sfrState.shutdown = 0;
         sfr_atomic_set(&sfrBuffers->triangleBinAllocator, 0);
-        sfr_atomic_set(&sfrBuffers->workQueueCount, 0);
-        sfr_atomic_set(&sfrBuffers->workQueueHead, 0);
+        sfr_atomic_set(&sfrBuffers->rasterWorkQueueCount, 0);
+        sfr_atomic_set(&sfrBuffers->rasterWorkQueueHead, 0);
+        
+        sfr_atomic_set(&sfrBuffers->meshJobAllocator, 0);
+        sfr_atomic_set(&sfrBuffers->geometryWorkQueueCount, 0);
+        sfr_atomic_set(&sfrBuffers->geometryWorkQueueHead, 0);
 
-        sfr_semaphore_init(&sfrBuffers->workStartSem, 0);
-        sfr_semaphore_init(&sfrBuffers->workDoneSem, 0);
+        sfr_semaphore_init(&sfrBuffers->geometryStartSem, 0);
+        sfr_semaphore_init(&sfrBuffers->geometryDoneSem, 0);
+        sfr_semaphore_init(&sfrBuffers->rasterStartSem, 0);
+        sfr_semaphore_init(&sfrBuffers->rasterDoneSem, 0);
 
         for (i32 i = 0; i < SFR_THREAD_COUNT; i += 1) {
             sfrBuffers->threads[i].threadInd = i;
@@ -1573,7 +1777,9 @@ SFR_FUNC void sfr_shutdown(void) {
     sfr_flush_and_wait();
 
     sfrState.shutdown = 1;
-    sfr_semaphore_post(&sfrBuffers->workStartSem, SFR_THREAD_COUNT);
+    // post to both semaphores to ensure threads wake up from either wait state
+    sfr_semaphore_post(&sfrBuffers->geometryStartSem, SFR_THREAD_COUNT);
+    sfr_semaphore_post(&sfrBuffers->rasterStartSem, SFR_THREAD_COUNT);
 
     for (i32 i = 0; i < SFR_THREAD_COUNT; i += 1) {
         #ifdef _WIN32
@@ -1584,29 +1790,35 @@ SFR_FUNC void sfr_shutdown(void) {
         #endif
     }
 
-    sfr_semaphore_destroy(&sfrBuffers->workStartSem);
-    sfr_semaphore_destroy(&sfrBuffers->workDoneSem);
+    sfr_semaphore_destroy(&sfrBuffers->geometryStartSem);
+    sfr_semaphore_destroy(&sfrBuffers->geometryDoneSem);
+    sfr_semaphore_destroy(&sfrBuffers->rasterStartSem);
+    sfr_semaphore_destroy(&sfrBuffers->rasterDoneSem);
 }
 
-// dispatches the binned triangles to workers and waits for them
+// dispatches jobs to workers and waits for them to complete
 SFR_FUNC void sfr_flush_and_wait(void) {
-    if (0 == sfr_atomic_get(&sfrBuffers->workQueueCount)) {
-        sfr_atomic_set(&sfrBuffers->triangleBinAllocator, 0);
-        return; // no work to do
-    }
-
-    // wake up all workers
-    sfr_semaphore_post(&sfrBuffers->workStartSem, SFR_THREAD_COUNT);
-
-    // wait for all workers to signal they're done
+    // always dispatch geometry phase to keep workers in sync
+    sfr_semaphore_post(&sfrBuffers->geometryStartSem, SFR_THREAD_COUNT);
     for (i32 i = 0; i < SFR_THREAD_COUNT; i += 1) {
-        sfr_semaphore_wait(&sfrBuffers->workDoneSem);
+        sfr_semaphore_wait(&sfrBuffers->geometryDoneSem);
     }
 
-    // reset for the next frame
+    // reset geometry queue
+    sfr_atomic_set(&sfrBuffers->meshJobAllocator, 0);
+    sfr_atomic_set(&sfrBuffers->geometryWorkQueueCount, 0);
+    sfr_atomic_set(&sfrBuffers->geometryWorkQueueHead, 0);
+
+    // always dispatch rasterization phase
+    sfr_semaphore_post(&sfrBuffers->rasterStartSem, SFR_THREAD_COUNT);
+    for (i32 i = 0; i < SFR_THREAD_COUNT; i += 1) {
+        sfr_semaphore_wait(&sfrBuffers->rasterDoneSem);
+    }
+
+    // reset rasterization data
     sfr_atomic_set(&sfrBuffers->triangleBinAllocator, 0);
-    sfr_atomic_set(&sfrBuffers->workQueueCount, 0);
-    sfr_atomic_set(&sfrBuffers->workQueueHead, 0);
+    sfr_atomic_set(&sfrBuffers->rasterWorkQueueCount, 0);
+    sfr_atomic_set(&sfrBuffers->rasterWorkQueueHead, 0);
 }
 
 #endif // SFR_MULTITHREADED
@@ -1788,170 +2000,17 @@ SFR_FUNC void sfr_triangle_tex(
     f32 cx, f32 cy, f32 cz, f32 cu, f32 cv, f32 cnx, f32 cny, f32 cnz,
     u32 col, const SfrTexture* tex
 ) {
-    // transform vertices to world space
-    const sfrvec aModel = sfr_mat_mul_vec(sfrMatModel, (sfrvec){ax, ay, az, 1.f});
-    const sfrvec bModel = sfr_mat_mul_vec(sfrMatModel, (sfrvec){bx, by, bz, 1.f});
-    const sfrvec cModel = sfr_mat_mul_vec(sfrMatModel, (sfrvec){cx, cy, cz, 1.f});
-
-    // backface culling
-    #ifndef SFR_NO_CULLING
-        const sfrvec line0 = sfr_vec_sub(bModel, aModel);
-        const sfrvec line1 = sfr_vec_sub(cModel, aModel);
-        const sfrvec camRay = sfr_vec_sub(aModel, sfrCamPos);
-        const sfrvec triNormal = sfr_vec_cross(line0, line1);
-        if (sfr_vec_dot(triNormal, camRay) > 0.f) {
-            return;
-        }
-    #endif
-
-    // per vertex lighting calculation
-    f32 aIntensity = 1.f, bIntensity = 1.f, cIntensity = 1.f;
-    if (sfrState.lightingEnabled) {
-        if (sfrState.normalMatDirty) {
-            sfr_update_normal_mat();
-        }
-
-        // transform normals
-        const sfrvec nA = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (sfrvec){anx, any, anz, 0.f}));
-        const sfrvec nB = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (sfrvec){bnx, bny, bnz, 0.f}));
-        const sfrvec nC = sfr_vec_norm(sfr_mat_mul_vec(sfrState.matNormal, (sfrvec){cnx, cny, cnz, 0.f}));
-        
-        // intensity for each vertex
-        aIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nA, sfrState.lightingDir));
-        bIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nB, sfrState.lightingDir));
-        cIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nC, sfrState.lightingDir));
+    if (sfrState.normalMatDirty) {
+        sfr_update_normal_mat();
     }
 
-    // to view space
-    SfrTexVert viewTri[3] = {
-        {sfr_mat_mul_vec(sfrMatView, aModel), au, av, 0, aIntensity},
-        {sfr_mat_mul_vec(sfrMatView, bModel), bu, bv, 0, bIntensity},
-        {sfr_mat_mul_vec(sfrMatView, cModel), cu, cv, 0, cIntensity}
-    };
-    for (int i = 0; i < 3; i += 1) {
-        viewTri[i].viewZ = viewTri[i].pos.z;
-    }
-
-    // prepare clip space verts and transform to clip space
-    SfrTexVert clipTris[16][3];
-    SfrTexVert (*input)[3] = clipTris; i32 inputCount = 1; // used in rasterization
-    for (i32 i = 0; i < 3; i += 1) {
-        clipTris[0][i].pos = sfr_mat_mul_vec(sfrMatProj, viewTri[i].pos);
-        clipTris[0][i].u = viewTri[i].u;
-        clipTris[0][i].v = viewTri[i].v;
-        clipTris[0][i].viewZ = viewTri[i].viewZ;
-        clipTris[0][i].intensity = viewTri[i].intensity;
-    }
-
-    // check if clipping is needed at all
-    const f32 guardBand = 1.2f; // 20 percent    
-    u8 needsClipping = 0;
-    for (i32 i = 0; i < 3; i += 1) {
-        const sfrvec p = clipTris[0][i].pos;
-        const f32 wGuard = p.w * guardBand;
-        if (p.x < -wGuard || p.x > wGuard || 
-            p.y < -wGuard || p.y > wGuard ||
-            p.z < -p.w || p.z > p.w
-        ) {
-            needsClipping = 1;
-            break;
-        }
-    }
-    if (!needsClipping) {
-        goto SFR_TRI_TEX_BIN;
-    }
-
-    // frustum planes in homogeneous clip space
-    const sfrvec frustumPlanes[6] = {
-        {0.f, 0.f, 1.f, 1.f},  // near:   z + w >= 0
-        {0.f, 0.f, -1.f, 1.f}, // far:   -z + w >= 0
-        {1.f, 0.f, 0.f, 1.f},  // left:   x + w >= 0
-        {-1.f, 0.f, 0.f, 1.f}, // right: -x + w >= 0
-        {0.f, 1.f, 0.f, 1.f},  // bottom: y + w >= 0
-        {0.f, -1.f, 0.f, 1.f}  // top:   -y + w >= 0
-    };
-
-    // clip against frustum planes
-    SfrTexVert buffer[SFR_ARRLEN(clipTris)][3];
-    SfrTexVert (*output)[3] = buffer;
-    
-    // process each clipping plane
-    for (i32 p = 0; p < 6; p += 1) {
-        i32 outputCount = 0;
-        for (i32 i = 0; i < inputCount; i += 1) {
-            SfrTexVert clipped[2][3];
-            const i32 count = sfr_clip_tri_homogeneous(
-                clipped,
-                frustumPlanes[p],
-                input[i]
-            );
-            
-            // add clipped triangles to output
-            for (i32 j = 0; j < count; j += 1) {
-                output[outputCount][0] = clipped[j][0];
-                output[outputCount][1] = clipped[j][1];
-                output[outputCount][2] = clipped[j][2];
-                outputCount += 1;
-            }
-        }
-        
-        // swap buffers
-        SfrTexVert (*temp)[3] = input;
-        input = output;
-        output = temp;
-        inputCount = outputCount;
-    }
-
-    // bin all final triangles
-    SFR_TRI_TEX_BIN:;
-    const SfrTexture* texToUse = tex ? tex : &sfrState.baseTex;
-    for (i32 i = 0; i < inputCount; i += 1) {
-        SfrTexVert* tri = input[i];
-        SfrTexVert screen[3];
-        
-        // perspective divide and screen space conversion
-        u8 skip = 0;
-        for (i32 j = 0; j < 3; j += 1) {
-            if (tri[j].pos.w <= SFR_EPSILON) {
-                skip = 1;
-                break;
-            }
-            const sfrvec ndc = sfr_vec_div(tri[j].pos, tri[j].pos.w);
-            screen[j].pos.x =  (ndc.x + 1.f) * sfrState.halfWidth;
-            screen[j].pos.y = (-ndc.y + 1.f) * sfrState.halfHeight;
-            screen[j].pos.z = ndc.z;
-            screen[j].u = tri[j].u;
-            screen[j].v = tri[j].v;
-            screen[j].viewZ = tri[j].viewZ;
-            screen[j].intensity = tri[j].intensity;
-        }
-
-        if (skip ||
-            screen[0].viewZ <= SFR_EPSILON ||
-            screen[1].viewZ <= SFR_EPSILON ||
-            screen[2].viewZ <= SFR_EPSILON
-        ) {
-            continue;
-        }
-
-        const f32 aInvZ = 1.f / screen[0].viewZ;
-        const f32 bInvZ = 1.f / screen[1].viewZ;
-        const f32 cInvZ = 1.f / screen[2].viewZ;
-        
-        const f32 auoz = screen[0].u * aInvZ;
-        const f32 avoz = screen[0].v * aInvZ;
-        const f32 buoz = screen[1].u * bInvZ;
-        const f32 bvoz = screen[1].v * bInvZ;
-        const f32 cuoz = screen[2].u * cInvZ;
-        const f32 cvoz = screen[2].v * cInvZ;
-        
-        sfr__bin_triangle(
-            screen[0].pos.x, screen[0].pos.y, screen[0].pos.z, aInvZ, auoz, avoz, screen[0].intensity,
-            screen[1].pos.x, screen[1].pos.y, screen[1].pos.z, bInvZ, buoz, bvoz, screen[1].intensity,
-            screen[2].pos.x, screen[2].pos.y, screen[2].pos.z, cInvZ, cuoz, cvoz, screen[2].intensity,
-            col, texToUse
-        );
-    }
+    sfr__process_and_bin_triangle(
+        &sfrMatModel, &sfrState.matNormal,
+        ax, ay, az, au, av, anx, any, anz,
+        bx, by, bz, bu, bv, bnx, bny, bnz,
+        cx, cy, cz, cu, cv, cnx, cny, cnz,
+        col, tex
+    );
 }
 
 SFR_FUNC void sfr_billboard(u32 col, const SfrTexture* tex) {
@@ -2108,43 +2167,82 @@ SFR_FUNC void sfr_cube_ex(u32 col[12]) {
 }
 
 SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
-    for (i32 i = 0; i < mesh->vertCount; i += 9) {
-        const i32 uv = (i / 9) * 6;
-
-        const f32 ax = mesh->tris[i + 0];
-        const f32 ay = mesh->tris[i + 1];
-        const f32 az = mesh->tris[i + 2];
-        const f32 au = mesh->uvs ? mesh->uvs[uv + 0] : 0.f;
-        const f32 av = mesh->uvs ? mesh->uvs[uv + 1] : 0.f;
-        const f32 anx = mesh->normals[i + 0];
-        const f32 any = mesh->normals[i + 1];
-        const f32 anz = mesh->normals[i + 2];
-
-        const f32 bx = mesh->tris[i + 3];
-        const f32 by = mesh->tris[i + 4];
-        const f32 bz = mesh->tris[i + 5];
-        const f32 bu = mesh->uvs ? mesh->uvs[uv + 2] : 0.f;
-        const f32 bv = mesh->uvs ? mesh->uvs[uv + 3] : 0.f;
-        const f32 bnx = mesh->normals[i + 3];
-        const f32 bny = mesh->normals[i + 4];
-        const f32 bnz = mesh->normals[i + 5];
-
-        const f32 cx = mesh->tris[i + 6];
-        const f32 cy = mesh->tris[i + 7];
-        const f32 cz = mesh->tris[i + 8];
-        const f32 cu = mesh->uvs ? mesh->uvs[uv + 4] : 0.f;
-        const f32 cv = mesh->uvs ? mesh->uvs[uv + 5] : 0.f;
-        const f32 cnx = mesh->normals[i + 6];
-        const f32 cny = mesh->normals[i + 7];
-        const f32 cnz = mesh->normals[i + 8];
-
-        sfr_triangle_tex(
-            ax, ay, az, au, av, anx, any, anz,
-            bx, by, bz, bu, bv, bnx, bny, bnz,
-            cx, cy, cz, cu, cv, cnx, cny, cnz,
-            col, tex
-        );
+    const i32 triangleCount = mesh->vertCount / 9;
+    if (0 == triangleCount) {
+        return;
     }
+
+    if (sfrState.normalMatDirty) {
+        sfr_update_normal_mat();
+    }
+
+    #ifdef SFR_MULTITHREADED
+        // divide the mesh into jobs
+        for (i32 i = 0; i < triangleCount; i += SFR_GEOMETRY_JOB_SIZE) {
+            const i32 jobInd = sfr_atomic_add(&sfrBuffers->meshJobAllocator, 1) - 1;
+            if (jobInd >= SFR_MAX_GEOMETRY_JOBS) {
+                // not enough job slots,
+                // process remaining triangles serially so they aren't just dropped
+                sfr_flush_and_wait();
+                const i32 remaining = triangleCount - i;
+                for (int j = 0; j < remaining; j += 1) {
+                    const i32 triInd = (i + j) * 9;
+                    const i32 uvInd = (i + j) * 6;
+                     sfr__process_and_bin_triangle(
+                        &sfrMatModel, &sfrState.matNormal,
+                        mesh->tris[triInd + 0], mesh->tris[triInd + 1], mesh->tris[triInd + 2],
+                        mesh->uvs ? mesh->uvs[uvInd + 0] : 0.f, mesh->uvs ? mesh->uvs[uvInd + 1] : 0.f,
+                        mesh->normals[triInd + 0], mesh->normals[triInd + 1], mesh->normals[triInd + 2],
+
+                        mesh->tris[triInd + 3], mesh->tris[triInd + 4], mesh->tris[triInd + 5],
+                        mesh->uvs ? mesh->uvs[uvInd + 2] : 0.f, mesh->uvs ? mesh->uvs[uvInd + 3] : 0.f,
+                        mesh->normals[triInd + 3], mesh->normals[triInd + 4], mesh->normals[triInd + 5],
+                        
+                        mesh->tris[triInd + 6], mesh->tris[triInd + 7], mesh->tris[triInd + 8],
+                        mesh->uvs ? mesh->uvs[uvInd + 4] : 0.f, mesh->uvs ? mesh->uvs[uvInd + 5] : 0.f,
+                        mesh->normals[triInd + 6], mesh->normals[triInd + 7], mesh->normals[triInd + 8],
+                        col, tex
+                    );
+                }
+                return;
+            }
+
+            // create and populate the job
+            SfrMeshChunkJob* job = &sfrBuffers->meshJobPool[jobInd];
+            job->mesh = mesh;
+            job->matModel = sfrMatModel;
+            job->matNormal = sfrState.matNormal;
+            job->col = col;
+            job->tex = tex;
+            job->startTriangle = i;
+            job->triangleCount = SFR_MIN(SFR_GEOMETRY_JOB_SIZE, triangleCount - i);
+
+            // add job to the queue
+            const i32 queueInd = sfr_atomic_add(&sfrBuffers->geometryWorkQueueCount, 1) - 1;
+            if (queueInd < SFR_MAX_GEOMETRY_JOBS) {
+                sfrBuffers->geometryWorkQueue[queueInd] = jobInd;
+            }
+        }
+    #else
+        for (i32 i = 0; i < mesh->vertCount; i += 9) {
+            const i32 uvInd = (i / 9) * 6;
+            sfr__process_and_bin_triangle(
+                &sfrMatModel, &sfrState.matNormal,
+                mesh->tris[i + 0], mesh->tris[i + 1], mesh->tris[i + 2],
+                mesh->uvs ? mesh->uvs[uvInd + 0] : 0.f, mesh->uvs ? mesh->uvs[uvInd + 1] : 0.f,
+                mesh->normals[i + 0], mesh->normals[i + 1], mesh->normals[i + 2],
+
+                mesh->tris[i + 3], mesh->tris[i + 4], mesh->tris[i + 5],
+                mesh->uvs ? mesh->uvs[uvInd + 2] : 0.f, mesh->uvs ? mesh->uvs[uvInd + 3] : 0.f,
+                mesh->normals[i + 3], mesh->normals[i + 4], mesh->normals[i + 5],
+                
+                mesh->tris[i + 6], mesh->tris[i + 7], mesh->tris[i + 8],
+                mesh->uvs ? mesh->uvs[uvInd + 4] : 0.f, mesh->uvs ? mesh->uvs[uvInd + 5] : 0.f,
+                mesh->normals[i + 6], mesh->normals[i + 7], mesh->normals[i + 8],
+                col, tex
+            );
+        }
+    #endif
 }
 
 SFR_FUNC void sfr_string(const SfrFont* font, const char* s, i32 sLength, u32 col) {
@@ -2761,22 +2859,63 @@ static void* sfr__worker_thread_func(void* arg) {
     // const i32 selfInd = self->threadInd;
 
     while (1) {
-        // wait for the main thread to signal a batch of work is ready
-        sfr_semaphore_wait(&sfrBuffers->workStartSem);
+        // vv geometry phase vv
+        sfr_semaphore_wait(&sfrBuffers->geometryStartSem);
         if (sfrState.shutdown) {
             break;
         }
         
         while (1) {
-            // get the next tile index from the work queue
-            const i32 head = sfr_atomic_add(&sfrBuffers->workQueueHead, 1) - 1;
+            // get the next geometry job from the queue
+            const i32 head = sfr_atomic_add(&sfrBuffers->geometryWorkQueueHead, 1) - 1;
+            if (head >= sfr_atomic_get(&sfrBuffers->geometryWorkQueueCount)) {
+                break; // no more geometry work
+            }
 
-            if (head >= sfr_atomic_get(&sfrBuffers->workQueueCount)) {
-                break; // no more work in the queue
+            const i32 jobInd = sfrBuffers->geometryWorkQueue[head];
+            const SfrMeshChunkJob* job = &sfrBuffers->meshJobPool[jobInd];
+
+            // process all triangles in this job
+            for (i32 i = 0; i < job->triangleCount; i += 1) {
+                const i32 triInd = (job->startTriangle + i) * 9;
+                const i32 uvInd = (job->startTriangle + i) * 6;
+                sfr__process_and_bin_triangle(
+                    &job->matModel, &job->matNormal,
+                    job->mesh->tris[triInd + 0], job->mesh->tris[triInd + 1], job->mesh->tris[triInd + 2],
+                    job->mesh->uvs ? job->mesh->uvs[uvInd + 0] : 0.f,
+                    job->mesh->uvs ? job->mesh->uvs[uvInd + 1] : 0.f,
+                    job->mesh->normals[triInd + 0], job->mesh->normals[triInd + 1], job->mesh->normals[triInd + 2],
+
+                    job->mesh->tris[triInd + 3], job->mesh->tris[triInd + 4], job->mesh->tris[triInd + 5],
+                    job->mesh->uvs ? job->mesh->uvs[uvInd + 2] : 0.f,
+                    job->mesh->uvs ? job->mesh->uvs[uvInd + 3] : 0.f,
+                    job->mesh->normals[triInd + 3], job->mesh->normals[triInd + 4], job->mesh->normals[triInd + 5],
+                    
+                    job->mesh->tris[triInd + 6], job->mesh->tris[triInd + 7], job->mesh->tris[triInd + 8],
+                    job->mesh->uvs ? job->mesh->uvs[uvInd + 4] : 0.f,
+                    job->mesh->uvs ? job->mesh->uvs[uvInd + 5] : 0.f,
+                    job->mesh->normals[triInd + 6], job->mesh->normals[triInd + 7], job->mesh->normals[triInd + 8],
+                    job->col, job->tex
+                );
+            }
+        }
+        sfr_semaphore_post(&sfrBuffers->geometryDoneSem, 1);
+
+        // vv rasterization phase vv
+        sfr_semaphore_wait(&sfrBuffers->rasterStartSem);
+        if (sfrState.shutdown) {
+            break;
+        }
+
+        while (1) {
+            // get the next tile index from the work queue
+            const i32 head = sfr_atomic_add(&sfrBuffers->rasterWorkQueueHead, 1) - 1;
+            if (head >= sfr_atomic_get(&sfrBuffers->rasterWorkQueueCount)) {
+                break; // no more raster work
             }
 
             // get the tile and rasterize its contents
-            SfrTile* tile = &sfrBuffers->tiles[sfrBuffers->workQueue[head]];
+            SfrTile* tile = &sfrBuffers->tiles[sfrBuffers->rasterWorkQueue[head]];
             i32 binCount = sfr_atomic_get(&tile->binCount);
             binCount = SFR_MIN(binCount, SFR_MAX_BINS_PER_TILE);
             for (i32 i = 0; i < binCount; i += 1) {
@@ -2785,9 +2924,7 @@ static void* sfr__worker_thread_func(void* arg) {
 
             sfr_atomic_set(&tile->binCount, 0);
         }
-        
-        // signal this thread finished its work
-        sfr_semaphore_post(&sfrBuffers->workDoneSem, 1);
+        sfr_semaphore_post(&sfrBuffers->rasterDoneSem, 1);
     }
 
     #ifdef _WIN32
