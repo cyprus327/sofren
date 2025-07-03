@@ -23,8 +23,7 @@
 For examples and good starting points rendering to an SDL2 window or console window, see the examples folder
 
 ## Features
-- As few a 0 other headers, can be 100% standalone
-- Single file, just `#include "sofren.c"`
+- Single file with as few a 0 other headers, can be 100% standalone
 - Cross platform multithreading (Windows or pthreads)
 - Perspective correct texture mapping (currently only .bmp image support)
 - Transparency (known limitation / bug, see the bottom of this README)
@@ -41,7 +40,8 @@ For examples and good starting points rendering to an SDL2 window or console win
 // the default values are the opposite of the macro unless otherwise stated,
 // e.g. functions aren't inline by default
 
-#define SFR_IMPL // indicate declaration of functions
+// indicate declaration of functions, only define this in one file
+#define SFR_IMPL
 
 #define SFR_NO_STD    // don't include 'stdio' and 'stdlib.h'
 #define SFR_NO_MATH   // don't include 'math.h' and use bundled math
@@ -53,6 +53,9 @@ For examples and good starting points rendering to an SDL2 window or console win
 
 // disable transparency, big FPS boost
 #define SFR_NO_ALPHA
+
+// whether or not to use SSE 4.1 intrinsics
+#define SFR_USE_SIMD
 
 // types are defined as things like 'i32' or 'u64' internally,
 // if this causes some issue define this for types
@@ -66,7 +69,7 @@ For examples and good starting points rendering to an SDL2 window or console win
 // overwrites SFR_USE_INLINE, if it is defined
 #define SFR_FUNC
 
-// defines SFR_FUNC as either 'static inline' default is 'static'
+// defines SFR_FUNC as 'static inline' default is 'static'
 #define SFR_USE_INLINE
 
 // max width and height of the window to avoid reallocations when resizing
@@ -83,11 +86,13 @@ For examples and good starting points rendering to an SDL2 window or console win
 #define SFR_FONT_VERT_MAX  // max verts per glyph, default of 72 (12 tris)
 
 // when SFR_THREAD_COUNT isn't 1, below is applicable
-#define SFR_THREAD_COUNT      // default of 1, i.e. single threaded
-#define SFR_TILE_WIDTH        // default of 64, in pixels
-#define SFR_TILE_HEIGHT       // default of 64, in pixels
-#define SFR_MAX_BINS_PER_TILE // default of 4096, max tris that can be rendered on one screen tile 
-#define SFR_MAX_BINNED_TRIS   // default of 256k, max tris that can be rendered per frame
+#define SFR_THREAD_COUNT       // default of 1, i.e. single threaded
+#define SFR_TILE_WIDTH         // default of 64, in pixels
+#define SFR_TILE_HEIGHT        // default of 64, in pixels
+#define SFR_MAX_BINS_PER_TILE  // default of 8128, max tris that can be rendered on one screen tile 
+#define SFR_MAX_BINS_PER_FRAME // default of 256k, max tris that can be rendered per frame
+#define SFR_GEOMETRY_JOB_SIZE  // default of 64, number of tris per geometry job
+#define SFR_MAX_GEOMETRY_JOBS  // default of 8128, max mesh chunks that can be processed per frame
 ```
 
 ## Global Variables
