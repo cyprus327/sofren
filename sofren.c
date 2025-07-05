@@ -1,3 +1,7 @@
+#define SFR_IMPL
+#define SFR_USE_SIMD
+#define SFR_THREAD_COUNT 8
+
 #ifndef SFR_H
 #define SFR_H
 
@@ -14,6 +18,10 @@ extern "C" {
 #endif
 #ifndef SFR_MAX_HEIGHT
     #define SFR_MAX_HEIGHT 1080
+#endif
+
+#ifndef SFR_MAX_LIGHTS
+    #define SFR_MAX_LIGHTS 16
 #endif
 
 //: threading config
@@ -41,13 +49,13 @@ extern "C" {
         // max triangles binned per frame
         #define SFR_MAX_BINS_PER_FRAME (1024 * 256)
     #endif
-    #ifndef SFR_MAX_GEOMETRY_JOBS
-        // max mesh chunks to be processed per frame
-        #define SFR_MAX_GEOMETRY_JOBS (1024 * 1)
-    #endif
     #ifndef SFR_GEOMETRY_JOB_SIZE
         // number of triangles per geometry job
         #define SFR_GEOMETRY_JOB_SIZE 64
+    #endif
+    #ifndef SFR_MAX_GEOMETRY_JOBS
+        // max mesh chunks to be processed per frame
+        #define SFR_MAX_GEOMETRY_JOBS (1024 * 8)
     #endif
 #endif
 
@@ -146,6 +154,8 @@ typedef struct sfrfont SfrFont;
 typedef struct sfrparticle  SfrParticle;
 typedef struct sfrparticles SfrParticleSystem;
 
+typedef struct sfrlight SfrLight;
+
 typedef struct sfrBuffers SfrBuffers;
 
 typedef struct sfrTriangleBin SfrTriangleBin;
@@ -171,7 +181,9 @@ extern f32 sfrNearDist, sfrFarDist;
 
 #ifdef SFR_FUNC
 #ifdef SFR_USE_INLINE
+#ifndef SFR_NO_WARNINGS
     #warning "SFR WARNING: SFR_FUNC and SFR_USE_INLINE both being defined is contradictory, using SFR_FUNC"    
+#endif
 #endif
 #endif
 
@@ -275,8 +287,8 @@ SFR_FUNC i32 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY
 // update the camera with the new position and view
 SFR_FUNC void sfr_set_camera(f32 x, f32 y, f32 z, f32 yaw, f32 pitch, f32 roll);
 SFR_FUNC void sfr_set_fov(f32 fovDeg); // update projection matrix with new fov
-SFR_FUNC void sfr_set_lighting( // update internal lighting state for simple shading on triangles
-    i32 on, sfrvec dir, f32 ambientIntensity);
+SFR_FUNC void sfr_set_light(i32 id, SfrLight light); // update light at index id [0..SFR_MAX_LIGHTS)
+SFR_FUNC void sfr_set_lighting(u8 enabled);
 
 // things requiring malloc / stdio
 #ifndef SFR_NO_STD
@@ -501,6 +513,17 @@ typedef struct sfrparticles {
     const SfrTexture* tex;
 } SfrParticleSystem;
 
+typedef struct sfrlight {
+    f32 posX, posY, posZ;
+    f32 dirX, dirY, dirZ;
+    f32 radius, ambient, intensity;
+    enum {
+        SFR_LIGHT_NONE,
+        SFR_LIGHT_DIRECTIONAL,
+        SFR_LIGHT_SPHERE,
+    } type;
+} SfrLight;
+
 typedef struct sfrTriangleBin {
     f32 ax, ay, az, aInvZ, auoz, avoz, aIntensity;
     f32 bx, by, bz, bInvZ, buoz, bvoz, bIntensity;
@@ -571,15 +594,14 @@ typedef struct sfrBuffers {
         SfrSemaphore rasterStartSem;
         SfrSemaphore rasterDoneSem;
     #endif
+    SfrLight lights[SFR_MAX_LIGHTS];
 } SfrBuffers;
 
 typedef struct sfrState {
-    i32 lightingEnabled;
-    sfrvec lightingDir;
-    f32 lightingAmbient;
+    u8 lightingEnabled;
 
     sfrmat matNormal;
-    i32 normalMatDirty;
+    u8 normalMatDirty;
 
     u32 randState;
 
@@ -591,7 +613,7 @@ typedef struct sfrState {
     SfrTexture baseTex;
 
     #ifdef SFR_MULTITHREADED
-        i32 shutdown;
+        u8 shutdown;
     #endif
 } SfrState;
 
@@ -1171,7 +1193,7 @@ SFR_FUNC i32 sfr_clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const 
     return 0;
 }
 
-SFR_FUNC void sfr_rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) {
+SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) {
     // skip if fully transparent
     const u32 col = bin->col;
     #ifndef SFR_NO_ALPHA
@@ -1534,7 +1556,7 @@ SFR_FUNC void sfr__bin_triangle(
             cx, cy, cz, cInvZ, cuoz, cvoz, cIntensity,
             col, tex
         };
-        sfr_rasterize_bin(&bin, &fullTile);
+        sfr__rasterize_bin(&bin, &fullTile);
     #endif
 }
 
@@ -1563,17 +1585,65 @@ SFR_FUNC void sfr__process_and_bin_triangle(
     #endif
 
     // per vertex lighting calculation
-    f32 aIntensity = 1.f, bIntensity = 1.f, cIntensity = 1.f;
+    f32 aIntensity = 0.f, bIntensity = 0.f, cIntensity = 0.f;
     if (sfrState.lightingEnabled) {
         // transform normals
-        const sfrvec nA = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){anx, any, anz, 0.f}));
-        const sfrvec nB = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){bnx, bny, bnz, 0.f}));
-        const sfrvec nC = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){cnx, cny, cnz, 0.f}));
+        const sfrvec na = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){anx, any, anz, 0.f}));
+        const sfrvec nb = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){bnx, bny, bnz, 0.f}));
+        const sfrvec nc = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){cnx, cny, cnz, 0.f}));
         
-        // intensity for each vertex
-        aIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nA, sfrState.lightingDir));
-        bIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nB, sfrState.lightingDir));
-        cIntensity = sfr_fmaxf(sfrState.lightingAmbient, sfr_vec_dot(nC, sfrState.lightingDir));
+        for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
+            const SfrLight* light = &sfrBuffers->lights[i];
+            switch (light->type) {
+                case SFR_LIGHT_NONE: {
+                    continue;
+                }
+
+                case SFR_LIGHT_DIRECTIONAL: {
+                    const f32 dotA = sfr_vec_dot(na, (sfrvec){light->dirX, light->dirY, light->dirZ}) * 0.5f + 0.5f;
+                    const f32 dotB = sfr_vec_dot(nb, (sfrvec){light->dirX, light->dirY, light->dirZ}) * 0.5f + 0.5f;
+                    const f32 dotC = sfr_vec_dot(nc, (sfrvec){light->dirX, light->dirY, light->dirZ}) * 0.5f + 0.5f;
+                    aIntensity += sfr_fmaxf(light->ambient, dotA * light->intensity);
+                    bIntensity += sfr_fmaxf(light->ambient, dotB * light->intensity);
+                    cIntensity += sfr_fmaxf(light->ambient, dotC * light->intensity);
+                } break;            
+                
+                case SFR_LIGHT_SPHERE: {
+                    const sfrvec lp = {light->posX, light->posY, light->posZ};
+                    const f32 r2 = light->radius * light->radius;
+                    
+                    const sfrvec lightDirA = sfr_vec_sub(lp, aModel);
+                    const f32 distSqA = sfr_vec_length2(lightDirA);
+                    if (distSqA < r2) {
+                        const f32 attenuation = 1.f - (distSqA / r2);
+                        const f32 diffuse = sfr_fmaxf(0.f, sfr_vec_dot(na, sfr_vec_norm(lightDirA)));
+                        aIntensity += diffuse * attenuation * light->intensity;
+                    }
+
+                    const sfrvec lightDirB = sfr_vec_sub(lp, bModel);
+                    const f32 distSqB = sfr_vec_length2(lightDirB);
+                    if (distSqB < r2) {
+                        const f32 attenuation = 1.f - (distSqB / r2);
+                        const f32 diffuse = sfr_fmaxf(0.f, sfr_vec_dot(nb, sfr_vec_norm(lightDirB)));
+                        bIntensity += diffuse * attenuation * light->intensity;
+                    }
+                    
+                    const sfrvec lightDirC = sfr_vec_sub(lp, cModel);
+                    const f32 distSqC = sfr_vec_length2(lightDirC);
+                    if (distSqC < r2) {
+                        const f32 attenuation = 1.f - (distSqC / r2);
+                        const f32 diffuse = sfr_fmaxf(0.f, sfr_vec_dot(nc, sfr_vec_norm(lightDirC)));
+                        cIntensity += diffuse * attenuation * light->intensity;
+                    }
+                } break;
+            }
+        }
+
+        aIntensity = SFR_MIN(1.f, aIntensity);
+        bIntensity = SFR_MIN(1.f, bIntensity);
+        cIntensity = SFR_MIN(1.f, cIntensity);
+    } else {
+        aIntensity = bIntensity = cIntensity = 1.f;
     }
 
     // to view space
@@ -1582,7 +1652,7 @@ SFR_FUNC void sfr__process_and_bin_triangle(
         {sfr_mat_mul_vec(sfrMatView, bModel), bu, bv, 0, bIntensity},
         {sfr_mat_mul_vec(sfrMatView, cModel), cu, cv, 0, cIntensity}
     };
-    for (int i = 0; i < 3; i += 1) {
+    for (i32 i = 0; i < 3; i += 1) {
         viewTri[i].viewZ = viewTri[i].pos.z;
     }
 
@@ -1769,6 +1839,10 @@ SFR_FUNC void sfr_init(SfrBuffers* buffers, i32 w, i32 h, f32 fovDeg) {
 
     sfrState.baseTexPixels[0] = 0xFFFFFFFF;
     sfrState.baseTex = (SfrTexture){ .w = 1, .h = 1, .pixels = sfrState.baseTexPixels };
+
+    for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
+        sfrBuffers->lights[i].type = SFR_LIGHT_NONE;
+    }
 }
 
 #ifdef SFR_MULTITHREADED
@@ -2185,10 +2259,10 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
                 // process remaining triangles serially so they aren't just dropped
                 sfr_flush_and_wait();
                 const i32 remaining = triangleCount - i;
-                for (int j = 0; j < remaining; j += 1) {
+                for (i32 j = 0; j < remaining; j += 1) {
                     const i32 triInd = (i + j) * 9;
                     const i32 uvInd = (i + j) * 6;
-                     sfr__process_and_bin_triangle(
+                    sfr__process_and_bin_triangle(
                         &sfrMatModel, &sfrState.matNormal,
                         mesh->tris[triInd + 0], mesh->tris[triInd + 1], mesh->tris[triInd + 2],
                         mesh->uvs ? mesh->uvs[uvInd + 0] : 0.f, mesh->uvs ? mesh->uvs[uvInd + 1] : 0.f,
@@ -2311,10 +2385,15 @@ SFR_FUNC void sfr_set_fov(f32 fovDeg) {
     sfrCamFov = fovDeg;
 }
 
-SFR_FUNC void sfr_set_lighting(i32 on, sfrvec dir, f32 ambientIntensity) {
-    sfrState.lightingEnabled = on;
-    sfrState.lightingDir = sfr_vec_norm(dir);
-    sfrState.lightingAmbient = ambientIntensity;
+SFR_FUNC void sfr_set_light(i32 id, SfrLight light) {
+    if (id < 0 || id >= SFR_MAX_LIGHTS) {
+        SFR_ERR_RET(, "sfr_set_light: invalid id (%d < 0 or %d >= %d)\n", id, id, SFR_MAX_LIGHTS);
+    }
+    sfrBuffers->lights[id] = light;
+}
+
+SFR_FUNC void sfr_set_lighting(u8 enabled) {
+    sfrState.lightingEnabled = enabled;
 }
 
 #ifndef SFR_NO_STD
@@ -2919,7 +2998,7 @@ static void* sfr__worker_thread_func(void* arg) {
             i32 binCount = sfr_atomic_get(&tile->binCount);
             binCount = SFR_MIN(binCount, SFR_MAX_BINS_PER_TILE);
             for (i32 i = 0; i < binCount; i += 1) {
-                sfr_rasterize_bin(tile->bins[i], tile);
+                sfr__rasterize_bin(tile->bins[i], tile);
             }
 
             sfr_atomic_set(&tile->binCount, 0);
