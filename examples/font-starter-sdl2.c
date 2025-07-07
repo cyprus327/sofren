@@ -28,7 +28,7 @@ i32 main() {
     { // initialize sofren
         const i32 w = 1280 * RES_SCALE, h = 720 * RES_SCALE;
         sfr_init(malloc(sizeof(SfrBuffers)), w, h, 50.f);
-        sfr_set_lighting(1, sfr_vec_normf(-0.5f, 0.1f, -1.f), 0.4f);
+        sfr_set_lighting(0);
     }
 
     SDL_Window* window; SDL_Renderer* renderer; SDL_Texture* texture;

@@ -11,6 +11,7 @@ demonstrates:
 */
 
 #define SFR_IMPL
+#define SFR_USE_SIMD
 #define SFR_THREAD_COUNT 8
 #define SFR_MAX_BINS_PER_TILE (1024 * 8)
 #define SFR_MAX_BINNED_TRIS (1024 * 16)
@@ -18,7 +19,6 @@ demonstrates:
 #define SFR_TILE_HEIGHT 64
 #define SFR_MAX_WIDTH 1280
 #define SFR_MAX_HEIGHT 720
-#define SFR_NO_ALPHA
 #include "../sofren.c"
 
 #include <SDL2/SDL.h>
@@ -38,7 +38,7 @@ static void handle_inputs(f32 frameTime);
 
 // input flags
 static struct {
-    u8 up, down, left, right, sprint;
+    u8 forward, backward, left, right, up, down, sprint;
     u8 turnUp, turnDown, turnLeft, turnRight;
 } inputs = {0};
 
@@ -55,7 +55,7 @@ i32 main() {
     mesh = sfr_load_mesh("examples/res/hawk.obj");
     meshTex = sfr_load_texture("examples/res/hawk.bmp");
     cubeTex = sfr_load_texture("examples/res/test.bmp");
-    particleTex = sfr_load_texture("tests/parrot.bmp");
+    particleTex = sfr_load_texture("examples/res/parrot.bmp");
     font = sfr_load_font("examples/res/basic-font.srft");
     if (!mesh || !meshTex || !cubeTex || !particleTex || !font) {
         return 1;
@@ -71,8 +71,17 @@ i32 main() {
     // e.g. 'sfrBuffers->pixel[0] = 0xFFFFFFFF;' sets the first pixel to white
     sfr_init(malloc(sizeof(SfrBuffers)), startWidth, startHeight, 50.f);
 
+    // add directional light
+    const sfrvec lightDir = sfr_vec_normf(0.6f, -0.6f, -0.6f);
+    sfr_set_light(0, (SfrLight){
+        .dirX = lightDir.x, .dirY = lightDir.y, .dirZ = lightDir.z,
+        .ambient = 0.4f, .intensity = 1.f,
+        .type = SFR_LIGHT_DIRECTIONAL
+    });
+
     // initialize SDL
     SDL_Init(SDL_INIT_VIDEO);
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
     SDL_Window* window = SDL_CreateWindow("Window", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         sfrWidth / RES_SCALE, sfrHeight / RES_SCALE, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
@@ -95,10 +104,12 @@ i32 main() {
             } else if (SDL_KEYDOWN == event.type || SDL_KEYUP == event.type) {
                 switch (event.key.keysym.scancode) {
                     case SDL_SCANCODE_ESCAPE: shouldQuit = 1; break;
-                    case SDL_SCANCODE_W: inputs.up = event.key.state; break;
-                    case SDL_SCANCODE_S: inputs.down = event.key.state; break;
+                    case SDL_SCANCODE_W: inputs.forward = event.key.state; break;
+                    case SDL_SCANCODE_S: inputs.backward = event.key.state; break;
                     case SDL_SCANCODE_A: inputs.left = event.key.state; break;
                     case SDL_SCANCODE_D: inputs.right = event.key.state; break;
+                    case SDL_SCANCODE_E: inputs.up = event.key.state; break;
+                    case SDL_SCANCODE_Q: inputs.down = event.key.state; break;
                     case SDL_SCANCODE_LSHIFT: inputs.sprint = event.key.state; break;
                     case SDL_SCANCODE_I: inputs.turnUp = event.key.state; break;
                     case SDL_SCANCODE_K: inputs.turnDown = event.key.state; break;
@@ -176,7 +187,7 @@ static void draw(f32 time, f32 frameTime) {
         // col |= 0xFF000000;
     
         // lighting settings
-        sfr_set_lighting(1, sfr_vec_normf(0.6f, -0.6f, -0.6f), 0.4f);
+        sfr_set_lighting(1);
 
         // transparent hawk
         sfr_reset();
@@ -210,7 +221,11 @@ static void draw(f32 time, f32 frameTime) {
     }
 
     { // draw particle system
-        sfr_set_lighting(0, (sfrvec){0}, 0.f);
+        #ifdef SFR_MULTITHREADED
+            // because lighting changes
+            sfr_flush_and_wait();
+        #endif
+        sfr_set_lighting(0);
 
         static f32 timer = 0.f;
         timer += frameTime;
@@ -244,9 +259,6 @@ static void draw(f32 time, f32 frameTime) {
     { // draw ui text
         // reset depth buffer before drawing ui
         sfr_clear_depth();
-        #ifdef SFR_MULTITHREADED
-            sfr_flush_and_wait();
-        #endif
         
         static f32 fpsTimer = 0.f;
         static i32 fpsCounter = 0;
@@ -338,24 +350,29 @@ static void handle_inputs(f32 frameTime) {
     static f32 camYaw = 0.f, camPitch = 0.f;
     static f32 camForwardSpeed = 0.f;
     static f32 camStrafeSpeed = 0.f;
+    static f32 camUpSpeed = 0.f;
 
-    const f32 moveMult = inputs.sprint ? 3.f : 1.f;
+    const f32 moveMult = inputs.sprint ? 3.f : 0.5f;
     const f32 turnMult = 2.75f;
     const f32 accel = 50.f;
     const f32 decel = 7.f;
 
-    if (inputs.up)    camForwardSpeed +=  accel * moveMult * frameTime;
-    if (inputs.down)  camForwardSpeed += -accel * moveMult * frameTime;
+    if (inputs.forward)   camForwardSpeed +=  accel * moveMult * frameTime;
+    if (inputs.backward)  camForwardSpeed += -accel * moveMult * frameTime;
     if (inputs.left)  camStrafeSpeed +=  accel * moveMult * frameTime;
     if (inputs.right) camStrafeSpeed += -accel * moveMult * frameTime;
+    if (inputs.up)   camUpSpeed +=  accel * moveMult * frameTime;
+    if (inputs.down) camUpSpeed += -accel * moveMult * frameTime;
 
     camX -= cosf(camYaw - SFR_PI / 2.f) * camForwardSpeed * frameTime;
     camZ -= sinf(camYaw - SFR_PI / 2.f) * camForwardSpeed * frameTime;
     camX -= cosf(camYaw) * camStrafeSpeed * frameTime;
     camZ -= sinf(camYaw) * camStrafeSpeed * frameTime;
+    camY += camUpSpeed * frameTime;
 
     camForwardSpeed -= camForwardSpeed * decel * frameTime;
     camStrafeSpeed  -= camStrafeSpeed  * decel * frameTime;
+    camUpSpeed      -= camUpSpeed * decel * frameTime;
 
     if (inputs.turnUp)    camPitch -= frameTime * turnMult * 0.7f;
     if (inputs.turnDown)  camPitch += frameTime * turnMult * 0.7f;

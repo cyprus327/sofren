@@ -1,7 +1,3 @@
-#define SFR_IMPL
-#define SFR_USE_SIMD
-#define SFR_THREAD_COUNT 8
-
 #ifndef SFR_H
 #define SFR_H
 

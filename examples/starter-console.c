@@ -46,11 +46,17 @@ i32 main() {
             return 1;
         }
 
+        // use sfrBuffers for malloced memory
         sfr_init(malloc(sizeof(SfrBuffers)), w, h, 80.f);
     
-        // super cheap function, can be set before rendering every individual
-        // triangle if you want, but it isn't reset so may as well just set it once now
-        sfr_set_lighting(1, sfr_vec_normf(-0.5f, 0.1f, -1.f), 0.4f);
+        // set lighting state
+        const sfrvec l = sfr_vec_normf(-0.5f, 0.1f, -1.f);
+        sfr_set_light(0, (SfrLight){
+            .dirX = l.x, .dirY = l.y, .dirZ = l.z,
+            .ambient = 0.4f, .intensity = 1.f,
+            .type = SFR_LIGHT_DIRECTIONAL
+        });
+        sfr_set_lighting(1);
     }
 
     // character out buffer
