@@ -1,3 +1,5 @@
+#define SFR_IMPL
+
 #ifndef SFR_H
 #define SFR_H
 
@@ -157,15 +159,22 @@ typedef struct sfrBuffers SfrBuffers;
 typedef struct sfrTriangleBin SfrTriangleBin;
 typedef struct sfrTile SfrTile;
 #ifdef SFR_MULTITHREADED
+    typedef struct sfrThreadBuf SfrThreadBuf;
     typedef struct sfrThreadData SfrThreadData;
     typedef struct sfrMeshChunkJob SfrMeshChunkJob;
 #endif
 
 //: extern variables
 extern i32 sfrWidth, sfrHeight;
-extern SfrBuffers* sfrBuffers;
 
-// global variables below can be managed by you, however
+extern u32* sfrPixelBuf;
+extern f32* sfrDepthBuf;
+#ifdef SFR_MULTITHREADED
+    extern SfrThreadBuf* sfrThreadBuf;
+#endif
+extern SfrLight* sfrLights;
+
+// variables below can be managed by you, however
 // there is probably a function that will do what you want
 
 extern SfrAtomic32 sfrRasterCount; // how many triangles have been rasterized since the last call to clear
@@ -232,10 +241,10 @@ SFR_FUNC sfrmat sfr_mat_qinv(sfrmat m);
 SFR_FUNC sfrmat sfr_mat_look_at(sfrvec pos, sfrvec target, sfrvec up);
 
 //: core functions
-SFR_FUNC void sfr_init(SfrBuffers* buffers, i32 w, i32 h, f32 fovDeg);
+SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void (*freeFunc)(void*));
+SFR_FUNC void sfr_release(void);
 
 #ifdef SFR_MULTITHREADED
-    SFR_FUNC void sfr_shutdown(void);
     SFR_FUNC void sfr_flush_and_wait(void);
 #endif
 
@@ -469,7 +478,9 @@ typedef struct sfrTile {
     } SfrThreadData;
     
     typedef struct sfrMeshChunkJob {
-        const SfrMesh* mesh;
+        const f32* tris;
+        const f32* uvs;
+        const f32* normals;
         sfrmat matModel;
         sfrmat matNormal;
         u32 col;
@@ -477,18 +488,8 @@ typedef struct sfrTile {
         i32 startTriangle;
         i32 triangleCount;
     } SfrMeshChunkJob;
-#endif
 
-typedef struct sfrBuffers {
-    u32 pixel[SFR_MAX_WIDTH * SFR_MAX_HEIGHT];
-    f32 depth[SFR_MAX_WIDTH * SFR_MAX_HEIGHT];
-    #ifndef SFR_NO_ALPHA
-        struct sfrAccumCol {
-            u16 a, r, g, b;
-            f32 depth;
-        } accum[SFR_MAX_WIDTH * SFR_MAX_HEIGHT];
-    #endif
-    #ifdef SFR_MULTITHREADED
+    typedef struct sfrThreadBuf {
         // tiling system data
         SfrTile tiles[
             ((SFR_MAX_HEIGHT + SFR_TILE_WIDTH - 1) / SFR_TILE_WIDTH) *
@@ -515,12 +516,12 @@ typedef struct sfrBuffers {
         SfrSemaphore geometryDoneSem;
         SfrSemaphore rasterStartSem;
         SfrSemaphore rasterDoneSem;
-    #endif
-    SfrLight lights[SFR_MAX_LIGHTS];
-} SfrBuffers;
+    } SfrThreadBuf;
+#endif
 
 typedef struct sfrState {
     u8 lightingEnabled;
+    i32 activeLightCount;
 
     sfrmat matNormal;
     u8 normalMatDirty;
@@ -541,7 +542,7 @@ typedef struct sfrState {
 
 // helper to track vertex attributes during clipping of textured triangles
 typedef struct sfrTexVert {
-    sfrvec pos;       // position in view space
+    sfrvec pos;    // position in view space
     f32 u, v;      // texture coords
     f32 viewZ;     // z in view space for perspective correction
     f32 intensity; // lighting intensity
@@ -553,7 +554,15 @@ typedef struct sfrTexVert {
 //================================================
 
 i32 sfrWidth, sfrHeight;
-SfrBuffers* sfrBuffers;
+
+u32* sfrPixelBuf;
+f32* sfrDepthBuf;
+#ifdef SFR_MULTITHREADED
+    SfrThreadBuf* sfrThreadBuf;
+#endif
+SfrLight* sfrLights;
+static struct sfrAccumCol { u16 a, r, g, b; f32 depth; }* sfrAccumBuf;
+
 SfrAtomic32 sfrRasterCount;
 
 sfrmat sfrMatModel, sfrMatView, sfrMatProj;
@@ -561,9 +570,9 @@ sfrvec sfrCamPos;
 f32 sfrCamFov;
 f32 sfrNearDist = 0.1f, sfrFarDist = 100.f;
 
-// not extern, internal state
-SfrState sfrState = {0};
-
+static SfrState sfrState = {0};
+static void* (*sfrMalloc)(u64);
+static void  (*sfrFree)(void*);
 
 //================================================
 //:         MISC HELPER MACROS
@@ -981,7 +990,8 @@ SFR_FUNC sfrmat sfr_mat_look_at(sfrvec pos, sfrvec target, sfrvec up) {
 
 // used in rasterizing to wrap texture coords
 SFR_FUNC i32 sfr__wrap_coord(i32 x, i32 max) {
-    return (x % max + max) % max;
+    const i32 r = x % max;
+    return r < 0 ? r + max : r;
 }
 
 SFR_FUNC i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const SfrTexVert in[3]) {
@@ -1233,12 +1243,12 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep, intensity += intensityStep
             ) {
                 const i32 pixelIndex = y * sfrWidth + x;
-                if (depth > sfrBuffers->depth[pixelIndex]) {
+                if (depth > sfrDepthBuf[pixelIndex]) {
                     continue;
                 }
 
                 #ifdef SFR_NO_ALPHA
-                    sfrBuffers->depth[pixelIndex] = depth;
+                    sfrDepthBuf[pixelIndex] = depth;
                 #endif
 
                 const f32 zView = 1.f / invZ;
@@ -1248,17 +1258,7 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 const i32 tx = sfr__wrap_coord(u * texW1, texW);
                 const i32 ty = sfr__wrap_coord(v * texH1, texH);
                 
-                // get tiled texture index
-                const i32 tileX = tx >> SFR__TEX_TILE_LOG2;
-                const i32 tileY = ty >> SFR__TEX_TILE_LOG2;
-                const i32 inTileX = tx & SFR__TEX_TILE_MASK;
-                const i32 inTileY = ty & SFR__TEX_TILE_MASK;
-
-                const i32 tileIndex = tileY * tilesPerRow + tileX;
-                const i32 inTileIndex = inTileY * SFR__TEX_TILE_SIZE + inTileX;
-                const i32 finalOffset = tileIndex * tileStride + inTileIndex;
-                
-                const u32 texCol = tex->pixels[finalOffset];
+                const u32 texCol = tex->pixels[ty * texW + tx];
 
                 const u8 tr = (texCol >> 16) & 0xFF;
                 const u8 tg = (texCol >> 8)  & 0xFF;
@@ -1271,28 +1271,28 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 const u8 lb = (u8)(fb * intensity);
 
                 #ifdef SFR_NO_ALPHA
-                    sfrBuffers->pixel[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
+                    sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
                 #else
                     const u8 ta = (texCol >> 24) & 0xFF;
                     SFR__DIV255(fa, ta, ca);
                     if (0xFF != fa) {
-                        const u8 currAlpha = sfrBuffers->accum[pixelIndex].a;
+                        const u8 currAlpha = sfrAccumBuf[pixelIndex].a;
                         SFR__DIV255(contribution, 255 - currAlpha, fa);
 
                         SFR__DIV255(accumR, lr, contribution);
                         SFR__DIV255(accumG, lg, contribution);
                         SFR__DIV255(accumB, lb, contribution);
-                        sfrBuffers->accum[pixelIndex].r += accumR;
-                        sfrBuffers->accum[pixelIndex].g += accumG;
-                        sfrBuffers->accum[pixelIndex].b += accumB;
+                        sfrAccumBuf[pixelIndex].r += accumR;
+                        sfrAccumBuf[pixelIndex].g += accumG;
+                        sfrAccumBuf[pixelIndex].b += accumB;
 
-                        sfrBuffers->accum[pixelIndex].a = currAlpha + contribution;
-                        if (depth < sfrBuffers->accum[pixelIndex].depth) {
-                            sfrBuffers->accum[pixelIndex].depth = depth;
+                        sfrAccumBuf[pixelIndex].a = currAlpha + contribution;
+                        if (depth < sfrAccumBuf[pixelIndex].depth) {
+                            sfrAccumBuf[pixelIndex].depth = depth;
                         }
                     } else {
-                        sfrBuffers->pixel[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
-                        sfrBuffers->depth[pixelIndex] = depth;
+                        sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
+                        sfrDepthBuf[pixelIndex] = depth;
                     }
                 #endif
             }
@@ -1364,12 +1364,12 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep, intensity += intensityStep
             ) {
                 const i32 pixelIndex = y * sfrWidth + x;
-                if (depth > sfrBuffers->depth[pixelIndex]) {
+                if (depth > sfrDepthBuf[pixelIndex]) {
                     continue;
                 }
 
                 #ifdef SFR_NO_ALPHA
-                    sfrBuffers->depth[pixelIndex] = depth;
+                    sfrDepthBuf[pixelIndex] = depth;
                 #endif
 
                 const f32 zView = 1.f / invZ;
@@ -1379,17 +1379,7 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 const i32 tx = sfr__wrap_coord(u * texW1, texW);
                 const i32 ty = sfr__wrap_coord(v * texH1, texH);
                 
-                // get tiled texture index
-                const i32 tileX = tx >> SFR__TEX_TILE_LOG2;
-                const i32 tileY = ty >> SFR__TEX_TILE_LOG2;
-                const i32 inTileX = tx & SFR__TEX_TILE_MASK;
-                const i32 inTileY = ty & SFR__TEX_TILE_MASK;
-
-                const i32 tileIndex = tileY * tilesPerRow + tileX;
-                const i32 inTileIndex = inTileY * SFR__TEX_TILE_SIZE + inTileX;
-                const i32 finalOffset = tileIndex * tileStride + inTileIndex;
-                
-                const u32 texCol = tex->pixels[finalOffset];
+                const u32 texCol = tex->pixels[ty * texW + tx];
 
                 const u8 tr = (texCol >> 16) & 0xFF;
                 const u8 tg = (texCol >> 8)  & 0xFF;
@@ -1402,29 +1392,29 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 const u8 lb = (u8)(fb * intensity);
 
                 #ifdef SFR_NO_ALPHA
-                    sfrBuffers->pixel[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
-                    sfrBuffers->depth[pixelIndex] = depth;
+                    sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
+                    sfrDepthBuf[pixelIndex] = depth;
                 #else
                     const u8 ta = (texCol >> 24) & 0xFF;
                     SFR__DIV255(fa, ta, ca);
                     if (0xFF != fa) {
-                        const u8 currAlpha = sfrBuffers->accum[pixelIndex].a;
+                        const u8 currAlpha = sfrAccumBuf[pixelIndex].a;
                         SFR__DIV255(contribution, 255 - currAlpha, fa);
 
                         SFR__DIV255(accumR, lr, contribution);
                         SFR__DIV255(accumG, lg, contribution);
                         SFR__DIV255(accumB, lb, contribution);
-                        sfrBuffers->accum[pixelIndex].r += accumR;
-                        sfrBuffers->accum[pixelIndex].g += accumG;
-                        sfrBuffers->accum[pixelIndex].b += accumB;
+                        sfrAccumBuf[pixelIndex].r += accumR;
+                        sfrAccumBuf[pixelIndex].g += accumG;
+                        sfrAccumBuf[pixelIndex].b += accumB;
 
-                        sfrBuffers->accum[pixelIndex].a = currAlpha + contribution;
-                        if (depth < sfrBuffers->accum[pixelIndex].depth) {
-                            sfrBuffers->accum[pixelIndex].depth = depth;
+                        sfrAccumBuf[pixelIndex].a = currAlpha + contribution;
+                        if (depth < sfrAccumBuf[pixelIndex].depth) {
+                            sfrAccumBuf[pixelIndex].depth = depth;
                         }
                     } else {
-                        sfrBuffers->pixel[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
-                        sfrBuffers->depth[pixelIndex] = depth;
+                        sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
+                        sfrDepthBuf[pixelIndex] = depth;
                     }
                 #endif
             }
@@ -1440,12 +1430,12 @@ SFR_FUNC void sfr__bin_triangle(
 ) {
     #ifdef SFR_MULTITHREADED
         // get a new triangle bin from the global pool
-        const i32 binInd = sfr_atomic_add(&sfrBuffers->triangleBinAllocator, 1) - 1;
+        const i32 binInd = sfr_atomic_add(&sfrThreadBuf->triangleBinAllocator, 1) - 1;
         if (binInd >= SFR_MAX_BINS_PER_FRAME) {
             return;
         }
 
-        SfrTriangleBin* bin = &sfrBuffers->triangleBinPool[binInd];
+        SfrTriangleBin* bin = &sfrThreadBuf->triangleBinPool[binInd];
         *bin = (SfrTriangleBin){
             ax, ay, az, aInvZ, auoz, avoz, aIntensity,
             bx, by, bz, bInvZ, buoz, bvoz, bIntensity,
@@ -1469,8 +1459,8 @@ SFR_FUNC void sfr__bin_triangle(
         // add the bin to all overlapped tiles
         for (i32 ty = yStart; ty <= yEnd; ty += 1) {
             for (i32 tx = xStart; tx <= xEnd; tx += 1) {
-                const i32 tileInd = ty * sfrBuffers->tileCols + tx;
-                SfrTile* tile = &sfrBuffers->tiles[tileInd];
+                const i32 tileInd = ty * sfrThreadBuf->tileCols + tx;
+                SfrTile* tile = &sfrThreadBuf->tiles[tileInd];
                 
                 const i32 tileBinInd = sfr_atomic_add(&tile->binCount, 1) - 1;
                 if (tileBinInd >= SFR_MAX_BINS_PER_TILE) {
@@ -1478,9 +1468,9 @@ SFR_FUNC void sfr__bin_triangle(
                 }
 
                 if (0 == tileBinInd) {
-                    const i32 workInd = sfr_atomic_add(&sfrBuffers->rasterWorkQueueCount, 1) - 1;
-                    if (workInd < SFR_ARRLEN(sfrBuffers->rasterWorkQueue)) {
-                        sfrBuffers->rasterWorkQueue[workInd] = tileInd;
+                    const i32 workInd = sfr_atomic_add(&sfrThreadBuf->rasterWorkQueueCount, 1) - 1;
+                    if (workInd < SFR_ARRLEN(sfrThreadBuf->rasterWorkQueue)) {
+                        sfrThreadBuf->rasterWorkQueue[workInd] = tileInd;
                     }
                 }
                 tile->bins[tileBinInd] = bin;
@@ -1532,7 +1522,7 @@ SFR_FUNC void sfr__process_and_bin_triangle(
         const sfrvec nc = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){cnx, cny, cnz, 0.f}));
         
         for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
-            const SfrLight* light = &sfrBuffers->lights[i];
+            const SfrLight* light = &sfrLights[i];
             switch (light->type) {
                 case SFR_LIGHT_NONE: {
                     continue;
@@ -1741,31 +1731,89 @@ SFR_FUNC void sfr_update_normal_mat(void) {
 //:         PUBLIC API FUNCTION DEFINITIONS
 //================================================
 
-SFR_FUNC void sfr_init(SfrBuffers* buffers, i32 w, i32 h, f32 fovDeg) {    
-    sfrBuffers = buffers;
+SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void (*freeFunc)(void*)) {
+    if (!mallocFunc || !freeFunc) {
+        SFR__ERR_EXIT("sfr_init: malloc and free must be provided to initialize buffers\n");
+    }
+    sfrMalloc = mallocFunc, sfrFree = freeFunc;
+
+    if (w >= SFR_MAX_WIDTH) {
+        SFR__ERR_EXIT("sfr_init: width > SFR_MAX_WIDTH (%d > %d)\n", w, SFR_MAX_WIDTH);
+    }
+    if (h >= SFR_MAX_HEIGHT) {
+        SFR__ERR_EXIT("sfr_init: height > SFR_MAX_HEIGHT (%d > %d)\n", w, SFR_MAX_HEIGHT);
+    }
+
+    sfrPixelBuf = (u32*)mallocFunc(sizeof(u32) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
+    if (!sfrPixelBuf) {
+        SFR__ERR_EXIT("sfr_init: failed to allocate sfrPixelBuf (%ld bytes)\n",
+            sizeof(u32) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
+    }
+
+    sfrDepthBuf = (f32*)mallocFunc(sizeof(f32) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
+    if (!sfrPixelBuf) {
+        freeFunc(sfrPixelBuf);
+        SFR__ERR_EXIT("sfr_init: failed to allocate sfrPixelBuf (%ld bytes)\n",
+            sizeof(u32) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
+    }
+
+    #ifndef SFR_NO_ALPHA
+        sfrAccumBuf = (struct sfrAccumCol*)mallocFunc(sizeof(struct sfrAccumCol) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
+        if (!sfrAccumBuf) {
+            freeFunc(sfrPixelBuf);
+            freeFunc(sfrDepthBuf);
+            SFR__ERR_EXIT("sfr_init: failed to allocate sfrAccumBuf (%ld bytes)\n",
+                sizeof(struct sfrAccumCol) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
+        }
+    #endif
+
+    #if SFR_MAX_LIGHTS > 0
+        sfrLights = (SfrLight*)mallocFunc(sizeof(SfrLight) * SFR_MAX_LIGHTS);
+        if (!sfrLights) {
+            freeFunc(sfrPixelBuf);
+            freeFunc(sfrDepthBuf);
+            #ifndef SFR_NO_ALPHA
+                freeFunc(sfrAccumBuf);
+            #endif
+            SFR__ERR_EXIT("sfr_init: failed to allocate sfrLights (%ld bytes)\n", sizeof(SfrLight) * SFR_MAX_LIGHTS);
+        }
+    #endif
 
     #ifdef SFR_MULTITHREADED
-        sfrState.shutdown = 0;
-        sfr_atomic_set(&sfrBuffers->triangleBinAllocator, 0);
-        sfr_atomic_set(&sfrBuffers->rasterWorkQueueCount, 0);
-        sfr_atomic_set(&sfrBuffers->rasterWorkQueueHead, 0);
-        
-        sfr_atomic_set(&sfrBuffers->meshJobAllocator, 0);
-        sfr_atomic_set(&sfrBuffers->geometryWorkQueueCount, 0);
-        sfr_atomic_set(&sfrBuffers->geometryWorkQueueHead, 0);
+        sfrThreadBuf = (SfrThreadBuf*)mallocFunc(sizeof(SfrThreadBuf));
+        if (!sfrThreadBuf) {
+            freeFunc(sfrPixelBuf);
+            freeFunc(sfrDepthBuf);
+            #ifndef SFR_NO_ALPHA
+                freeFunc(sfrAccumBuf);
+            #endif
+            #if SFR_MAX_LIGHTS > 0
+                freeFunc(sfrLights);
+            #endif
+            SFR__ERR_EXIT("sfr_init: failed to allocate sfrThreadBuf (%ld bytes)\n", sizeof(SfrThreadBuf));
+        }
 
-        sfr_semaphore_init(&sfrBuffers->geometryStartSem, 0);
-        sfr_semaphore_init(&sfrBuffers->geometryDoneSem, 0);
-        sfr_semaphore_init(&sfrBuffers->rasterStartSem, 0);
-        sfr_semaphore_init(&sfrBuffers->rasterDoneSem, 0);
+        sfrState.shutdown = 0;
+        sfr_atomic_set(&sfrThreadBuf->triangleBinAllocator, 0);
+        sfr_atomic_set(&sfrThreadBuf->rasterWorkQueueCount, 0);
+        sfr_atomic_set(&sfrThreadBuf->rasterWorkQueueHead, 0);
+        
+        sfr_atomic_set(&sfrThreadBuf->meshJobAllocator, 0);
+        sfr_atomic_set(&sfrThreadBuf->geometryWorkQueueCount, 0);
+        sfr_atomic_set(&sfrThreadBuf->geometryWorkQueueHead, 0);
+
+        sfr_semaphore_init(&sfrThreadBuf->geometryStartSem, 0);
+        sfr_semaphore_init(&sfrThreadBuf->geometryDoneSem, 0);
+        sfr_semaphore_init(&sfrThreadBuf->rasterStartSem, 0);
+        sfr_semaphore_init(&sfrThreadBuf->rasterDoneSem, 0);
 
         for (i32 i = 0; i < SFR_THREAD_COUNT; i += 1) {
-            sfrBuffers->threads[i].threadInd = i;
+            sfrThreadBuf->threads[i].threadInd = i;
             #ifdef _WIN32
-                const u64 handle = _beginthreadex(NULL, 0, sfr__worker_thread_func, &sfrBuffers->threads[i], 0, NULL);
-                sfrBuffers->threads[i].handle = (SfrThread)handle;
+                const u64 handle = _beginthreadex(NULL, 0, sfr__worker_thread_func, &sfrThreadBuf->threads[i], 0, NULL);
+                sfrThreadBuf->threads[i].handle = (SfrThread)handle;
             #else
-                pthread_create(&sfrBuffers->threads[i].handle, NULL, sfr__worker_thread_func, &sfrBuffers->threads[i]);
+                pthread_create(&sfrThreadBuf->threads[i].handle, NULL, sfr__worker_thread_func, &sfrThreadBuf->threads[i]);
             #endif
         }
     #endif
@@ -1780,58 +1828,89 @@ SFR_FUNC void sfr_init(SfrBuffers* buffers, i32 w, i32 h, f32 fovDeg) {
     sfrState.baseTex = (SfrTexture){ .w = 1, .h = 1, .pixels = sfrState.baseTexPixels };
 
     for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
-        sfrBuffers->lights[i].type = SFR_LIGHT_NONE;
+        sfrLights[i].type = SFR_LIGHT_NONE;
     }
+}
+
+SFR_FUNC void sfr__shutdown(void); // I dont wanna move sfr__shutdown to here
+SFR_FUNC void sfr_release(void) {
+    if (sfrPixelBuf) {
+        sfrFree(sfrPixelBuf);
+        sfrPixelBuf = (void*)0;
+    }
+    if (sfrDepthBuf) {
+        sfrFree(sfrDepthBuf);
+        sfrDepthBuf = (void*)0;
+    }
+    #ifndef SFR_NO_ALPHA
+        if (sfrAccumBuf) {
+            sfrFree(sfrAccumBuf);
+            sfrAccumBuf = (void*)0;
+        }
+    #endif
+    #if SFR_MAX_LIGHTS > 0
+    if (sfrLights) {
+        sfrFree(sfrLights);
+        sfrLights = (void*)0;
+    }
+    #endif
+    #ifdef SFR_MULTITHREADED
+        sfr__shutdown();
+        if (sfrThreadBuf) {
+            sfrFree(sfrThreadBuf);
+            sfrThreadBuf = (void*)0;
+        }
+    #endif
 }
 
 #ifdef SFR_MULTITHREADED
 
-SFR_FUNC void sfr_shutdown(void) {
+SFR_FUNC void sfr__shutdown(void) {
     sfr_flush_and_wait();
 
     sfrState.shutdown = 1;
     // post to both semaphores to ensure threads wake up from either wait state
-    sfr_semaphore_post(&sfrBuffers->geometryStartSem, SFR_THREAD_COUNT);
-    sfr_semaphore_post(&sfrBuffers->rasterStartSem, SFR_THREAD_COUNT);
+    sfr_semaphore_post(&sfrThreadBuf->geometryStartSem, SFR_THREAD_COUNT);
+    sfr_semaphore_post(&sfrThreadBuf->rasterStartSem, SFR_THREAD_COUNT);
 
     for (i32 i = 0; i < SFR_THREAD_COUNT; i += 1) {
         #ifdef _WIN32
-            WaitForSingleObject(sfrBuffers->threads[i].handle, INFINITE);
-            CloseHandle(sfrBuffers->threads[i].handle);
+            WaitForSingleObject(sfrThreadBuf->threads[i].handle, INFINITE);
+            CloseHandle(sfrThreadBuf->threads[i].handle);
         #else
-            pthread_join(sfrBuffers->threads[i].handle, NULL);
+            pthread_join(sfrThreadBuf->threads[i].handle, NULL);
         #endif
     }
 
-    sfr_semaphore_destroy(&sfrBuffers->geometryStartSem);
-    sfr_semaphore_destroy(&sfrBuffers->geometryDoneSem);
-    sfr_semaphore_destroy(&sfrBuffers->rasterStartSem);
-    sfr_semaphore_destroy(&sfrBuffers->rasterDoneSem);
+    sfr_semaphore_destroy(&sfrThreadBuf->geometryStartSem);
+    sfr_semaphore_destroy(&sfrThreadBuf->geometryDoneSem);
+    sfr_semaphore_destroy(&sfrThreadBuf->rasterStartSem);
+    sfr_semaphore_destroy(&sfrThreadBuf->rasterDoneSem);
 }
 
 // dispatches jobs to workers and waits for them to complete
 SFR_FUNC void sfr_flush_and_wait(void) {
     // always dispatch geometry phase to keep workers in sync
-    sfr_semaphore_post(&sfrBuffers->geometryStartSem, SFR_THREAD_COUNT);
+    sfr_semaphore_post(&sfrThreadBuf->geometryStartSem, SFR_THREAD_COUNT);
     for (i32 i = 0; i < SFR_THREAD_COUNT; i += 1) {
-        sfr_semaphore_wait(&sfrBuffers->geometryDoneSem);
+        sfr_semaphore_wait(&sfrThreadBuf->geometryDoneSem);
     }
 
     // reset geometry queue
-    sfr_atomic_set(&sfrBuffers->meshJobAllocator, 0);
-    sfr_atomic_set(&sfrBuffers->geometryWorkQueueCount, 0);
-    sfr_atomic_set(&sfrBuffers->geometryWorkQueueHead, 0);
+    sfr_atomic_set(&sfrThreadBuf->meshJobAllocator, 0);
+    sfr_atomic_set(&sfrThreadBuf->geometryWorkQueueCount, 0);
+    sfr_atomic_set(&sfrThreadBuf->geometryWorkQueueHead, 0);
 
     // always dispatch rasterization phase
-    sfr_semaphore_post(&sfrBuffers->rasterStartSem, SFR_THREAD_COUNT);
+    sfr_semaphore_post(&sfrThreadBuf->rasterStartSem, SFR_THREAD_COUNT);
     for (i32 i = 0; i < SFR_THREAD_COUNT; i += 1) {
-        sfr_semaphore_wait(&sfrBuffers->rasterDoneSem);
+        sfr_semaphore_wait(&sfrThreadBuf->rasterDoneSem);
     }
 
     // reset rasterization data
-    sfr_atomic_set(&sfrBuffers->triangleBinAllocator, 0);
-    sfr_atomic_set(&sfrBuffers->rasterWorkQueueCount, 0);
-    sfr_atomic_set(&sfrBuffers->rasterWorkQueueHead, 0);
+    sfr_atomic_set(&sfrThreadBuf->triangleBinAllocator, 0);
+    sfr_atomic_set(&sfrThreadBuf->rasterWorkQueueCount, 0);
+    sfr_atomic_set(&sfrThreadBuf->rasterWorkQueueHead, 0);
 }
 
 #endif // SFR_MULTITHREADED
@@ -1844,22 +1923,22 @@ SFR_FUNC void sfr_present_alpha(void) {
     #endif
 
     for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
-        const u8 a = sfrBuffers->accum[i].a;
-        if (0 == a || sfrBuffers->depth[i] < sfrBuffers->accum[i].depth) {
+        const u8 a = sfrAccumBuf[i].a;
+        if (0 == a || sfrDepthBuf[i] < sfrAccumBuf[i].depth) {
             continue;
         }
 
-        const u32 bgCol = sfrBuffers->pixel[i];
+        const u32 bgCol = sfrPixelBuf[i];
         const u8 bgr = (bgCol >> 16) & 0xFF;
         const u8 bgg = (bgCol >> 8)  & 0xFF;
         const u8 bgb = (bgCol >> 0)  & 0xFF;
 
         // blend accumulated color with background
-        const u8 r = sfrBuffers->accum[i].r + (bgr * (255 - a)) / 255;
-        const u8 g = sfrBuffers->accum[i].g + (bgg * (255 - a)) / 255;
-        const u8 b = sfrBuffers->accum[i].b + (bgb * (255 - a)) / 255;
+        const u8 r = sfrAccumBuf[i].r + (bgr * (255 - a)) / 255;
+        const u8 g = sfrAccumBuf[i].g + (bgg * (255 - a)) / 255;
+        const u8 b = sfrAccumBuf[i].b + (bgb * (255 - a)) / 255;
 
-        sfrBuffers->pixel[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+        sfrPixelBuf[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
     }
 }
 
@@ -1897,13 +1976,13 @@ SFR_FUNC void sfr_resize(i32 width, i32 height) {
     sfrState.clipPlanes[3][1] = (sfrvec){-1.f,  0.f, 0.f, 1.f};
 
     #ifdef SFR_MULTITHREADED
-        sfrBuffers->tileCols = (width + SFR_TILE_WIDTH - 1) / SFR_TILE_WIDTH;
-        sfrBuffers->tileRows = (height + SFR_TILE_HEIGHT - 1) / SFR_TILE_HEIGHT;
-        sfrBuffers->tileCount = sfrBuffers->tileCols * sfrBuffers->tileRows;
+        sfrThreadBuf->tileCols = (width + SFR_TILE_WIDTH - 1) / SFR_TILE_WIDTH;
+        sfrThreadBuf->tileRows = (height + SFR_TILE_HEIGHT - 1) / SFR_TILE_HEIGHT;
+        sfrThreadBuf->tileCount = sfrThreadBuf->tileCols * sfrThreadBuf->tileRows;
 
-        for (i32 y = 0; y < sfrBuffers->tileRows; y += 1) {
-            for (i32 x = 0; x < sfrBuffers->tileCols; x += 1) {
-                SfrTile* tile = &sfrBuffers->tiles[y * sfrBuffers->tileCols + x];
+        for (i32 y = 0; y < sfrThreadBuf->tileRows; y += 1) {
+            for (i32 x = 0; x < sfrThreadBuf->tileCols; x += 1) {
+                SfrTile* tile = &sfrThreadBuf->tiles[y * sfrThreadBuf->tileCols + x];
                 tile->minX = x * SFR_TILE_WIDTH;
                 tile->minY = y * SFR_TILE_HEIGHT;
                 tile->maxX = SFR_MIN((x + 1) * SFR_TILE_WIDTH, width);
@@ -1961,18 +2040,18 @@ SFR_FUNC void sfr_clear(u32 clearCol) {
     #endif
     
     for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
-        sfrBuffers->pixel[i] = clearCol;
-        sfrBuffers->depth[i] = sfrFarDist;
+        sfrPixelBuf[i] = clearCol;
+        sfrDepthBuf[i] = sfrFarDist;
         #ifndef SFR_NO_ALPHA
-            sfr_memset(&sfrBuffers->accum[i], 0, sizeof(sfrBuffers->accum[0]));
-            sfrBuffers->accum[i].depth = sfrFarDist;
+            sfr_memset(&sfrAccumBuf[i], 0, sizeof(sfrAccumBuf[0]));
+            sfrAccumBuf[i].depth = sfrFarDist;
         #endif
     }
     
     #ifdef SFR_MULTITHREADED
         // reset tile bin counts
-        for (i32 i = 0; i < sfrBuffers->tileCount; i += 1) {
-            sfr_atomic_set(&sfrBuffers->tiles[i].binCount, 0);
+        for (i32 i = 0; i < sfrThreadBuf->tileCount; i += 1) {
+            sfr_atomic_set(&sfrThreadBuf->tiles[i].binCount, 0);
         }
 
         sfr_atomic_set(&sfrRasterCount, 0);
@@ -1987,9 +2066,9 @@ SFR_FUNC void sfr_clear_depth(void) {
     #endif
 
     for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
-        sfrBuffers->depth[i] = sfrFarDist;
+        sfrDepthBuf[i] = sfrFarDist;
         #ifndef SFR_NO_ALPHA
-            sfrBuffers->accum[i].depth = sfrFarDist;
+            sfrAccumBuf[i].depth = sfrFarDist;
         #endif
     }
 }
@@ -2192,7 +2271,7 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
     #ifdef SFR_MULTITHREADED
         // divide the mesh into jobs
         for (i32 i = 0; i < triangleCount; i += SFR_GEOMETRY_JOB_SIZE) {
-            const i32 jobInd = sfr_atomic_add(&sfrBuffers->meshJobAllocator, 1) - 1;
+            const i32 jobInd = sfr_atomic_add(&sfrThreadBuf->meshJobAllocator, 1) - 1;
             if (jobInd >= SFR_MAX_GEOMETRY_JOBS) {
                 // not enough job slots,
                 // process remaining triangles serially so they aren't just dropped
@@ -2221,8 +2300,10 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
             }
 
             // create and populate the job
-            SfrMeshChunkJob* job = &sfrBuffers->meshJobPool[jobInd];
-            job->mesh = mesh;
+            SfrMeshChunkJob* job = &sfrThreadBuf->meshJobPool[jobInd];
+            job->tris = &mesh->tris[i * 9];
+            job->uvs = mesh->uvs ? &mesh->uvs[i * 6] : NULL;
+            job->normals = &mesh->normals[i * 9];
             job->matModel = sfrMatModel;
             job->matNormal = sfrState.matNormal;
             job->col = col;
@@ -2231,9 +2312,9 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
             job->triangleCount = SFR_MIN(SFR_GEOMETRY_JOB_SIZE, triangleCount - i);
 
             // add job to the queue
-            const i32 queueInd = sfr_atomic_add(&sfrBuffers->geometryWorkQueueCount, 1) - 1;
+            const i32 queueInd = sfr_atomic_add(&sfrThreadBuf->geometryWorkQueueCount, 1) - 1;
             if (queueInd < SFR_MAX_GEOMETRY_JOBS) {
-                sfrBuffers->geometryWorkQueue[queueInd] = jobInd;
+                sfrThreadBuf->geometryWorkQueue[queueInd] = jobInd;
             }
         }
     #else
@@ -2328,7 +2409,7 @@ SFR_FUNC void sfr_set_light(i32 id, SfrLight light) {
     if (id < 0 || id >= SFR_MAX_LIGHTS) {
         SFR__ERR_RET(, "sfr_set_light: invalid id (%d < 0 or %d >= %d)\n", id, id, SFR_MAX_LIGHTS);
     }
-    sfrBuffers->lights[id] = light;
+    sfrLights[id] = light;
 }
 
 SFR_FUNC void sfr_set_lighting(u8 enabled) {
@@ -2630,10 +2711,10 @@ SFR_FUNC SfrTexture* sfr_load_texture(const char* filename) {
     }
 
     // process pixels
-    for (i32 y = 0; y < height; y += 1) {
+    for (i32 y = 0, i = 0; y < height; y += 1) {
         const i32 srcY = isTopDown ? y : height - 1 - y;
         const u8* row = pixelData + srcY * stride;
-        for (i32 x = 0; x < width; x += 1) {
+        for (i32 x = 0; x < width; x += 1, i += 1) {
             u32 col = 0;
             switch (bpp) {
                 case 32: {
@@ -2671,19 +2752,7 @@ SFR_FUNC SfrTexture* sfr_load_texture(const char* filename) {
                 } break;
             }
             
-            // swizzle (?) textures, i.e. convert linear pixel data to tiled to reduce cache misses
-
-            const i32 tileX = x / SFR__TEX_TILE_SIZE;
-            const i32 tileY = y / SFR__TEX_TILE_SIZE;
-            const i32 inTileX = x % SFR__TEX_TILE_SIZE;
-            const i32 inTileY = y % SFR__TEX_TILE_SIZE;
-
-            const i32 tilesPerRow = width / SFR__TEX_TILE_SIZE;
-            const i32 tileInd = tileY * tilesPerRow + tileX;
-            const int inTileInd = inTileY * SFR__TEX_TILE_SIZE + inTileX;
-
-            const int tiledOffset = (tileInd * SFR__TEX_TILE_SIZE * SFR__TEX_TILE_SIZE) + inTileInd;
-            tex->pixels[tiledOffset] = col;
+            tex->pixels[i] = col;
         }
     }
 
@@ -2890,62 +2959,62 @@ static void* sfr__worker_thread_func(void* arg) {
 
     while (1) {
         // vv geometry phase vv
-        sfr_semaphore_wait(&sfrBuffers->geometryStartSem);
+        sfr_semaphore_wait(&sfrThreadBuf->geometryStartSem);
         if (sfrState.shutdown) {
             break;
         }
         
         while (1) {
             // get the next geometry job from the queue
-            const i32 head = sfr_atomic_add(&sfrBuffers->geometryWorkQueueHead, 1) - 1;
-            if (head >= sfr_atomic_get(&sfrBuffers->geometryWorkQueueCount)) {
+            const i32 head = sfr_atomic_add(&sfrThreadBuf->geometryWorkQueueHead, 1) - 1;
+            if (head >= sfr_atomic_get(&sfrThreadBuf->geometryWorkQueueCount)) {
                 break; // no more geometry work
             }
 
-            const i32 jobInd = sfrBuffers->geometryWorkQueue[head];
-            const SfrMeshChunkJob* job = &sfrBuffers->meshJobPool[jobInd];
+            const i32 jobInd = sfrThreadBuf->geometryWorkQueue[head];
+            const SfrMeshChunkJob* job = &sfrThreadBuf->meshJobPool[jobInd];
 
             // process all triangles in this job
             for (i32 i = 0; i < job->triangleCount; i += 1) {
-                const i32 triInd = (job->startTriangle + i) * 9;
-                const i32 uvInd = (job->startTriangle + i) * 6;
+                const i32 triInd = i * 9;
+                const i32 uvInd = i * 6;
                 sfr__process_and_bin_triangle(
                     &job->matModel, &job->matNormal,
-                    job->mesh->tris[triInd + 0], job->mesh->tris[triInd + 1], job->mesh->tris[triInd + 2],
-                    job->mesh->uvs ? job->mesh->uvs[uvInd + 0] : 0.f,
-                    job->mesh->uvs ? job->mesh->uvs[uvInd + 1] : 0.f,
-                    job->mesh->normals[triInd + 0], job->mesh->normals[triInd + 1], job->mesh->normals[triInd + 2],
+                    job->tris[triInd + 0], job->tris[triInd + 1], job->tris[triInd + 2],
+                    job->uvs ? job->uvs[uvInd + 0] : 0.f,
+                    job->uvs ? job->uvs[uvInd + 1] : 0.f,
+                    job->normals[triInd + 0], job->normals[triInd + 1], job->normals[triInd + 2],
 
-                    job->mesh->tris[triInd + 3], job->mesh->tris[triInd + 4], job->mesh->tris[triInd + 5],
-                    job->mesh->uvs ? job->mesh->uvs[uvInd + 2] : 0.f,
-                    job->mesh->uvs ? job->mesh->uvs[uvInd + 3] : 0.f,
-                    job->mesh->normals[triInd + 3], job->mesh->normals[triInd + 4], job->mesh->normals[triInd + 5],
+                    job->tris[triInd + 3], job->tris[triInd + 4], job->tris[triInd + 5],
+                    job->uvs ? job->uvs[uvInd + 2] : 0.f,
+                    job->uvs ? job->uvs[uvInd + 3] : 0.f,
+                    job->normals[triInd + 3], job->normals[triInd + 4], job->normals[triInd + 5],
                     
-                    job->mesh->tris[triInd + 6], job->mesh->tris[triInd + 7], job->mesh->tris[triInd + 8],
-                    job->mesh->uvs ? job->mesh->uvs[uvInd + 4] : 0.f,
-                    job->mesh->uvs ? job->mesh->uvs[uvInd + 5] : 0.f,
-                    job->mesh->normals[triInd + 6], job->mesh->normals[triInd + 7], job->mesh->normals[triInd + 8],
+                    job->tris[triInd + 6], job->tris[triInd + 7], job->tris[triInd + 8],
+                    job->uvs ? job->uvs[uvInd + 4] : 0.f,
+                    job->uvs ? job->uvs[uvInd + 5] : 0.f,
+                    job->normals[triInd + 6], job->normals[triInd + 7], job->normals[triInd + 8],
                     job->col, job->tex
                 );
             }
         }
-        sfr_semaphore_post(&sfrBuffers->geometryDoneSem, 1);
+        sfr_semaphore_post(&sfrThreadBuf->geometryDoneSem, 1);
 
         // vv rasterization phase vv
-        sfr_semaphore_wait(&sfrBuffers->rasterStartSem);
+        sfr_semaphore_wait(&sfrThreadBuf->rasterStartSem);
         if (sfrState.shutdown) {
             break;
         }
 
         while (1) {
             // get the next tile index from the work queue
-            const i32 head = sfr_atomic_add(&sfrBuffers->rasterWorkQueueHead, 1) - 1;
-            if (head >= sfr_atomic_get(&sfrBuffers->rasterWorkQueueCount)) {
+            const i32 head = sfr_atomic_add(&sfrThreadBuf->rasterWorkQueueHead, 1) - 1;
+            if (head >= sfr_atomic_get(&sfrThreadBuf->rasterWorkQueueCount)) {
                 break; // no more raster work
             }
 
             // get the tile and rasterize its contents
-            SfrTile* tile = &sfrBuffers->tiles[sfrBuffers->rasterWorkQueue[head]];
+            SfrTile* tile = &sfrThreadBuf->tiles[sfrThreadBuf->rasterWorkQueue[head]];
             i32 binCount = sfr_atomic_get(&tile->binCount);
             binCount = SFR_MIN(binCount, SFR_MAX_BINS_PER_TILE);
             for (i32 i = 0; i < binCount; i += 1) {
@@ -2954,7 +3023,7 @@ static void* sfr__worker_thread_func(void* arg) {
 
             sfr_atomic_set(&tile->binCount, 0);
         }
-        sfr_semaphore_post(&sfrBuffers->rasterDoneSem, 1);
+        sfr_semaphore_post(&sfrThreadBuf->rasterDoneSem, 1);
     }
 
     #ifdef _WIN32
