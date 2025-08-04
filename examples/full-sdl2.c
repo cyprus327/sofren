@@ -11,6 +11,7 @@ demonstrates:
 */
 
 #define SFR_IMPL
+#define SFR_NO_ALPHA
 #define SFR_USE_SIMD
 #define SFR_THREAD_COUNT 8
 #define SFR_MAX_BINS_PER_TILE (1024 * 8)
@@ -19,6 +20,7 @@ demonstrates:
 #define SFR_TILE_HEIGHT 64
 #define SFR_MAX_WIDTH 1280
 #define SFR_MAX_HEIGHT 720
+#define SFR_MAX_LIGHTS 1
 #include "../sofren.c"
 
 #include <SDL2/SDL.h>
@@ -67,9 +69,9 @@ i32 main() {
     // initial window dimensions
     const i32 startWidth = 1280 * RES_SCALE, startHeight = 720 * RES_SCALE;
     
-    // initialize sofren, use 'sfrBuffers' for the malloced memory
-    // e.g. 'sfrBuffers->pixel[0] = 0xFFFFFFFF;' sets the first pixel to white
-    sfr_init(malloc(sizeof(SfrBuffers)), startWidth, startHeight, 50.f);
+    // initialize sofren, malloc needed to allocate buffers and free needed in case of error
+    // e.g. 'sfrPixelBuf[0] = 0xFFFFFFFF;' sets the first pixel to white
+    sfr_init(startWidth, startHeight, 50.f, malloc, free);
 
     // add directional light
     const sfrvec lightDir = sfr_vec_normf(0.6f, -0.6f, -0.6f);
@@ -134,24 +136,20 @@ i32 main() {
         #endif
 
         // update SDL window
-        SDL_UpdateTexture(sdlTex, NULL, sfrBuffers->pixel, sfrWidth * 4);
+        SDL_UpdateTexture(sdlTex, NULL, sfrPixelBuf, sfrWidth * 4);
         SDL_RenderClear(renderer);
         SDL_RenderCopy(renderer, sdlTex, NULL, NULL);
         SDL_RenderPresent(renderer);
     }
 
     // cleanup and close SDL window
-    #ifdef SFR_MULTITHREADED
-        sfr_shutdown();
-    #endif
     sfr_release_font(&font);
     sfr_release_texture(&cubeTex);
     sfr_release_texture(&meshTex);
     sfr_release_texture(&particleTex);
     sfr_release_mesh(&mesh);
-    free(particleBuf);
-    free(sfrBuffers);
-    
+    sfr_release();
+
     SDL_DestroyTexture(sdlTex);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);

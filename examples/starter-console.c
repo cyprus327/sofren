@@ -46,10 +46,8 @@ i32 main() {
             return 1;
         }
 
-        // use sfrBuffers for malloced memory
-        sfr_init(malloc(sizeof(SfrBuffers)), w, h, 80.f);
+        sfr_init(w, h, 80.f, malloc, free);
     
-        // set lighting state
         const sfrvec l = sfr_vec_normf(-0.5f, 0.1f, -1.f);
         sfr_set_light(0, (SfrLight){
             .dirX = l.x, .dirY = l.y, .dirZ = l.z,
@@ -111,7 +109,7 @@ i32 main() {
             i8* out = screenBuf;
             for (i32 y = 0, i = 0; y < sfrHeight; y += 1) {
                 for (i32 x = 0; x < sfrWidth; x += 1, i += 1) {
-                    *out = color_to_ascii(sfrBuffers->pixel[i]);
+                    *out = color_to_ascii(sfrPixelBuf[i]);
                     out += 1;
                 }
                 *out = '\n';
@@ -126,7 +124,7 @@ i32 main() {
 
     // release resources
     free(screenBuf);
-    free(sfrBuffers);
+    sfr_release();
 
     return 0;
 }

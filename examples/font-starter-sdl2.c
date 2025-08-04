@@ -27,7 +27,7 @@ small example showing usage of a SfrFont struct and .srft file
 i32 main() {
     { // initialize sofren
         const i32 w = 1280 * RES_SCALE, h = 720 * RES_SCALE;
-        sfr_init(malloc(sizeof(SfrBuffers)), w, h, 50.f);
+        sfr_init(w, h, 50.f, malloc, free);
         sfr_set_lighting(0);
     }
 
@@ -44,7 +44,7 @@ i32 main() {
     // load font
     SfrFont* font = sfr_load_font("examples/res/basic-font.srft");
     if (!font) {
-        SFR_ERR_RET(1, "Failed to load font\n");
+        SFR__ERR_RET(1, "Failed to load font\n");
     }
 
     // main loop
@@ -100,7 +100,7 @@ i32 main() {
         }
 
         { // update SDL window
-            SDL_UpdateTexture(texture, NULL, sfrBuffers->pixel, sfrWidth * 4);
+            SDL_UpdateTexture(texture, NULL, sfrPixelBuf, sfrWidth * 4);
             SDL_RenderClear(renderer);
             SDL_RenderCopy(renderer, texture, NULL, NULL);
             SDL_RenderPresent(renderer);
@@ -108,9 +108,9 @@ i32 main() {
     }
 
     { // cleanup
-        free(sfrBuffers);
         sfr_release_font(&font);
-        
+        sfr_release();
+
         SDL_DestroyTexture(texture);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
