@@ -4,11 +4,21 @@
 
 ---
 
+Sponza at 720p 60fps on an older laptop while recording
+<details>
+  <summary>About...</summary>
+  The model was loading using raylib's LoadModel function and then converted to sofren's structs,
+  and the textures were resized down to 128x128 from 1024x1024 (from profiling, like 40% of the
+  program's time was just from cache misses so this was the "fix", mipmapping is on the TODO list).
+</details>
+
+https://github.com/user-attachments/assets/c11733d0-74b1-42f1-ad72-7a49711e4004
+
 *All of the following were originally at 1280x720, however the GIF quality is forced to be lower*
 
-[*examples/full-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/tex-starter-sdl2.c)
+[*examples/full-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/full-sdl2.c)
 
-![main demo](https://github.com/user-attachments/assets/73646581-9351-4320-b029-6f31cd42f79f)
+![birds demo](https://github.com/user-attachments/assets/73646581-9351-4320-b029-6f31cd42f79f)
 
 [*examples/font-starter-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/font-starter-sdl2.c)
 
@@ -26,8 +36,9 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Single file with as few a 0 other headers, can be 100% standalone
 - Cross platform multithreading (Windows or pthreads)
 - Perspective correct texture mapping (currently only .bmp image support)
+- Phong shading, with directional and sphere lights
+- Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker))
 - Transparency (known limitation / bug, see the bottom of this README)
-- Gouraud shading with a directional light
 - OBJ mesh loading (requires `stdio.h`)
 - Customizable math implementations (system or bundled)
 - Primitive drawing (triangles, cubes, billboards)
@@ -105,9 +116,12 @@ There are some global variables in sofren.c, those in the public API are:
 // just remember to call realloc on sfrPixelBuf and sfrDepthBuf
 extern i32 sfrWidth, sfrHeight;
 
-// all buffers, i.e. pixel, depth, accumulation, as well as threading
-// data (tiling system, work dispatch, and thread management)
-extern SfrBuffers* sfrBuffers;
+// sofren isn't double buffered, you could easily make it though
+extern u32* sfrPixelBuf;
+extern f32* sfrDepthBuf;
+
+// of size SFR_MAX_LIGHTS, just an array of all the light sources
+extern SfrLight* sfrLights;
 
 // how many triangles have been rasterized since the last call to clear
 extern i32 sfrRasterCount;
@@ -139,13 +153,14 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors)
 ``` 
 
 ## TODO / Upcoming Features / Known Bugs
+- Mipmapping / memory optimizations, complex scenes are currently memory bound
 - Fix bug with transparency where if there are two transparent objects separated by a solid object and the scene is viewed so the transparent objects overlap one another through the solid object, the object behind the wall will be visible inside of the closer object, e.g.. the following scene 0 | 0 in 2D viewed from a side where the 0s overlap one another, the second 0 is visible inside the first one
+- Shadowmapping for static scenes
 - Further optimized rendering/rasterizing
-- Per vertex colors
-- Change to fixed point math
+- Change to fixed point math, maybe
 - AA, maybe
 - Stencil buffer, maybe
-- Shadows, maybe maybe
+- Dynamic hadows, maybe maybe
 
 # License
 This project is under the MIT license, do with that what you will
