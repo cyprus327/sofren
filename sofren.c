@@ -1,5 +1,3 @@
-#define SFR_IMPL
-
 #ifndef SFR_H
 #define SFR_H
 
@@ -456,9 +454,11 @@ typedef struct sfrlight {
 } SfrLight;
 
 typedef struct sfrTriangleBin {
-    f32 ax, ay, az, aInvZ, auoz, avoz, aIntensity;
-    f32 bx, by, bz, bInvZ, buoz, bvoz, bIntensity;
-    f32 cx, cy, cz, cInvZ, cuoz, cvoz, cIntensity;
+    f32 ax, ay, az, aInvZ, auoz, avoz;
+    f32 bx, by, bz, bInvZ, buoz, bvoz;
+    f32 cx, cy, cz, cInvZ, cuoz, cvoz;
+    sfrvec aNorm, bNorm, cNorm;
+    sfrvec aPos, bPos, cPos;
     u32 col;
     const SfrTexture* tex;
 } SfrTriangleBin;
@@ -542,10 +542,11 @@ typedef struct sfrState {
 
 // helper to track vertex attributes during clipping of textured triangles
 typedef struct sfrTexVert {
-    sfrvec pos;    // position in view space
-    f32 u, v;      // texture coords
-    f32 viewZ;     // z in view space for perspective correction
-    f32 intensity; // lighting intensity
+    sfrvec pos;      // position in view space
+    f32 u, v;        // texture coords
+    sfrvec normal;   // world-space normal for lighting
+    sfrvec worldPos; // world-space position for lighting
+    f32 viewZ;       // z in view space for perspective correction
 } SfrTexVert;
 
 
@@ -578,11 +579,7 @@ static void  (*sfrFree)(void*);
 //:         MISC HELPER MACROS
 //================================================
 
-#define SFR__TEX_TILE_LOG2 4 // 16x16
-#define SFR__TEX_TILE_SIZE (1 << SFR__TEX_TILE_LOG2)
-#define SFR__TEX_TILE_MASK (SFR__TEX_TILE_SIZE - 1)
-
-#define SFR__SWAPF(_a, _b) { const f32 _swapTemp = (_a); (_a) = (_b); (_b) = _swapTemp; }
+#define SFR__SWAP(type, _a, _b) { const type _swapTemp = (_a); (_a) = (_b); (_b) = _swapTemp; }
 #define SFR__LERPF(_a, _b, _t) ((_a) + (_t) * ((_b) - (_a)))
 
 #define SFR__DIV255(_r, _a, _b) \
@@ -647,6 +644,7 @@ SFR_FUNC u32 sfr_lerp_col(u32 c1, u32 c2, f32 t) {
     #define sfr_cosf cosf
     #define sfr_sinf sinf
     #define sfr_tanf tanf
+    #define sfr_powf powf
 #else
     SFR_FUNC f32 sfr_floorf(f32 x) {
         const i32 ix = (i32)x;
@@ -700,6 +698,32 @@ SFR_FUNC u32 sfr_lerp_col(u32 c1, u32 c2, f32 t) {
     SFR_FUNC f32 sfr_tanf(f32 x) {
         const f32 c = sfr_cosf(x);
         return (c < SFR_EPSILON && c > -SFR_EPSILON) ? 0.f : sfr_sinf(x) / c;
+    }
+
+    SFR_FUNC f32 sfr_powf(f32 base, f32 exp) {
+        if (base < 0 && sfr_floorf(exp) != exp) {
+            return 0.f;
+        }
+
+        if (0 == exp) return 1.f;
+        if (1 == exp) return base;
+        
+        f32 res = 1.f;
+        if (exp < 0) {
+            base = 1.f / base;
+            exp = -exp;
+        }
+        
+        // this sucks and is very inaccurate
+        i32 iexp = (i32)exp;
+        while (iexp > 0) {
+            if (1 == iexp % 2) {
+                res *= base;
+            }
+            base *= base;
+            iexp /= 2;
+        }
+        return res;
     }
 #endif
 
@@ -1044,8 +1068,9 @@ SFR_FUNC i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const
             },
             .u = a.u + tAB * (b.u - a.u),
             .v = a.v + tAB * (b.v - a.v),
+            .normal = sfr_vec_add(sfr_vec_mul(a.normal, 1.f - tAB), sfr_vec_mul(b.normal, tAB)),
+            .worldPos = sfr_vec_add(sfr_vec_mul(a.worldPos, 1.f - tAB), sfr_vec_mul(b.worldPos, tAB)),
             .viewZ = a.viewZ + tAB * (b.viewZ - a.viewZ),
-            .intensity = a.intensity + tAB * (b.intensity - a.intensity)
         };
         
         // interpolate vertex c
@@ -1058,8 +1083,9 @@ SFR_FUNC i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const
             },
             .u = a.u + tAC * (c.u - a.u),
             .v = a.v + tAC * (c.v - a.v),
+            .normal = sfr_vec_add(sfr_vec_mul(a.normal, 1.f - tAC), sfr_vec_mul(c.normal, tAC)),
+            .worldPos = sfr_vec_add(sfr_vec_mul(a.worldPos, 1.f - tAC), sfr_vec_mul(c.worldPos, tAC)),
             .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ),
-            .intensity = a.intensity + tAC * (c.intensity - a.intensity)
         };
 
         out[0][0] = a;
@@ -1091,8 +1117,9 @@ SFR_FUNC i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const
             },
             .u = a.u + tAC * (c.u - a.u),
             .v = a.v + tAC * (c.v - a.v),
+            .normal = sfr_vec_add(sfr_vec_mul(a.normal, 1.f - tAC), sfr_vec_mul(c.normal, tAC)),
+            .worldPos = sfr_vec_add(sfr_vec_mul(a.worldPos, 1.f - tAC), sfr_vec_mul(c.worldPos, tAC)),
             .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ),
-            .intensity = a.intensity + tAC * (c.intensity - a.intensity)
         };
 
         SfrTexVert newBC = {
@@ -1104,8 +1131,9 @@ SFR_FUNC i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const
             },
             .u = b.u + tBC * (c.u - b.u),
             .v = b.v + tBC * (c.v - b.v),
+            .normal = sfr_vec_add(sfr_vec_mul(b.normal, 1.f - tBC), sfr_vec_mul(c.normal, tBC)),
+            .worldPos = sfr_vec_add(sfr_vec_mul(b.worldPos, 1.f - tBC), sfr_vec_mul(c.worldPos, tBC)),
             .viewZ = b.viewZ + tBC * (c.viewZ - b.viewZ),
-            .intensity = b.intensity + tBC * (c.intensity - b.intensity)
         };
 
         out[0][0] = a;
@@ -1139,42 +1167,47 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
     f32 bx = (f32)((i32)bin->bx), by = (f32)((i32)bin->by), bz = bin->bz;
     f32 cx = (f32)((i32)bin->cx), cy = (f32)((i32)bin->cy), cz = bin->cz;
     
-    f32 aInvZ = bin->aInvZ, auoz = bin->auoz, avoz = bin->avoz, aIntensity = bin->aIntensity;
-    f32 bInvZ = bin->bInvZ, buoz = bin->buoz, bvoz = bin->bvoz, bIntensity = bin->bIntensity;
-    f32 cInvZ = bin->cInvZ, cuoz = bin->cuoz, cvoz = bin->cvoz, cIntensity = bin->cIntensity;
+    f32 aInvZ = bin->aInvZ, auoz = bin->auoz, avoz = bin->avoz;
+    f32 bInvZ = bin->bInvZ, buoz = bin->buoz, bvoz = bin->bvoz;
+    f32 cInvZ = bin->cInvZ, cuoz = bin->cuoz, cvoz = bin->cvoz;
+    
+    sfrvec aNorm = bin->aNorm, bNorm = bin->bNorm, cNorm = bin->cNorm;
+    sfrvec aPos = bin->aPos, bPos = bin->bPos, cPos = bin->cPos;
 
     const SfrTexture* tex = bin->tex;
     
     // sort vertices by y coord
     if (ay > by) {
-        SFR__SWAPF(ax, bx); SFR__SWAPF(ay, by); SFR__SWAPF(az, bz);
-        SFR__SWAPF(aInvZ, bInvZ); SFR__SWAPF(auoz, buoz); SFR__SWAPF(avoz, bvoz);
-        SFR__SWAPF(aIntensity, bIntensity);
+        SFR__SWAP(f32, ax, bx); SFR__SWAP(f32, ay, by); SFR__SWAP(f32, az, bz);
+        SFR__SWAP(f32, aInvZ, bInvZ); SFR__SWAP(f32, auoz, buoz); SFR__SWAP(f32, avoz, bvoz);
+        SFR__SWAP(sfrvec, aNorm, bNorm); SFR__SWAP(sfrvec, aPos, bPos);
     }
     if (ay > cy) {
-        SFR__SWAPF(ax, cx); SFR__SWAPF(ay, cy); SFR__SWAPF(az, cz);
-        SFR__SWAPF(aInvZ, cInvZ); SFR__SWAPF(auoz, cuoz); SFR__SWAPF(avoz, cvoz);
-        SFR__SWAPF(aIntensity, cIntensity);
+        SFR__SWAP(f32, ax, cx); SFR__SWAP(f32, ay, cy); SFR__SWAP(f32, az, cz);
+        SFR__SWAP(f32, aInvZ, cInvZ); SFR__SWAP(f32, auoz, cuoz); SFR__SWAP(f32, avoz, cvoz);
+        SFR__SWAP(sfrvec, aNorm, cNorm); SFR__SWAP(sfrvec, aPos, cPos);
     }
     if (by > cy) {
-        SFR__SWAPF(bx, cx); SFR__SWAPF(by, cy); SFR__SWAPF(bz, cz);
-        SFR__SWAPF(bInvZ, cInvZ); SFR__SWAPF(buoz, cuoz); SFR__SWAPF(bvoz, cvoz);
-        SFR__SWAPF(bIntensity, cIntensity);
+        SFR__SWAP(f32, bx, cx); SFR__SWAP(f32, by, cy); SFR__SWAP(f32, bz, cz);
+        SFR__SWAP(f32, bInvZ, cInvZ); SFR__SWAP(f32, buoz, cuoz); SFR__SWAP(f32, bvoz, cvoz);
+        SFR__SWAP(sfrvec, bNorm, cNorm); SFR__SWAP(sfrvec, bPos, cPos);
     }
 
     const i32 texW = tex->w, texH = tex->h;
     const i32 texW1 = tex->w - 1, texH1 = tex->h - 1;
-    // Precompute tiling constants
-    const i32 tilesPerRow = texW >> SFR__TEX_TILE_LOG2;
-    const i32 tileStride = SFR__TEX_TILE_SIZE * SFR__TEX_TILE_SIZE;
-
+    
+    // perspective correct attributes
+    aNorm = sfr_vec_mul(aNorm, aInvZ); bNorm = sfr_vec_mul(bNorm, bInvZ); cNorm = sfr_vec_mul(cNorm, cInvZ);
+    aPos = sfr_vec_mul(aPos, aInvZ); bPos = sfr_vec_mul(bPos, bInvZ); cPos = sfr_vec_mul(cPos, cInvZ);
+    
     // edge deltas for triangle
     const f32 deltaACX = cx - ax;
     const f32 deltaACZ = cz - az;
     const f32 deltaACinvZ = cInvZ - aInvZ;
     const f32 deltaACuoz = cuoz - auoz;
     const f32 deltaACvoz = cvoz - avoz;
-    const f32 deltaACIntensity = cIntensity - aIntensity;
+    const sfrvec deltaACNorm = sfr_vec_sub(cNorm, aNorm);
+    const sfrvec deltaACPos = sfr_vec_sub(cPos, aPos);
     const f32 invHeightAC = (cy != ay) ? 1.f / (cy - ay) : 0.f;
 
     { // lower triangle (A to B)
@@ -1183,7 +1216,8 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
         const f32 deltaABinvZ = bInvZ - aInvZ;
         const f32 deltaABuoz = buoz - auoz;
         const f32 deltaABvoz = bvoz - avoz;
-        const f32 deltaABIntensity = bIntensity - aIntensity;
+        const sfrvec deltaABNorm = sfr_vec_sub(bNorm, aNorm);
+        const sfrvec deltaABPos = sfr_vec_sub(bPos, aPos);
         const f32 invHeightAB = (by != ay) ? 1.f / (by - ay) : 0.f;
 
         const i32 yStart = SFR_MAX(tile->minY, ay);
@@ -1193,54 +1227,53 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
             const f32 alpha = dy * invHeightAC;
             const f32 beta = dy * invHeightAB;
     
-            // interpolate along AC edge (start)
             f32 sx = ax + deltaACX * alpha;
-            f32 sz = az + deltaACZ * alpha; // NDC z for depth
+            f32 sz = az + deltaACZ * alpha;
             f32 sInvZ = aInvZ + deltaACinvZ * alpha;
             f32 su = auoz + deltaACuoz * alpha;
             f32 sv = avoz + deltaACvoz * alpha;
-            f32 sIntensity = aIntensity + deltaACIntensity * alpha;
+            sfrvec sNorm = sfr_vec_add(aNorm, sfr_vec_mul(deltaACNorm, alpha));
+            sfrvec sPos = sfr_vec_add(aPos, sfr_vec_mul(deltaACPos, alpha));
     
-            // interpolate along AB edge (end)
             f32 ex = ax + deltaABX * beta;
-            f32 ez = az + deltaABZ * beta; // NDC z for depth
+            f32 ez = az + deltaABZ * beta;
             f32 eInvZ = aInvZ + deltaABinvZ * beta;
             f32 eu = auoz + deltaABuoz * beta;
             f32 ev = avoz + deltaABvoz * beta;
-            f32 eIntensity = aIntensity + deltaABIntensity * beta;
+            sfrvec eNorm = sfr_vec_add(aNorm, sfr_vec_mul(deltaABNorm, beta));
+            sfrvec ePos = sfr_vec_add(aPos, sfr_vec_mul(deltaABPos, beta));
     
-            // swap start/end if needed
             if (sx > ex) {
-                SFR__SWAPF(sx, ex); SFR__SWAPF(sz, ez);
-                SFR__SWAPF(sInvZ, eInvZ); SFR__SWAPF(su, eu); SFR__SWAPF(sv, ev);
-                SFR__SWAPF(sIntensity, eIntensity);
+                SFR__SWAP(f32, sx, ex); SFR__SWAP(f32, sz, ez);
+                SFR__SWAP(f32, sInvZ, eInvZ); SFR__SWAP(f32, su, eu); SFR__SWAP(f32, sv, ev);
+                SFR__SWAP(sfrvec, sNorm, eNorm); SFR__SWAP(sfrvec, sPos, ePos);
             }
     
-            // clamp x coordinates
             i32 xStart = SFR_MAX(tile->minX, sx);
             i32 xEnd   = SFR_MIN(tile->maxX, ex);
             if (xStart >= xEnd) {
                 continue;
             }
     
-            // scanline interpolation parameters
             const f32 dx = ex - sx;
             const f32 tStep = (0.f != dx) ? 1.f / dx : 0.f;
-            const f32 depthStep = (ez - sz) * tStep; // NDC z step
+            const f32 depthStep = (ez - sz) * tStep;
             const f32 invZStep = (eInvZ - sInvZ) * tStep;
             const f32 uStep = (eu - su) * tStep;
             const f32 vStep = (ev - sv) * tStep;
-            const f32 intensityStep = (eIntensity - sIntensity) * tStep;
+            const sfrvec normStep = sfr_vec_mul(sfr_vec_sub(eNorm, sNorm), tStep);
+            const sfrvec posStep = sfr_vec_mul(sfr_vec_sub(ePos, sPos), tStep);
     
-            // initialize current values
-            f32 depth = sz + (xStart - sx) * depthStep; // NDC z for depth testing
+            f32 depth = sz + (xStart - sx) * depthStep;
             f32 invZ = sInvZ + (xStart - sx) * invZStep;
             f32 uoz = su + (xStart - sx) * uStep;
             f32 voz = sv + (xStart - sx) * vStep;
-            f32 intensity = sIntensity + (xStart - sx) * intensityStep;
+            sfrvec norm = sfr_vec_add(sNorm, sfr_vec_mul(normStep, xStart - sx));
+            sfrvec pos = sfr_vec_add(sPos, sfr_vec_mul(posStep, xStart - sx));
 
             for (i32 x = xStart; x < xEnd; x += 1,
-                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep, intensity += intensityStep
+                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep,
+                norm = sfr_vec_add(norm, normStep), pos = sfr_vec_add(pos, posStep)
             ) {
                 const i32 pixelIndex = y * sfrWidth + x;
                 if (depth > sfrDepthBuf[pixelIndex]) {
@@ -1266,9 +1299,63 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 SFR__DIV255(fr, tr, cr);
                 SFR__DIV255(fg, tg, cg);
                 SFR__DIV255(fb, tb, cb);
-                const u8 lr = (u8)(fr * intensity);
-                const u8 lg = (u8)(fg * intensity);
-                const u8 lb = (u8)(fb * intensity);
+                
+                f32 finalIntensity = 0.f;
+                if (sfrState.lightingEnabled) {
+                    const sfrvec pixelNorm = sfr_vec_norm(sfr_vec_mul(norm, zView));
+                    const sfrvec pixelPos = sfr_vec_mul(pos, zView);
+
+                    f32 maxAmbient = 0.f;
+                    for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
+                        if (SFR_LIGHT_NONE != sfrLights[i].type && sfrLights[i].ambient > maxAmbient) {
+                            maxAmbient = sfrLights[i].ambient;
+                        }
+                    }
+                    finalIntensity = maxAmbient;
+
+                    for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
+                        const SfrLight* light = &sfrLights[i];
+                            
+                        sfrvec lightDir;
+                        f32 attenuation = 1.f;
+                        
+                        switch (light->type) {
+                            case SFR_LIGHT_NONE: {
+                                continue;
+                            }
+                            case SFR_LIGHT_DIRECTIONAL: {
+                                lightDir = (sfrvec){light->dirX, light->dirY, light->dirZ, 0.f};
+                                const f32 diff = sfr_fmaxf(0.f, sfr_vec_dot(pixelNorm, lightDir));
+                                finalIntensity += diff * light->intensity * attenuation;
+                            } break;
+                            case SFR_LIGHT_SPHERE: {
+                                lightDir = sfr_vec_sub((sfrvec){light->posX, light->posY, light->posZ}, pixelPos);
+                                const f32 dist2 = sfr_vec_length2(lightDir);
+                                if (dist2 > light->radius * light->radius) {
+                                    continue;
+                                }
+
+                                attenuation = 1.f - (dist2 / (light->radius * light->radius));
+                                lightDir = sfr_vec_norm(lightDir);
+
+                                const f32 diff = sfr_fmaxf(0.f, sfr_vec_dot(pixelNorm, lightDir));
+                                finalIntensity += diff * light->intensity * attenuation;
+
+                                const sfrvec viewDir = sfr_vec_norm(sfr_vec_sub(sfrCamPos, pixelPos));
+                                const sfrvec reflectDir = sfr_vec_sub(sfr_vec_mul(pixelNorm, 2.f * diff), lightDir);
+                                const f32 spec = sfr_powf(sfr_fmaxf(0.f, sfr_vec_dot(viewDir, reflectDir)), 32.f);
+                                finalIntensity += spec * light->intensity * attenuation;
+                            } break;
+                        }
+                    }
+                } else {
+                    finalIntensity = 1.f;
+                }
+                finalIntensity = SFR_CLAMP(finalIntensity, 0.f, 1.f);
+                
+                const u8 lr = (u8)(fr * finalIntensity);
+                const u8 lg = (u8)(fg * finalIntensity);
+                const u8 lb = (u8)(fb * finalIntensity);
 
                 #ifdef SFR_NO_ALPHA
                     sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
@@ -1305,7 +1392,8 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
         const f32 deltaBCinvZ = cInvZ - bInvZ;
         const f32 deltaBCuoz = cuoz - buoz;
         const f32 deltaBCvoz = cvoz - bvoz;
-        const f32 deltaBCIntensity = cIntensity - bIntensity;
+        const sfrvec deltaBCNorm = sfr_vec_sub(cNorm, bNorm);
+        const sfrvec deltaBCPos = sfr_vec_sub(cPos, bPos);
         const f32 invHeightBC = (cy != by) ? 1.f / (cy - by) : 0.f;
     
         const i32 yStart = SFR_MAX(tile->minY, by);
@@ -1314,54 +1402,53 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
             const f32 alpha = (f32)(y - ay) * invHeightAC;
             const f32 beta = (f32)(y - by) * invHeightBC;
     
-            // interpolate along BC edge (start)
             f32 sx = bx + deltaBCX * beta;
-            f32 sz = bz + deltaBCZ * beta; // NDC z for depth
+            f32 sz = bz + deltaBCZ * beta;
             f32 sInvZ = bInvZ + deltaBCinvZ * beta;
             f32 suoz = buoz + deltaBCuoz * beta;
             f32 svoz = bvoz + deltaBCvoz * beta;
-            f32 sIntensity = bIntensity + deltaBCIntensity * beta;
+            sfrvec sNorm = sfr_vec_add(bNorm, sfr_vec_mul(deltaBCNorm, beta));
+            sfrvec sPos = sfr_vec_add(bPos, sfr_vec_mul(deltaBCPos, beta));
     
-            // interpolate along AC edge (end)
             f32 ex = ax + deltaACX * alpha;
-            f32 ez = az + deltaACZ * alpha; // NDC z for depth
+            f32 ez = az + deltaACZ * alpha;
             f32 eInvZ = aInvZ + deltaACinvZ * alpha;
             f32 euoz = auoz + deltaACuoz * alpha;
             f32 evoz = avoz + deltaACvoz * alpha;
-            f32 eIntensity = aIntensity + deltaACIntensity * alpha;
+            sfrvec eNorm = sfr_vec_add(aNorm, sfr_vec_mul(deltaACNorm, alpha));
+            sfrvec ePos = sfr_vec_add(aPos, sfr_vec_mul(deltaACPos, alpha));
     
-            // swap start/end if needed
             if (sx > ex) {
-                SFR__SWAPF(sx, ex); SFR__SWAPF(sz, ez);
-                SFR__SWAPF(sInvZ, eInvZ); SFR__SWAPF(suoz, euoz); SFR__SWAPF(svoz, evoz);
-                SFR__SWAPF(sIntensity, eIntensity);
+                SFR__SWAP(f32, sx, ex); SFR__SWAP(f32, sz, ez);
+                SFR__SWAP(f32, sInvZ, eInvZ); SFR__SWAP(f32, suoz, euoz); SFR__SWAP(f32, svoz, evoz);
+                SFR__SWAP(sfrvec, sNorm, eNorm); SFR__SWAP(sfrvec, sPos, ePos);
             }
     
-            // clamp x coordinates
             i32 xStart = SFR_MAX(tile->minX, sx);
             i32 xEnd   = SFR_MIN(tile->maxX, ex);
             if (xStart >= xEnd) {
                 continue;
             }
     
-            // scanline interpolation parameters
             const f32 dx = ex - sx;
             const f32 tStep = (0.f != dx) ? 1.f / dx : 0.f;
-            const f32 depthStep = (ez - sz) * tStep; // NDC z step
+            const f32 depthStep = (ez - sz) * tStep;
             const f32 invZStep = (eInvZ - sInvZ) * tStep;
             const f32 uStep = (euoz - suoz) * tStep;
             const f32 vStep = (evoz - svoz) * tStep;
-            const f32 intensityStep = (eIntensity - sIntensity) * tStep;
+            const sfrvec normStep = sfr_vec_mul(sfr_vec_sub(eNorm, sNorm), tStep);
+            const sfrvec posStep = sfr_vec_mul(sfr_vec_sub(ePos, sPos), tStep);
     
-            // initialize current values
-            f32 depth = sz + (xStart - sx) * depthStep; // NDC z for depth testing
+            f32 depth = sz + (xStart - sx) * depthStep;
             f32 invZ = sInvZ + (xStart - sx) * invZStep;
             f32 uoz = suoz + (xStart - sx) * uStep;
             f32 voz = svoz + (xStart - sx) * vStep;
-            f32 intensity = sIntensity + (xStart - sx) * intensityStep;
+            sfrvec norm = sfr_vec_add(sNorm, sfr_vec_mul(normStep, xStart - sx));
+            sfrvec pos = sfr_vec_add(sPos, sfr_vec_mul(posStep, xStart - sx));
 
             for (i32 x = xStart; x < xEnd; x += 1,
-                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep, intensity += intensityStep
+                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep,
+                norm = sfr_vec_add(norm, normStep), pos = sfr_vec_add(pos, posStep)
             ) {
                 const i32 pixelIndex = y * sfrWidth + x;
                 if (depth > sfrDepthBuf[pixelIndex]) {
@@ -1387,9 +1474,63 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 SFR__DIV255(fr, tr, cr);
                 SFR__DIV255(fg, tg, cg);
                 SFR__DIV255(fb, tb, cb);
-                const u8 lr = (u8)(fr * intensity);
-                const u8 lg = (u8)(fg * intensity);
-                const u8 lb = (u8)(fb * intensity);
+
+                f32 finalIntensity = 0.f;
+                if (sfrState.lightingEnabled) {
+                    const sfrvec pixelNorm = sfr_vec_norm(sfr_vec_mul(norm, zView));
+                    const sfrvec pixelPos = sfr_vec_mul(pos, zView);
+
+                    f32 maxAmbient = 0.f;
+                    for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
+                        if (SFR_LIGHT_NONE != sfrLights[i].type && sfrLights[i].ambient > maxAmbient) {
+                            maxAmbient = sfrLights[i].ambient;
+                        }
+                    }
+                    finalIntensity = maxAmbient;
+
+                    for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
+                        const SfrLight* light = &sfrLights[i];
+                            
+                        sfrvec lightDir;
+                        f32 attenuation = 1.f;
+                        
+                        switch (light->type) {
+                            case SFR_LIGHT_NONE: {
+                                continue;
+                            }
+                            case SFR_LIGHT_DIRECTIONAL: {
+                                lightDir = (sfrvec){light->dirX, light->dirY, light->dirZ, 0.f};
+                                const f32 diff = sfr_fmaxf(0.f, sfr_vec_dot(pixelNorm, lightDir));
+                                finalIntensity += diff * light->intensity * attenuation;
+                            } break;
+                            case SFR_LIGHT_SPHERE: {
+                                lightDir = sfr_vec_sub((sfrvec){light->posX, light->posY, light->posZ}, pixelPos);
+                                const f32 dist2 = sfr_vec_length2(lightDir);
+                                if (dist2 > light->radius * light->radius) {
+                                    continue;
+                                }
+
+                                attenuation = 1.f - (dist2 / (light->radius * light->radius));
+                                lightDir = sfr_vec_norm(lightDir);
+
+                                const f32 diff = sfr_fmaxf(0.f, sfr_vec_dot(pixelNorm, lightDir));
+                                finalIntensity += diff * light->intensity * attenuation;
+
+                                const sfrvec viewDir = sfr_vec_norm(sfr_vec_sub(sfrCamPos, pixelPos));
+                                const sfrvec reflectDir = sfr_vec_sub(sfr_vec_mul(pixelNorm, 2.f * diff), lightDir);
+                                const f32 spec = sfr_powf(sfr_fmaxf(0.f, sfr_vec_dot(viewDir, reflectDir)), 32.f);
+                                finalIntensity += spec * light->intensity * attenuation;
+                            } break;
+                        }
+                    }
+                } else {
+                    finalIntensity = 1.f;
+                }
+                finalIntensity = SFR_CLAMP(finalIntensity, 0.f, 1.f);
+                
+                const u8 lr = (u8)(fr * finalIntensity);
+                const u8 lg = (u8)(fg * finalIntensity);
+                const u8 lb = (u8)(fb * finalIntensity);
 
                 #ifdef SFR_NO_ALPHA
                     sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
@@ -1423,9 +1564,9 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
 }
 
 SFR_FUNC void sfr__bin_triangle(
-    f32 ax, f32 ay, f32 az, f32 aInvZ, f32 auoz, f32 avoz, f32 aIntensity,
-    f32 bx, f32 by, f32 bz, f32 bInvZ, f32 buoz, f32 bvoz, f32 bIntensity,
-    f32 cx, f32 cy, f32 cz, f32 cInvZ, f32 cuoz, f32 cvoz, f32 cIntensity,
+    f32 ax, f32 ay, f32 az, f32 aInvZ, f32 auoz, f32 avoz, sfrvec aNorm, sfrvec aPos,
+    f32 bx, f32 by, f32 bz, f32 bInvZ, f32 buoz, f32 bvoz, sfrvec bNorm, sfrvec bPos,
+    f32 cx, f32 cy, f32 cz, f32 cInvZ, f32 cuoz, f32 cvoz, sfrvec cNorm, sfrvec cPos,
     u32 col, const SfrTexture* tex
 ) {
     #ifdef SFR_MULTITHREADED
@@ -1437,9 +1578,11 @@ SFR_FUNC void sfr__bin_triangle(
 
         SfrTriangleBin* bin = &sfrThreadBuf->triangleBinPool[binInd];
         *bin = (SfrTriangleBin){
-            ax, ay, az, aInvZ, auoz, avoz, aIntensity,
-            bx, by, bz, bInvZ, buoz, bvoz, bIntensity,
-            cx, cy, cz, cInvZ, cuoz, cvoz, cIntensity,
+            ax, ay, az, aInvZ, auoz, avoz,
+            bx, by, bz, bInvZ, buoz, bvoz,
+            cx, cy, cz, cInvZ, cuoz, cvoz,
+            aNorm, bNorm, cNorm,
+            aPos, bPos, cPos,
             col, tex
         };
         sfr_atomic_add(&sfrRasterCount, 1);
@@ -1480,9 +1623,11 @@ SFR_FUNC void sfr__bin_triangle(
         sfrRasterCount += 1;
         const SfrTile fullTile = {0, 0, sfrWidth, sfrHeight};
         const SfrTriangleBin bin = {
-            ax, ay, az, aInvZ, auoz, avoz, aIntensity,
-            bx, by, bz, bInvZ, buoz, bvoz, bIntensity,
-            cx, cy, cz, cInvZ, cuoz, cvoz, cIntensity,
+            ax, ay, az, aInvZ, auoz, avoz,
+            bx, by, bz, bInvZ, buoz, bvoz,
+            cx, cy, cz, cInvZ, cuoz, cvoz,
+            aNorm, bNorm, cNorm,
+            aPos, bPos, cPos,
             col, tex
         };
         sfr__rasterize_bin(&bin, &fullTile);
@@ -1513,73 +1658,16 @@ SFR_FUNC void sfr__process_and_bin_triangle(
         }
     #endif
 
-    // per vertex lighting calculation
-    f32 aIntensity = 0.f, bIntensity = 0.f, cIntensity = 0.f;
-    if (sfrState.lightingEnabled) {
-        // transform normals
-        const sfrvec na = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){anx, any, anz, 0.f}));
-        const sfrvec nb = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){bnx, bny, bnz, 0.f}));
-        const sfrvec nc = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){cnx, cny, cnz, 0.f}));
-        
-        for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
-            const SfrLight* light = &sfrLights[i];
-            switch (light->type) {
-                case SFR_LIGHT_NONE: {
-                    continue;
-                }
-
-                case SFR_LIGHT_DIRECTIONAL: {
-                    const f32 dotA = sfr_vec_dot(na, (sfrvec){light->dirX, light->dirY, light->dirZ}) * 0.5f + 0.5f;
-                    const f32 dotB = sfr_vec_dot(nb, (sfrvec){light->dirX, light->dirY, light->dirZ}) * 0.5f + 0.5f;
-                    const f32 dotC = sfr_vec_dot(nc, (sfrvec){light->dirX, light->dirY, light->dirZ}) * 0.5f + 0.5f;
-                    aIntensity += sfr_fmaxf(light->ambient, dotA * light->intensity);
-                    bIntensity += sfr_fmaxf(light->ambient, dotB * light->intensity);
-                    cIntensity += sfr_fmaxf(light->ambient, dotC * light->intensity);
-                } break;            
-                
-                case SFR_LIGHT_SPHERE: {
-                    const sfrvec lp = {light->posX, light->posY, light->posZ};
-                    const f32 r2 = light->radius * light->radius;
-                    
-                    const sfrvec lightDirA = sfr_vec_sub(lp, aModel);
-                    const f32 distSqA = sfr_vec_length2(lightDirA);
-                    if (distSqA < r2) {
-                        const f32 attenuation = 1.f - (distSqA / r2);
-                        const f32 diffuse = sfr_fmaxf(0.f, sfr_vec_dot(na, sfr_vec_norm(lightDirA)));
-                        aIntensity += diffuse * attenuation * light->intensity;
-                    }
-
-                    const sfrvec lightDirB = sfr_vec_sub(lp, bModel);
-                    const f32 distSqB = sfr_vec_length2(lightDirB);
-                    if (distSqB < r2) {
-                        const f32 attenuation = 1.f - (distSqB / r2);
-                        const f32 diffuse = sfr_fmaxf(0.f, sfr_vec_dot(nb, sfr_vec_norm(lightDirB)));
-                        bIntensity += diffuse * attenuation * light->intensity;
-                    }
-                    
-                    const sfrvec lightDirC = sfr_vec_sub(lp, cModel);
-                    const f32 distSqC = sfr_vec_length2(lightDirC);
-                    if (distSqC < r2) {
-                        const f32 attenuation = 1.f - (distSqC / r2);
-                        const f32 diffuse = sfr_fmaxf(0.f, sfr_vec_dot(nc, sfr_vec_norm(lightDirC)));
-                        cIntensity += diffuse * attenuation * light->intensity;
-                    }
-                } break;
-            }
-        }
-
-        aIntensity = SFR_MIN(1.f, aIntensity);
-        bIntensity = SFR_MIN(1.f, bIntensity);
-        cIntensity = SFR_MIN(1.f, cIntensity);
-    } else {
-        aIntensity = bIntensity = cIntensity = 1.f;
-    }
+    // transform normals
+    const sfrvec na = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){anx, any, anz, 0.f}));
+    const sfrvec nb = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){bnx, bny, bnz, 0.f}));
+    const sfrvec nc = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){cnx, cny, cnz, 0.f}));
 
     // to view space
     SfrTexVert viewTri[3] = {
-        {sfr_mat_mul_vec(sfrMatView, aModel), au, av, 0, aIntensity},
-        {sfr_mat_mul_vec(sfrMatView, bModel), bu, bv, 0, bIntensity},
-        {sfr_mat_mul_vec(sfrMatView, cModel), cu, cv, 0, cIntensity}
+        {sfr_mat_mul_vec(sfrMatView, aModel), au, av, na, aModel, 0},
+        {sfr_mat_mul_vec(sfrMatView, bModel), bu, bv, nb, bModel, 0},
+        {sfr_mat_mul_vec(sfrMatView, cModel), cu, cv, nc, cModel, 0}
     };
     for (i32 i = 0; i < 3; i += 1) {
         viewTri[i].viewZ = viewTri[i].pos.z;
@@ -1592,8 +1680,9 @@ SFR_FUNC void sfr__process_and_bin_triangle(
         clipTris[0][i].pos = sfr_mat_mul_vec(sfrMatProj, viewTri[i].pos);
         clipTris[0][i].u = viewTri[i].u;
         clipTris[0][i].v = viewTri[i].v;
+        clipTris[0][i].normal = viewTri[i].normal;
+        clipTris[0][i].worldPos = viewTri[i].worldPos;
         clipTris[0][i].viewZ = viewTri[i].viewZ;
-        clipTris[0][i].intensity = viewTri[i].intensity;
     }
 
     // check if clipping is needed at all
@@ -1675,8 +1764,9 @@ SFR_FUNC void sfr__process_and_bin_triangle(
             screen[j].pos.z = ndc.z;
             screen[j].u = tri[j].u;
             screen[j].v = tri[j].v;
+            screen[j].normal = tri[j].normal;
+            screen[j].worldPos = tri[j].worldPos;
             screen[j].viewZ = tri[j].viewZ;
-            screen[j].intensity = tri[j].intensity;
         }
 
         if (skip ||
@@ -1699,9 +1789,9 @@ SFR_FUNC void sfr__process_and_bin_triangle(
         const f32 cvoz = screen[2].v * cInvZ;
         
         sfr__bin_triangle(
-            screen[0].pos.x, screen[0].pos.y, screen[0].pos.z, aInvZ, auoz, avoz, screen[0].intensity,
-            screen[1].pos.x, screen[1].pos.y, screen[1].pos.z, bInvZ, buoz, bvoz, screen[1].intensity,
-            screen[2].pos.x, screen[2].pos.y, screen[2].pos.z, cInvZ, cuoz, cvoz, screen[2].intensity,
+            screen[0].pos.x, screen[0].pos.y, screen[0].pos.z, aInvZ, auoz, avoz, screen[0].normal, screen[0].worldPos,
+            screen[1].pos.x, screen[1].pos.y, screen[1].pos.z, bInvZ, buoz, bvoz, screen[1].normal, screen[1].worldPos,
+            screen[2].pos.x, screen[2].pos.y, screen[2].pos.z, cInvZ, cuoz, cvoz, screen[2].normal, screen[2].worldPos,
             col, texToUse
         );
     }
@@ -2256,6 +2346,63 @@ SFR_FUNC void sfr_cube_ex(u32 col[12]) {
          0.5f,-0.5f, 0.5f, 1.f,0.f, 0,-1,0,
         -0.5f,-0.5f,-0.5f, 0.f,1.f, 0,-1,0,
          0.5f,-0.5f,-0.5f, 0.f,0.f, 0,-1,0, col[11], &sfrState.baseTex);
+}
+
+SFR_FUNC void sfr_cube_inv(u32 col, const SfrTexture* tex) {
+    // front face
+    sfr_triangle_tex(
+         0.5f, 0.5f,-0.5f, 0.f,1.f, 0,0,1,
+        -0.5f, 0.5f,-0.5f, 1.f,1.f, 0,0,1,
+        -0.5f,-0.5f,-0.5f, 1.f,0.f, 0,0,1, col, tex);
+    sfr_triangle_tex(
+         0.5f,-0.5f,-0.5f, 0.f,0.f, 0,0,1,
+         0.5f, 0.5f,-0.5f, 0.f,1.f, 0,0,1,
+        -0.5f,-0.5f,-0.5f, 1.f,0.f, 0,0,1, col, tex);
+    // right face
+    sfr_triangle_tex(
+         0.5f, 0.5f, 0.5f, 0.f,1.f, -1,0,0,
+         0.5f, 0.5f,-0.5f, 1.f,1.f, -1,0,0,
+         0.5f,-0.5f,-0.5f, 1.f,0.f, -1,0,0, col, tex);
+    sfr_triangle_tex(
+         0.5f,-0.5f, 0.5f, 0.f,0.f, -1,0,0,
+         0.5f, 0.5f, 0.5f, 0.f,1.f, -1,0,0,
+         0.5f,-0.5f,-0.5f, 1.f,0.f, -1,0,0, col, tex);
+    // back face
+    sfr_triangle_tex(
+        -0.5f, 0.5f, 0.5f, 0.f,1.f, 0,0,-1,
+         0.5f, 0.5f, 0.5f, 1.f,1.f, 0,0,-1,
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,0,-1, col, tex);
+    sfr_triangle_tex(
+        -0.5f,-0.5f, 0.5f, 0.f,0.f, 0,0,-1,
+        -0.5f, 0.5f, 0.5f, 0.f,1.f, 0,0,-1,
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,0,-1, col, tex);
+    // left face
+    sfr_triangle_tex(
+        -0.5f, 0.5f,-0.5f, 0.f,1.f, 1,0,0,
+        -0.5f, 0.5f, 0.5f, 1.f,1.f, 1,0,0,
+        -0.5f,-0.5f, 0.5f, 1.f,0.f, 1,0,0, col, tex);
+    sfr_triangle_tex(
+        -0.5f,-0.5f,-0.5f, 0.f,0.f, 1,0,0,
+        -0.5f, 0.5f,-0.5f, 0.f,1.f, 1,0,0,
+        -0.5f,-0.5f, 0.5f, 1.f,0.f, 1,0,0, col, tex);
+    // top face
+    sfr_triangle_tex(
+         0.5f, 0.5f, 0.5f, 0.f,1.f, 0,-1,0,
+        -0.5f, 0.5f, 0.5f, 1.f,1.f, 0,-1,0,
+        -0.5f, 0.5f,-0.5f, 1.f,0.f, 0,-1,0, col, tex);
+    sfr_triangle_tex(
+         0.5f, 0.5f,-0.5f, 0.f,0.f, 0,-1,0,
+         0.5f, 0.5f, 0.5f, 0.f,1.f, 0,-1,0,
+        -0.5f, 0.5f,-0.5f, 1.f,0.f, 0,-1,0, col, tex);
+    // bottom face
+    sfr_triangle_tex(
+        -0.5f,-0.5f,-0.5f, 0.f,1.f, 0,1,0,
+        -0.5f,-0.5f, 0.5f, 1.f,1.f, 0,1,0,
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,1,0, col, tex);
+    sfr_triangle_tex(
+         0.5f,-0.5f,-0.5f, 0.f,0.f, 0,1,0,
+        -0.5f,-0.5f,-0.5f, 0.f,1.f, 0,1,0,
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,1,0, col, tex);
 }
 
 SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
