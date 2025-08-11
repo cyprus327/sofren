@@ -167,9 +167,6 @@ extern i32 sfrWidth, sfrHeight;
 
 extern u32* sfrPixelBuf;
 extern f32* sfrDepthBuf;
-#ifdef SFR_MULTITHREADED
-    extern SfrThreadBuf* sfrThreadBuf;
-#endif
 extern SfrLight* sfrLights;
 
 // variables below can be managed by you, however
@@ -559,7 +556,7 @@ i32 sfrWidth, sfrHeight;
 u32* sfrPixelBuf;
 f32* sfrDepthBuf;
 #ifdef SFR_MULTITHREADED
-    SfrThreadBuf* sfrThreadBuf;
+    static SfrThreadBuf* sfrThreadBuf;
 #endif
 SfrLight* sfrLights;
 static struct sfrAccumCol { u16 a, r, g, b; f32 depth; }* sfrAccumBuf;
@@ -584,6 +581,8 @@ static void  (*sfrFree)(void*);
 
 #define SFR__DIV255(_r, _a, _b) \
     const u8 _r = (_a * _b * 0x8081) >> 23;
+
+#define SFR__MAT_IDENTITY (sfrmat){ .m = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}} }
 
 #ifndef SFR_NO_STD
     #include <stdio.h>
@@ -784,17 +783,18 @@ SFR_FUNC sfrvec sfr_vec_div(sfrvec a, f32 b) {
 
 SFR_FUNC f32 sfr_vec_dot(sfrvec a, sfrvec b) {
     #ifdef SFR_USE_SIMD
-        // 0x71 => multiply first 3 components (0111), sum them,
-        // store result in first component of output (0001)
-        const __m128 r = _mm_dp_ps(a.v, b.v, 0x71);
-        return _mm_cvtss_f32(r);
+        return _mm_cvtss_f32(_mm_dp_ps(a.v, b.v, 0x71));
     #else
         return a.x * b.x + a.y * b.y + a.z * b.z;
     #endif
 }
 
 SFR_FUNC f32 sfr_vec_length(sfrvec v) {
-    return sfr_sqrtf(sfr_vec_dot(v, v));
+    #ifdef SFR_USE_SIMD
+        return _mm_cvtss_f32(_mm_sqrt_ss(_mm_dp_ps(v.v, v.v, 0x71)));
+    #else
+        return sfr_sqrtf(sfr_vec_dot(v, v));
+    #endif
 }
 
 SFR_FUNC f32 sfr_vec_length2(sfrvec v) {
@@ -804,13 +804,10 @@ SFR_FUNC f32 sfr_vec_length2(sfrvec v) {
 SFR_FUNC sfrvec sfr_vec_cross(sfrvec a, sfrvec b) {
     sfrvec r;
     #ifdef SFR_USE_SIMD
-        const __m128 as1 = _mm_shuffle_ps(a.v, a.v, _MM_SHUFFLE(3, 0, 2, 1)); // {a.y, a.z, a.x, a.w}
-        const __m128 bs1 = _mm_shuffle_ps(b.v, b.v, _MM_SHUFFLE(3, 1, 0, 2)); // {b.z, b.x, b.y, b.w}
-        const __m128 mul1 = _mm_mul_ps(as1, bs1);
-        const __m128 as2 = _mm_shuffle_ps(a.v, a.v, _MM_SHUFFLE(3, 1, 0, 2)); // {a.z, a.x, a.y, a.w}
-        const __m128 bs2 = _mm_shuffle_ps(b.v, b.v, _MM_SHUFFLE(3, 0, 2, 1)); // {b.y, b.z, b.x, b.w}
-        const __m128 mul2 = _mm_mul_ps(as2, bs2);
-        r.v = _mm_sub_ps(mul1, mul2);
+        // y z x w, z x y w
+        r.v = _mm_sub_ps(
+            _mm_mul_ps(_mm_shuffle_ps(a.v, a.v, _MM_SHUFFLE(3, 0, 2, 1)), _mm_shuffle_ps(b.v, b.v, _MM_SHUFFLE(3, 1, 0, 2))),
+            _mm_mul_ps(_mm_shuffle_ps(a.v, a.v, _MM_SHUFFLE(3, 1, 0, 2)), _mm_shuffle_ps(b.v, b.v, _MM_SHUFFLE(3, 0, 2, 1))));
         r.w = 1.f;
     #else
         r.x = a.y * b.z - a.z * b.y;
@@ -822,8 +819,15 @@ SFR_FUNC sfrvec sfr_vec_cross(sfrvec a, sfrvec b) {
 }
 
 SFR_FUNC sfrvec sfr_vec_norm(sfrvec v) {
-    const f32 l = sfr_vec_length(v);
-    return l > SFR_EPSILON ? sfr_vec_mul(v, 1.f / l) : (sfrvec){0};
+    #ifdef SFR_USE_SIMD
+        const __m128 dp = _mm_dp_ps(v.v, v.v, 0x7F);
+        return _mm_cvtss_f32(dp) > SFR_EPSILON ?
+            (sfrvec){ .v = _mm_mul_ps(v.v, _mm_rsqrt_ps(dp)) } :
+            (sfrvec){0};
+    #else
+        const f32 l = sfr_vec_length(v);
+        return l > SFR_EPSILON ? sfr_vec_mul(v, 1.f / l) : (sfrvec){0};
+    #endif
 }
 
 SFR_FUNC sfrvec sfr_vec_normf(f32 x, f32 y, f32 z) {
@@ -846,56 +850,51 @@ SFR_FUNC sfrmat sfr_mat_identity() {
 }
 
 SFR_FUNC sfrmat sfr_mat_rot_x(f32 a) {
-    sfrmat r = {0};
-    r.m[0][0] = 1.f;
-    r.m[1][1] = sfr_cosf(a);
-    r.m[1][2] = sfr_sinf(a);
-    r.m[2][1] = -sfr_sinf(a);
-    r.m[2][2] = sfr_cosf(a);
-    r.m[3][3] = 1.f;
+    sfrmat r = SFR__MAT_IDENTITY;
+    const f32 c = sfr_cosf(a);
+    const f32 s = sfr_sinf(a);
+    r.m[1][1] = c;
+    r.m[1][2] = s;
+    r.m[2][1] = -s;
+    r.m[2][2] = c;
     return r;
 }
 
 SFR_FUNC sfrmat sfr_mat_rot_y(f32 a) {
-    sfrmat r = {0};
-    r.m[0][0] = sfr_cosf(a);
-    r.m[0][2] = sfr_sinf(a);
-    r.m[1][1] = 1.f;
-    r.m[2][0] = -sfr_sinf(a);
-    r.m[2][2] = sfr_cosf(a);
-    r.m[3][3] = 1.f;
+    sfrmat r = SFR__MAT_IDENTITY;
+    const f32 c = sfr_cosf(a);
+    const f32 s = sfr_sinf(a);
+    r.m[0][0] = c;
+    r.m[0][2] = s;
+    r.m[2][0] = -s;
+    r.m[2][2] = c;
     return r;
 }
 
 SFR_FUNC sfrmat sfr_mat_rot_z(f32 a) {
-    sfrmat r = {0};
-    r.m[0][0] = sfr_cosf(a);
-    r.m[0][1] = sfr_sinf(a);
-    r.m[1][0] = -sfr_sinf(a);
-    r.m[1][1] = sfr_cosf(a);
-    r.m[2][2] = 1.f;
-    r.m[3][3] = 1.f;
+    sfrmat r = SFR__MAT_IDENTITY;
+    const f32 c = sfr_cosf(a);
+    const f32 s = sfr_sinf(a);
+    r.m[0][0] = c;
+    r.m[0][1] = s;
+    r.m[1][0] = -s;
+    r.m[1][1] = c;
     return r;
 }
 
 SFR_FUNC sfrmat sfr_mat_translate(f32 x, f32 y, f32 z) {
-    sfrmat r = {0};
-    r.m[0][0] = 1.f;
-    r.m[1][1] = 1.f;
-    r.m[2][2] = 1.f;
+    sfrmat r = SFR__MAT_IDENTITY;
     r.m[3][0] = x;
     r.m[3][1] = y;
     r.m[3][2] = z;
-    r.m[3][3] = 1.f;
     return r;
 }
 
 SFR_FUNC sfrmat sfr_mat_scale(f32 x, f32 y, f32 z) {
-    sfrmat r = {0};
+    sfrmat r = SFR__MAT_IDENTITY;
     r.m[0][0] = x;
     r.m[1][1] = y;
     r.m[2][2] = z;
-    r.m[3][3] = 1.f;
     return r;
 }
 
@@ -914,25 +913,21 @@ SFR_FUNC sfrmat sfr_mat_proj(f32 fovDev, f32 aspect, f32 near, f32 far) {
 SFR_FUNC sfrmat sfr_mat_mul(sfrmat a, sfrmat b) {
     sfrmat r;
     #ifdef SFR_USE_SIMD
-        const __m128 b0 = b.rows[0].v;
-        const __m128 b1 = b.rows[1].v;
-        const __m128 b2 = b.rows[2].v;
-        const __m128 b3 = b.rows[3].v;
-
-        for (i32 i = 0; i < 4; i += 1) {
+        for (int i = 0; i < 4; i += 1) {
             const __m128 ar = a.rows[i].v;
-            
             const __m128 x = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(0, 0, 0, 0));
             const __m128 y = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(1, 1, 1, 1));
             const __m128 z = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(2, 2, 2, 2));
             const __m128 w = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(3, 3, 3, 3));
             
-            __m128 res = _mm_mul_ps(x, b0);
-            res = _mm_add_ps(res, _mm_mul_ps(y, b1));
-            res = _mm_add_ps(res, _mm_mul_ps(z, b2));
-            res = _mm_add_ps(res, _mm_mul_ps(w, b3));
+            const __m128 r0 = _mm_mul_ps(x, b.rows[0].v);
+            const __m128 r1 = _mm_mul_ps(y, b.rows[1].v);
+            const __m128 r2 = _mm_mul_ps(z, b.rows[2].v);
+            const __m128 r3 = _mm_mul_ps(w, b.rows[3].v);
             
-            r.rows[i].v = res;
+            const __m128 sum01 = _mm_add_ps(r0, r1);
+            const __m128 sum23 = _mm_add_ps(r2, r3);
+            r.rows[i].v = _mm_add_ps(sum01, sum23);
         }
     #else
         for (i32 i = 0; i < 4; i += 1) {
@@ -949,9 +944,17 @@ SFR_FUNC sfrmat sfr_mat_mul(sfrmat a, sfrmat b) {
 SFR_FUNC sfrvec sfr_mat_mul_vec(sfrmat m, sfrvec v) {
     sfrvec r;
     #ifdef SFR_USE_SIMD
-        r.v = _mm_add_ps(
-            _mm_add_ps(_mm_mul_ps(_mm_set1_ps(v.x), m.rows[0].v), _mm_mul_ps(_mm_set1_ps(v.y), m.rows[1].v)),
-            _mm_add_ps(_mm_mul_ps(_mm_set1_ps(v.z), m.rows[2].v), _mm_mul_ps(_mm_set1_ps(v.w), m.rows[3].v)));
+        const __m128 vx = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(0, 0, 0, 0));
+        const __m128 vy = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(1, 1, 1, 1));
+        const __m128 vz = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(2, 2, 2, 2));
+        const __m128 vw = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(3, 3, 3, 3));
+
+        const __m128 mul0 = _mm_mul_ps(vx, m.rows[0].v);
+        const __m128 mul1 = _mm_mul_ps(vy, m.rows[1].v);
+        const __m128 mul2 = _mm_mul_ps(vz, m.rows[2].v);
+        const __m128 mul3 = _mm_mul_ps(vw, m.rows[3].v);
+
+        r.v = _mm_add_ps(_mm_add_ps(mul0, mul1),  _mm_add_ps(mul2, mul3));
     #else
         r.x = v.x * m.m[0][0] + v.y * m.m[1][0] + v.z * m.m[2][0] + v.w * m.m[3][0];
         r.y = v.x * m.m[0][1] + v.y * m.m[1][1] + v.z * m.m[2][1] + v.w * m.m[3][1];
