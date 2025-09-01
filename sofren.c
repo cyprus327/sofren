@@ -1,3 +1,5 @@
+#define SFR_IMPL
+
 #ifndef SFR_H
 #define SFR_H
 
@@ -637,7 +639,9 @@ SFR_FUNC u32 sfr_lerp_col(u32 c1, u32 c2, f32 t) {
 #ifndef SFR_NO_MATH
     #include <math.h>
     #define sfr_floorf floorf
+    #define sfr_ceilf ceilf
     #define sfr_fmaxf fmaxf
+    #define sfr_fminf fminf
     #define sfr_fabsf fabsf
     #define sfr_sqrtf sqrtf
     #define sfr_cosf cosf
@@ -650,8 +654,18 @@ SFR_FUNC u32 sfr_lerp_col(u32 c1, u32 c2, f32 t) {
         return (x < ix) ? ix - 1 : ix;
     }
 
+    SFR_FUNC f32 sfr_ceilf(f32 x) {
+        // works fine for normal inputs
+        return (i32)(x + 0.999f * (x >= 0.f))
+        // return (x < 0.f) ? (i32)x : (i32)(x + 0.999f);
+    }
+
     SFR_FUNC f32 sfr_fmaxf(f32 a, f32 b) {
         return (a > b) ? a : b;
+    }
+
+    SFR_FUNC f32 sfr_fminf(f32 a, f32 b) {
+        return (a < b) ? a : b;
     }
 
     SFR_FUNC f32 sfr_fabsf(f32 x) {
@@ -1346,7 +1360,9 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
 
                                 const sfrvec viewDir = sfr_vec_norm(sfr_vec_sub(sfrCamPos, pixelPos));
                                 const sfrvec reflectDir = sfr_vec_sub(sfr_vec_mul(pixelNorm, 2.f * diff), lightDir);
-                                const f32 spec = sfr_powf(sfr_fmaxf(0.f, sfr_vec_dot(viewDir, reflectDir)), 32.f);
+                                // const f32 spec = sfr_powf(sfr_fmaxf(0.f, sfr_vec_dot(viewDir, reflectDir)), 32.f);
+                                f32 spec = sfr_fmaxf(0.f, sfr_vec_dot(viewDir, reflectDir));
+                                spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
                                 finalIntensity += spec * light->intensity * attenuation;
                             } break;
                         }
@@ -1521,7 +1537,9 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
 
                                 const sfrvec viewDir = sfr_vec_norm(sfr_vec_sub(sfrCamPos, pixelPos));
                                 const sfrvec reflectDir = sfr_vec_sub(sfr_vec_mul(pixelNorm, 2.f * diff), lightDir);
-                                const f32 spec = sfr_powf(sfr_fmaxf(0.f, sfr_vec_dot(viewDir, reflectDir)), 32.f);
+                                // const f32 spec = sfr_powf(sfr_fmaxf(0.f, sfr_vec_dot(viewDir, reflectDir)), 32.f);
+                                f32 spec = sfr_fmaxf(0.f, sfr_vec_dot(viewDir, reflectDir));
+                                spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
                                 finalIntensity += spec * light->intensity * attenuation;
                             } break;
                         }
@@ -1591,10 +1609,10 @@ SFR_FUNC void sfr__bin_triangle(
         sfr_atomic_add(&sfrRasterCount, 1);
 
         // calculate screen space bounding box of the triangle
-        const f32 minX = SFR_MAX(0.f,             SFR_MIN(ax, SFR_MIN(bx, cx)));
-        const f32 maxX = SFR_MIN(sfrWidth - 1.f,  SFR_MAX(ax, SFR_MAX(bx, cx)));
-        const f32 minY = SFR_MAX(0.f,             SFR_MIN(ay, SFR_MIN(by, cy)));
-        const f32 maxY = SFR_MIN(sfrHeight - 1.f, SFR_MAX(ay, SFR_MAX(by, cy)));
+        const f32 minX = sfr_fmaxf(0.f,             sfr_fminf(ax, SFR_MIN(bx, cx)));
+        const f32 maxX = sfr_fminf(sfrWidth - 1.f,  sfr_fmaxf(ax, SFR_MAX(bx, cx)));
+        const f32 minY = sfr_fmaxf(0.f,             sfr_fminf(ay, SFR_MIN(by, cy)));
+        const f32 maxY = sfr_fminf(sfrHeight - 1.f, sfr_fmaxf(ay, SFR_MAX(by, cy)));
 
         // determine which tiles the triangle overlaps
         const i32 xStart = (i32)minX / SFR_TILE_WIDTH;
@@ -1801,7 +1819,7 @@ SFR_FUNC void sfr__process_and_bin_triangle(
 }
 
 // helper for updating normal mat used for shading
-SFR_FUNC void sfr_update_normal_mat(void) {
+SFR_FUNC void sfr__update_normal_mat(void) {
     const f32* m = &sfrMatModel.m[0][0];
     
     const f32 a = m[0], b = m[4], c = m[8];
@@ -2186,7 +2204,7 @@ SFR_FUNC void sfr_triangle_tex(
     u32 col, const SfrTexture* tex
 ) {
     if (sfrState.normalMatDirty) {
-        sfr_update_normal_mat();
+        sfr__update_normal_mat();
     }
 
     sfr__process_and_bin_triangle(
@@ -2415,7 +2433,7 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
     }
 
     if (sfrState.normalMatDirty) {
-        sfr_update_normal_mat();
+        sfr__update_normal_mat();
     }
 
     #ifdef SFR_MULTITHREADED
