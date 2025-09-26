@@ -37,7 +37,7 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Cross platform multithreading (Windows or pthreads)
 - Perspective correct texture mapping (currently only .bmp image support)
 - Phong shading, with directional and sphere lights
-- Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker))
+- Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
 - Transparency (known limitation / bug, see the bottom of this README)
 - OBJ mesh loading (requires `stdio.h`)
 - Customizable math implementations (system or bundled)
@@ -67,6 +67,10 @@ For examples and good starting points rendering to an SDL2 window or console win
 
 // whether or not to use SSE 4.1 intrinsics
 #define SFR_USE_SIMD
+
+// whether or not to use expensive but pretty phong shading
+// defaults to goraud shading using one directional light (sfrLights[0]) otherwise
+#define SFR_USE_PHONG
 
 // types are defined as things like 'i32' or 'u64' internally,
 // if this causes some issue define this for types
@@ -144,6 +148,7 @@ extern f32 sfrNearDist, sfrFarDist;
 
 ### Red Rotating Cube
 ```c
+// this is the correct order of operations (rotate, scale, translate)
 sfr_reset();                   // reset model matrix to identity
 sfr_rotate_y(time);            // rotate about y, radians not degrees
 sfr_rotate_x(time * 0.5f);     // rotate about x
@@ -159,8 +164,7 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors)
 - Further optimized rendering/rasterizing
 - Change to fixed point math, maybe
 - AA, maybe
-- Stencil buffer, maybe
-- Dynamic hadows, maybe maybe
+- Dynamic shadows, maybe maybe
 
 # License
 This project is under the MIT license, do with that what you will
