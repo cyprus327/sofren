@@ -62,8 +62,8 @@ For examples and good starting points rendering to an SDL2 window or console win
 // disable culling triangles
 #define SFR_NO_CULLING
 
-// disable transparency, big FPS boost
-#define SFR_NO_ALPHA
+// enable transparency, 0xAARRGGBB colors
+#define SFR_USE_ALPHA
 
 // whether or not to use SSE 4.1 intrinsics
 #define SFR_USE_SIMD
@@ -128,14 +128,16 @@ extern f32* sfrDepthBuf;
 extern SfrLight* sfrLights;
 
 // how many triangles have been rasterized since the last call to clear
-extern i32 sfrRasterCount;
+// atomic since it is updated by multiple threads when multithreading is enabled
+// if multithreading isn't enabled, SfrAtomic32 == i32 == int32_t
+extern SfrAtomic32 sfrRasterCount;
 
 // current matrices being used for rendering,
 // use all the provided functions when changing
-extern Mat sfrMatModel, sfrMatView, sfrMatProj;
+extern sfrmat sfrMatModel, sfrMatView, sfrMatProj;
 
-extern Vec sfrCamPos; // use 'sfr_set_camera' when changing
-extern f32 sfrCamFov; // use 'sfr_set_fov' when changing
+extern sfrvec sfrCamPos; // use 'sfr_set_camera' when changing
+extern f32    sfrCamFov; // use 'sfr_set_fov' when changing
 
 // can be freely changed, just call 'sfr_set_fov(sfrCamFov)' to
 // update 'sfrMatProj' to account for the change
