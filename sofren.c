@@ -243,7 +243,7 @@ SFR_FUNC void sfr_release(void);
     SFR_FUNC void sfr_flush_and_wait(void);
 #endif
 
-#ifndef SFR_NO_ALPHA
+#ifdef SFR_USE_ALPHA
     SFR_FUNC void sfr_present_alpha(void); // draw transparent parts of scene last
 #endif
 
@@ -657,7 +657,8 @@ SFR_FUNC u32 sfr_lerp_col(u32 c1, u32 c2, f32 t) {
 #else
     SFR_FUNC f32 sfr_floorf(f32 x) {
         const i32 ix = (i32)x;
-        return (x < ix) ? ix - 1 : ix;
+        return ix - 1 * (x < ix);
+        // return (x < ix) ? ix - 1 : ix;
     }
 
     SFR_FUNC f32 sfr_ceilf(f32 x) {
@@ -1222,7 +1223,7 @@ SFR_FUNC i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const
 SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) {
     // skip if fully transparent
     const u32 col = bin->col;
-    #ifndef SFR_NO_ALPHA
+    #ifdef SFR_USE_ALPHA
         const u8 ca = (col >> 24) & 0xFF;
         if (0 == ca) {
             return;
@@ -1402,7 +1403,7 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                     continue;
                 }
 
-                #ifdef SFR_NO_ALPHA
+                #ifndef SFR_USE_ALPHA
                     sfrDepthBuf[pixelIndex] = depth;
                 #endif
 
@@ -1489,7 +1490,7 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 const u8 lg = (u8)(fg * finalIntensity);
                 const u8 lb = (u8)(fb * finalIntensity);
 
-                #ifdef SFR_NO_ALPHA
+                #ifndef SFR_USE_ALPHA
                     sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
                 #else
                     const u8 ta = (texCol >> 24) & 0xFF;
@@ -1616,7 +1617,7 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                     continue;
                 }
 
-                #ifdef SFR_NO_ALPHA
+                #ifndef SFR_USE_ALPHA
                     sfrDepthBuf[pixelIndex] = depth;
                 #endif
 
@@ -1703,7 +1704,7 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 const u8 lg = (u8)(fg * finalIntensity);
                 const u8 lb = (u8)(fb * finalIntensity);
 
-                #ifdef SFR_NO_ALPHA
+                #ifndef SFR_USE_ALPHA
                     sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
                     sfrDepthBuf[pixelIndex] = depth;
                 #else
@@ -2080,10 +2081,10 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
     }
     sfrMalloc = mallocFunc, sfrFree = freeFunc;
 
-    if (w >= SFR_MAX_WIDTH) {
+    if (w > SFR_MAX_WIDTH) {
         SFR__ERR_EXIT("sfr_init: width > SFR_MAX_WIDTH (%d > %d)\n", w, SFR_MAX_WIDTH);
     }
-    if (h >= SFR_MAX_HEIGHT) {
+    if (h > SFR_MAX_HEIGHT) {
         SFR__ERR_EXIT("sfr_init: height > SFR_MAX_HEIGHT (%d > %d)\n", w, SFR_MAX_HEIGHT);
     }
 
@@ -2100,7 +2101,7 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
             sizeof(u32) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
     }
 
-    #ifndef SFR_NO_ALPHA
+    #ifdef SFR_USE_ALPHA
         sfrAccumBuf = (struct sfrAccumCol*)mallocFunc(sizeof(struct sfrAccumCol) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
         if (!sfrAccumBuf) {
             freeFunc(sfrPixelBuf);
@@ -2115,7 +2116,7 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
         if (!sfrLights) {
             freeFunc(sfrPixelBuf);
             freeFunc(sfrDepthBuf);
-            #ifndef SFR_NO_ALPHA
+            #ifdef SFR_USE_ALPHA
                 freeFunc(sfrAccumBuf);
             #endif
             SFR__ERR_EXIT("sfr_init: failed to allocate sfrLights (%ld bytes)\n", sizeof(SfrLight) * SFR_MAX_LIGHTS);
@@ -2127,7 +2128,7 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
         if (!sfrThreadBuf) {
             freeFunc(sfrPixelBuf);
             freeFunc(sfrDepthBuf);
-            #ifndef SFR_NO_ALPHA
+            #ifdef SFR_USE_ALPHA
                 freeFunc(sfrAccumBuf);
             #endif
             #if SFR_MAX_LIGHTS > 0
@@ -2185,7 +2186,7 @@ SFR_FUNC void sfr_release(void) {
         sfrFree(sfrDepthBuf);
         sfrDepthBuf = (void*)0;
     }
-    #ifndef SFR_NO_ALPHA
+    #ifdef SFR_USE_ALPHA
         if (sfrAccumBuf) {
             sfrFree(sfrAccumBuf);
             sfrAccumBuf = (void*)0;
@@ -2258,7 +2259,7 @@ SFR_FUNC void sfr_flush_and_wait(void) {
 
 #endif // SFR_MULTITHREADED
 
-#ifndef SFR_NO_ALPHA
+#ifdef SFR_USE_ALPHA
 
 SFR_FUNC void sfr_present_alpha(void) {
     #ifdef SFR_MULTITHREADED
@@ -2385,7 +2386,7 @@ SFR_FUNC void sfr_clear(u32 clearCol) {
     for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
         sfrPixelBuf[i] = clearCol;
         sfrDepthBuf[i] = sfrFarDist;
-        #ifndef SFR_NO_ALPHA
+        #ifdef SFR_USE_ALPHA
             sfr_memset(&sfrAccumBuf[i], 0, sizeof(sfrAccumBuf[0]));
             sfrAccumBuf[i].depth = sfrFarDist;
         #endif
@@ -2410,7 +2411,7 @@ SFR_FUNC void sfr_clear_depth(void) {
 
     for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
         sfrDepthBuf[i] = sfrFarDist;
-        #ifndef SFR_NO_ALPHA
+        #ifdef SFR_USE_ALPHA
             sfrAccumBuf[i].depth = sfrFarDist;
         #endif
     }
