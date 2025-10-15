@@ -14,10 +14,8 @@ small example showing usage of a SfrFont struct and .srft file
 */
 
 #define SFR_IMPL
-#define SFR_NO_ALPHA
 #include "../sofren.c"
 
-#include <stdio.h>
 #include <string.h>
 
 #include <SDL2/SDL.h>

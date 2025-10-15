@@ -6,7 +6,6 @@ the performance of this example is highly determined by the terminal's performan
 */
 
 #define SFR_IMPL
-#define SFR_NO_ALPHA
 #include "../sofren.c"
 
 #include <stdio.h> // for printing rendered output

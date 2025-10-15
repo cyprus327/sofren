@@ -1,17 +1,17 @@
 /* SOFREN EXAMPLES, full-sdl2.c
 
 demonstrates:
-    transparent drawing (alpha in use),
     multithreaded rendering,
-    loading textures and meshes and drawing them,
-    ui with an FPS counter / text rendering,
-    resizeable window,
-    camera controller
+    loading meshes, textures, and fonts and drawing them,
+    ui with an FPS and triangle counter,
+    camera controller,
+    a directional light,
+    particle system,
+    resizeable SDL2 window
 
 */
 
 #define SFR_IMPL
-#define SFR_NO_ALPHA
 #define SFR_USE_SIMD
 #define SFR_THREAD_COUNT 8
 #define SFR_MAX_BINS_PER_TILE (1024 * 8)
@@ -53,6 +53,13 @@ static SfrTexture* particleTex;
 static SfrParticleSystem particles;
 
 i32 main() {    
+    // initial window dimensions
+    const i32 startWidth = 1280 * RES_SCALE, startHeight = 720 * RES_SCALE;
+    
+    // initialize sofren, malloc needed to allocate buffers and free needed in case of error
+    // to update the window yourself, 'sfrPixelBuf[0] = 0xFFFFFFFF;' sets the first pixel to white
+    sfr_init(startWidth, startHeight, 50.f, malloc, free);
+
     // load mesh, textures, font
     mesh = sfr_load_mesh("examples/res/hawk.obj");
     meshTex = sfr_load_texture("examples/res/hawk.bmp");
@@ -60,24 +67,27 @@ i32 main() {
     particleTex = sfr_load_texture("examples/res/parrot.bmp");
     font = sfr_load_font("examples/res/basic-font.srft");
     if (!mesh || !meshTex || !cubeTex || !particleTex || !font) {
+        sfr_release_mesh(&mesh);
+        sfr_release_texture(&meshTex);
+        sfr_release_texture(&cubeTex);
+        sfr_release_texture(&particleTex);
+        sfr_release_font(&font);
         return 1;
     }
 
-    SfrParticle* particleBuf = malloc(sizeof(SfrParticle) * 200);
-    particles = sfr_particles_create(particleBuf, 200, particleTex);
-
-    // initial window dimensions
-    const i32 startWidth = 1280 * RES_SCALE, startHeight = 720 * RES_SCALE;
-    
-    // initialize sofren, malloc needed to allocate buffers and free needed in case of error
-    // e.g. 'sfrPixelBuf[0] = 0xFFFFFFFF;' sets the first pixel to white
-    sfr_init(startWidth, startHeight, 50.f, malloc, free);
+    // create particle system
+    const i64 particleBufSize = sizeof(SfrParticle) * 200;
+    SfrParticle* particleBuf = malloc(particleBufSize);
+    if (!particleBuf) {
+        SFR__ERR_EXIT("main: failed to allocate particleBuf, %ld bytes\n", particleBufSize);
+    }
+    particles = sfr_particles_create(particleBuf, particleBufSize / sizeof(SfrParticle), particleTex);
 
     // add directional light
-    const sfrvec lightDir = sfr_vec_normf(0.6f, -0.6f, -0.6f);
+    const sfrvec lightDir = sfr_vec_normf(0.2f, 0.3f, -0.6f);
     sfr_set_light(0, (SfrLight){
         .dirX = lightDir.x, .dirY = lightDir.y, .dirZ = lightDir.z,
-        .ambient = 0.4f, .intensity = 1.f,
+        .ambient = 0.3f, .intensity = 0.6f,
         .type = SFR_LIGHT_DIRECTIONAL
     });
 
@@ -167,22 +177,20 @@ static void draw(f32 time, f32 frameTime) {
         if (timer <= -0.5f) {
             timer += 3.5f;
         } else if (timer <= 0.f) {
-            col = 0x00FFFFFF;
+            col = 0xFFFFFFFF;
         } else if (timer <= 0.5f) {
-            col = 0x00FF7777;
+            col = 0xFFFF7777;
         } else if (timer <= 1.f) {
-            col = 0x0077FF77;
+            col = 0xFF77FF77;
         } else if (timer <= 1.5f) {
-            col = 0x007777FF;
+            col = 0xFF7777FF;
         } else if (timer <= 2.f) {
-            col = 0x00FF0000;
+            col = 0xFFFF0000;
         } else if (timer <= 2.5f) {
-            col = 0x0000FF00;
+            col = 0xFF00FF00;
         } else if (timer <= 3.f) {
-            col = 0x000000FF;
+            col = 0xFF0000FF;
         }
-        col |= (u32)(fminf(1.f, sinf(time) + 1.f) * 255.f) << 24;
-        // col |= 0xFF000000;
     
         // lighting settings
         sfr_set_lighting(1);
@@ -211,14 +219,14 @@ static void draw(f32 time, f32 frameTime) {
         sfr_translate(0.f, -2.f, 20.f);
         sfr_cube(0xFFFFFFFF, cubeTex);
     
-        // cube clipping into hawks
+        // room walls
         sfr_reset();
-        sfr_scale(10.f, 0.5f, 5.f);
-        sfr_translate(0.f, -1.f, 8.f);
-        sfr_cube(0xFFAABBCC, NULL);
+        sfr_scale(40.f, 20.f, 25.f);
+        sfr_translate(0.f, -1.f, 20.f);
+        sfr_cube_inv(0xFFAABBCC, NULL);
     }
 
-    { // draw particle system
+    if (1) { // draw particle system
         #ifdef SFR_MULTITHREADED
             // because lighting changes
             sfr_flush_and_wait();
@@ -249,11 +257,6 @@ static void draw(f32 time, f32 frameTime) {
         sfr_particles_draw(&particles);
     }
 
-    // draw transparent parts of the scene
-    #ifndef SFR_NO_ALPHA
-        sfr_present_alpha();
-    #endif
-    
     { // draw ui text
         // reset depth buffer before drawing ui
         sfr_clear_depth();
