@@ -1,3 +1,5 @@
+#define SFR_IMPL
+
 #ifndef SFR_H
 #define SFR_H
 
@@ -241,10 +243,6 @@ SFR_FUNC void sfr_release(void);
 
 #ifdef SFR_MULTITHREADED
     SFR_FUNC void sfr_flush_and_wait(void);
-#endif
-
-#ifdef SFR_USE_ALPHA
-    SFR_FUNC void sfr_present_alpha(void); // draw transparent parts of scene last
 #endif
 
 SFR_FUNC void sfr_resize(i32 width, i32 height);
@@ -1221,14 +1219,7 @@ SFR_FUNC i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const
 }
 
 SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) {
-    // skip if fully transparent
     const u32 col = bin->col;
-    #ifdef SFR_USE_ALPHA
-        const u8 ca = (col >> 24) & 0xFF;
-        if (0 == ca) {
-            return;
-        }
-    #endif
     const u8 cr = (col >> 16) & 0xFF;
     const u8 cg = (col >> 8)  & 0xFF;
     const u8 cb = (col >> 0)  & 0xFF;
@@ -1402,10 +1393,7 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 if (depth > sfrDepthBuf[pixelIndex]) {
                     continue;
                 }
-
-                #ifndef SFR_USE_ALPHA
-                    sfrDepthBuf[pixelIndex] = depth;
-                #endif
+                sfrDepthBuf[pixelIndex] = depth;
 
                 const f32 zView = 1.f / invZ;
                 const f32 u = uoz * zView;
@@ -1490,31 +1478,7 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 const u8 lg = (u8)(fg * finalIntensity);
                 const u8 lb = (u8)(fb * finalIntensity);
 
-                #ifndef SFR_USE_ALPHA
-                    sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
-                #else
-                    const u8 ta = (texCol >> 24) & 0xFF;
-                    SFR__DIV255(fa, ta, ca);
-                    if (0xFF != fa) {
-                        const u8 currAlpha = sfrAccumBuf[pixelIndex].a;
-                        SFR__DIV255(contribution, 255 - currAlpha, fa);
-
-                        SFR__DIV255(accumR, lr, contribution);
-                        SFR__DIV255(accumG, lg, contribution);
-                        SFR__DIV255(accumB, lb, contribution);
-                        sfrAccumBuf[pixelIndex].r += accumR;
-                        sfrAccumBuf[pixelIndex].g += accumG;
-                        sfrAccumBuf[pixelIndex].b += accumB;
-
-                        sfrAccumBuf[pixelIndex].a = currAlpha + contribution;
-                        if (depth < sfrAccumBuf[pixelIndex].depth) {
-                            sfrAccumBuf[pixelIndex].depth = depth;
-                        }
-                    } else {
-                        sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
-                        sfrDepthBuf[pixelIndex] = depth;
-                    }
-                #endif
+                sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
             }
         }
     }
@@ -1616,10 +1580,7 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 if (depth > sfrDepthBuf[pixelIndex]) {
                     continue;
                 }
-
-                #ifndef SFR_USE_ALPHA
-                    sfrDepthBuf[pixelIndex] = depth;
-                #endif
+                sfrDepthBuf[pixelIndex] = depth;
 
                 const f32 zView = 1.f / invZ;
                 const f32 u = uoz * zView;
@@ -1704,32 +1665,7 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 const u8 lg = (u8)(fg * finalIntensity);
                 const u8 lb = (u8)(fb * finalIntensity);
 
-                #ifndef SFR_USE_ALPHA
-                    sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
-                    sfrDepthBuf[pixelIndex] = depth;
-                #else
-                    const u8 ta = (texCol >> 24) & 0xFF;
-                    SFR__DIV255(fa, ta, ca);
-                    if (0xFF != fa) {
-                        const u8 currAlpha = sfrAccumBuf[pixelIndex].a;
-                        SFR__DIV255(contribution, 255 - currAlpha, fa);
-
-                        SFR__DIV255(accumR, lr, contribution);
-                        SFR__DIV255(accumG, lg, contribution);
-                        SFR__DIV255(accumB, lb, contribution);
-                        sfrAccumBuf[pixelIndex].r += accumR;
-                        sfrAccumBuf[pixelIndex].g += accumG;
-                        sfrAccumBuf[pixelIndex].b += accumB;
-
-                        sfrAccumBuf[pixelIndex].a = currAlpha + contribution;
-                        if (depth < sfrAccumBuf[pixelIndex].depth) {
-                            sfrAccumBuf[pixelIndex].depth = depth;
-                        }
-                    } else {
-                        sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
-                        sfrDepthBuf[pixelIndex] = depth;
-                    }
-                #endif
+                sfrPixelBuf[pixelIndex] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
             }
         }
     }
@@ -2101,24 +2037,11 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
             sizeof(u32) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
     }
 
-    #ifdef SFR_USE_ALPHA
-        sfrAccumBuf = (struct sfrAccumCol*)mallocFunc(sizeof(struct sfrAccumCol) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
-        if (!sfrAccumBuf) {
-            freeFunc(sfrPixelBuf);
-            freeFunc(sfrDepthBuf);
-            SFR__ERR_EXIT("sfr_init: failed to allocate sfrAccumBuf (%ld bytes)\n",
-                sizeof(struct sfrAccumCol) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
-        }
-    #endif
-
     #if SFR_MAX_LIGHTS > 0
         sfrLights = (SfrLight*)mallocFunc(sizeof(SfrLight) * SFR_MAX_LIGHTS);
         if (!sfrLights) {
             freeFunc(sfrPixelBuf);
             freeFunc(sfrDepthBuf);
-            #ifdef SFR_USE_ALPHA
-                freeFunc(sfrAccumBuf);
-            #endif
             SFR__ERR_EXIT("sfr_init: failed to allocate sfrLights (%ld bytes)\n", sizeof(SfrLight) * SFR_MAX_LIGHTS);
         }
     #endif
@@ -2128,9 +2051,6 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
         if (!sfrThreadBuf) {
             freeFunc(sfrPixelBuf);
             freeFunc(sfrDepthBuf);
-            #ifdef SFR_USE_ALPHA
-                freeFunc(sfrAccumBuf);
-            #endif
             #if SFR_MAX_LIGHTS > 0
                 freeFunc(sfrLights);
             #endif
@@ -2186,17 +2106,11 @@ SFR_FUNC void sfr_release(void) {
         sfrFree(sfrDepthBuf);
         sfrDepthBuf = (void*)0;
     }
-    #ifdef SFR_USE_ALPHA
-        if (sfrAccumBuf) {
-            sfrFree(sfrAccumBuf);
-            sfrAccumBuf = (void*)0;
-        }
-    #endif
     #if SFR_MAX_LIGHTS > 0
-    if (sfrLights) {
-        sfrFree(sfrLights);
-        sfrLights = (void*)0;
-    }
+        if (sfrLights) {
+            sfrFree(sfrLights);
+            sfrLights = (void*)0;
+        }
     #endif
     #ifdef SFR_MULTITHREADED
         sfr__shutdown();
@@ -2258,35 +2172,6 @@ SFR_FUNC void sfr_flush_and_wait(void) {
 }
 
 #endif // SFR_MULTITHREADED
-
-#ifdef SFR_USE_ALPHA
-
-SFR_FUNC void sfr_present_alpha(void) {
-    #ifdef SFR_MULTITHREADED
-        sfr_flush_and_wait();
-    #endif
-
-    for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
-        const u8 a = sfrAccumBuf[i].a;
-        if (0 == a || sfrDepthBuf[i] < sfrAccumBuf[i].depth) {
-            continue;
-        }
-
-        const u32 bgCol = sfrPixelBuf[i];
-        const u8 bgr = (bgCol >> 16) & 0xFF;
-        const u8 bgg = (bgCol >> 8)  & 0xFF;
-        const u8 bgb = (bgCol >> 0)  & 0xFF;
-
-        // blend accumulated color with background
-        const u8 r = sfrAccumBuf[i].r + (bgr * (255 - a)) / 255;
-        const u8 g = sfrAccumBuf[i].g + (bgg * (255 - a)) / 255;
-        const u8 b = sfrAccumBuf[i].b + (bgb * (255 - a)) / 255;
-
-        sfrPixelBuf[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
-    }
-}
-
-#endif // !SFR_NO_ALPHA
 
 SFR_FUNC void sfr_resize(i32 width, i32 height) {
     if (width > SFR_MAX_WIDTH || height > SFR_MAX_HEIGHT) {
@@ -2386,10 +2271,6 @@ SFR_FUNC void sfr_clear(u32 clearCol) {
     for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
         sfrPixelBuf[i] = clearCol;
         sfrDepthBuf[i] = sfrFarDist;
-        #ifdef SFR_USE_ALPHA
-            sfr_memset(&sfrAccumBuf[i], 0, sizeof(sfrAccumBuf[0]));
-            sfrAccumBuf[i].depth = sfrFarDist;
-        #endif
     }
 
     #ifdef SFR_MULTITHREADED
@@ -2411,9 +2292,6 @@ SFR_FUNC void sfr_clear_depth(void) {
 
     for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
         sfrDepthBuf[i] = sfrFarDist;
-        #ifdef SFR_USE_ALPHA
-            sfrAccumBuf[i].depth = sfrFarDist;
-        #endif
     }
 }
 

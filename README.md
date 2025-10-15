@@ -37,8 +37,8 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Cross platform multithreading (Windows or pthreads)
 - Perspective correct texture mapping (currently only .bmp image support)
 - Phong shading, with directional and sphere lights
+- Gouraud shading with a directional light
 - Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
-- Transparency (known limitation / bug, see the bottom of this README)
 - OBJ mesh loading (requires `stdio.h`)
 - Customizable math implementations (system or bundled)
 - Primitive drawing (triangles, cubes, billboards)
@@ -61,9 +61,6 @@ For examples and good starting points rendering to an SDL2 window or console win
 
 // disable culling triangles
 #define SFR_NO_CULLING
-
-// enable transparency, 0xAARRGGBB colors
-#define SFR_USE_ALPHA
 
 // whether or not to use SSE 4.1 intrinsics
 #define SFR_USE_SIMD
@@ -156,12 +153,11 @@ sfr_rotate_y(time);            // rotate about y, radians not degrees
 sfr_rotate_x(time * 0.5f);     // rotate about x
 sfr_scale(1.f, 3.f, 0.5f);     // scale by x y z
 sfr_translate(0.f, 0.f, 2.5f); // move to x y z
-sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors)
+sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A currently unused)
 ``` 
 
 ## TODO / Upcoming Features / Known Bugs
 - Mipmapping / memory optimizations, complex scenes are currently memory bound
-- Fix bug with transparency where if there are two transparent objects separated by a solid object and the scene is viewed so the transparent objects overlap one another through the solid object, the object behind the wall will be visible inside of the closer object, e.g.. the following scene 0 | 0 in 2D viewed from a side where the 0s overlap one another, the second 0 is visible inside the first one
 - Shadowmapping for static scenes
 - Further optimized rendering/rasterizing
 - Change to fixed point math, maybe
