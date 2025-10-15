@@ -1,5 +1,3 @@
-#define SFR_IMPL
-
 #ifndef SFR_H
 #define SFR_H
 
