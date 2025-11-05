@@ -143,6 +143,8 @@ typedef double f64;
 #endif
 typedef union sfrmat sfrmat;
 
+typedef enum sfrTexSampleMode SfrTexSampleMode;
+
 typedef struct sfrmesh SfrMesh;
 typedef struct sfrtex  SfrTexture;
 typedef struct sfrfont SfrFont;
@@ -175,7 +177,7 @@ extern SfrLight* sfrLights;
 extern SfrAtomic32 sfrRasterCount; // how many triangles have been rasterized since the last call to clear
 
 extern sfrmat sfrMatModel, sfrMatView, sfrMatProj;
-extern sfrvec sfrCamPos;
+extern sfrvec sfrCamPos, sfrCamUp, sfrCamTarget;
 extern f32 sfrCamFov;
 extern f32 sfrNearDist, sfrFarDist;
 
@@ -312,8 +314,8 @@ SFR_FUNC void sfr_particles_emit(SfrParticleSystem* sys,
 
 SFR_FUNC void sfr_rand_seed(u32 seed);       // seed random number generator
 SFR_FUNC u32 sfr_rand_next(void);            // Lehmer random number generator
-SFR_FUNC i32 sfr_rand_int(i32 min, i32 max); // random int in range [min, max]
-SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max]
+SFR_FUNC i32 sfr_rand_int(i32 min, i32 max); // random int in range [min, max)
+SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
 
 // threading related functions
 #ifdef SFR_MULTITHREADED
@@ -403,6 +405,11 @@ typedef union sfrmat {
     sfrvec rows[4];
 } sfrmat;
 
+typedef enum sfrTexSampleMode {
+    SFR_TEX_SAMPLE_REPEAT, // default, tiles the texture
+    SFR_TEX_SAMPLE_CLAMP   // clamps uvs to the [0, 1] and stretches edges
+} SfrTexSampleMode;
+
 typedef struct sfrmesh {
     f32* tris;     // vertex positions
     f32* uvs;      // uv coordinates
@@ -413,6 +420,7 @@ typedef struct sfrmesh {
 typedef struct sfrtex {
     u32* pixels;
     i32 w, h;
+    SfrTexSampleMode sampleMode;
 } SfrTexture;
 
 typedef struct sfrfont {
@@ -567,7 +575,7 @@ static struct sfrAccumCol { u16 a, r, g, b; f32 depth; }* sfrAccumBuf;
 SfrAtomic32 sfrRasterCount;
 
 sfrmat sfrMatModel, sfrMatView, sfrMatProj;
-sfrvec sfrCamPos;
+sfrvec sfrCamPos, sfrCamUp, sfrCamTarget;
 f32 sfrCamFov;
 f32 sfrNearDist = 0.1f, sfrFarDist = 100.f;
 
@@ -1397,8 +1405,18 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 const f32 u = uoz * zView;
                 const f32 v = voz * zView;
 
-                const i32 tx = sfr__wrap_coord(u * texW1, texW);
-                const i32 ty = sfr__wrap_coord(v * texH1, texH);
+                i32 tx, ty;
+                switch (tex->sampleMode) {
+                    case SFR_TEX_SAMPLE_CLAMP: {
+                        tx = SFR_CLAMP((i32)(u * texW), 0, texW1);
+                        ty = SFR_CLAMP((i32)(v * texH), 0, texH1);
+                    } break;
+                    case SFR_TEX_SAMPLE_REPEAT:
+                    default: {
+                        tx = sfr__wrap_coord((i32)(u * texW), texW);
+                        ty = sfr__wrap_coord((i32)(v * texH), texH);
+                    } break;
+                }
 
                 const u32 texCol = tex->pixels[ty * texW + tx];
 
@@ -1584,8 +1602,18 @@ SFR_FUNC void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile)
                 const f32 u = uoz * zView;
                 const f32 v = voz * zView;
 
-                const i32 tx = sfr__wrap_coord(u * texW1, texW);
-                const i32 ty = sfr__wrap_coord(v * texH1, texH);
+                i32 tx, ty;
+                switch (tex->sampleMode) {
+                    case SFR_TEX_SAMPLE_CLAMP: {
+                        tx = SFR_CLAMP((i32)(u * texW), 0, texW1);
+                        ty = SFR_CLAMP((i32)(v * texH), 0, texH1);
+                    } break;
+                    case SFR_TEX_SAMPLE_REPEAT:
+                    default: {
+                        tx = sfr__wrap_coord((i32)(u * texW), texW);
+                        ty = sfr__wrap_coord((i32)(v * texH), texH);
+                    } break;
+                }
 
                 const u32 texCol = tex->pixels[ty * texW + tx];
 
@@ -2661,19 +2689,19 @@ SFR_FUNC i32 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY
 
 SFR_FUNC void sfr_set_camera(f32 x, f32 y, f32 z, f32 yaw, f32 pitch, f32 roll) {
     sfrCamPos = (sfrvec){x, y, z, 1.f};
-    sfrvec up = {0.f, 1.f, 0.f, 1.f};
-    sfrvec target = {0.f, 0.f, 1.f, 1.f};
+    sfrCamUp = (sfrvec){0.f, 1.f, 0.f, 1.f};
+    sfrCamTarget = (sfrvec){0.f, 0.f, 1.f, 1.f};
 
     const sfrmat rotX = sfr_mat_rot_x(pitch);
     const sfrmat rotY = sfr_mat_rot_y(yaw);
     const sfrmat rotZ = sfr_mat_rot_z(roll);
 
-    up = sfr_mat_mul_vec(rotZ, up);
-    target = sfr_mat_mul_vec(rotX, target);
-    target = sfr_mat_mul_vec(rotY, target);
-    target = sfr_vec_add(sfrCamPos, target);
+    sfrCamUp = sfr_mat_mul_vec(rotZ, sfrCamUp);
+    sfrCamTarget = sfr_mat_mul_vec(rotX, sfrCamTarget);
+    sfrCamTarget = sfr_mat_mul_vec(rotY, sfrCamTarget);
+    sfrCamTarget = sfr_vec_add(sfrCamPos, sfrCamTarget);
 
-    sfrMatView = sfr_mat_qinv(sfr_mat_look_at(sfrCamPos, target, up));
+    sfrMatView = sfr_mat_qinv(sfr_mat_look_at(sfrCamPos, sfrCamTarget, sfrCamUp));
 }
 
 SFR_FUNC void sfr_set_fov(f32 fovDeg) {
@@ -2980,6 +3008,7 @@ SFR_FUNC SfrTexture* sfr_load_texture(const char* filename) {
 
     tex->w = width;
     tex->h = height;
+    tex->sampleMode = SFR_TEX_SAMPLE_REPEAT;
     tex->pixels = (u32*)sfrMalloc(width * height * sizeof(u32));
     if (!tex->pixels) {
         sfrFree(pixelData);
