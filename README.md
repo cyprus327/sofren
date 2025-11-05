@@ -43,6 +43,7 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Customizable math implementations (system or bundled)
 - Primitive drawing (triangles, cubes, billboards)
 - ARGB8888 color format support
+- Repeated or clamped textures
 - Backface culling, depth buffering, and clipping
 - Simplistic design, quick to learn and use
 
