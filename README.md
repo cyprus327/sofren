@@ -1,6 +1,6 @@
 # sofren - Single File Software Renderer
 
-### A minimalistic, efficient, single file, cross platform software renderer
+### An efficiently multithreaded, single file, cross platform software renderer
 
 ---
 
@@ -10,6 +10,9 @@ Sponza at 720p 60fps on an older laptop while recording
   The model was loading using raylib's LoadModel function and then converted to sofren's structs,
   and the textures were resized down to 128x128 from 1024x1024 (from profiling, like 40% of the
   program's time was just from cache misses so this was the "fix", mipmapping is on the TODO list).
+  If you're wondering why the triangle count is changing when nothing is moving, it changes because
+  the text is just comprised of triangles in the very extremely super advanced .srft font format, and
+  these triangles are still taken into account when counting triangles rendered.
 </details>
 
 https://github.com/user-attachments/assets/c11733d0-74b1-42f1-ad72-7a49711e4004
