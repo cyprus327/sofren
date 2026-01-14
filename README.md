@@ -22,6 +22,8 @@ https://github.com/user-attachments/assets/c11733d0-74b1-42f1-ad72-7a49711e4004
 
 [*examples/full-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/full-sdl2.c)
 
+*NOTE this gif is really old from when the renderer still just had flat shading, the Sponza video above is relatively recent*
+
 ![birds demo](https://github.com/user-attachments/assets/73646581-9351-4320-b029-6f31cd42f79f)
 
 [*examples/font-starter-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/font-starter-sdl2.c)
