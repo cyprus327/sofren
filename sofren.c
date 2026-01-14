@@ -3091,7 +3091,14 @@ SFR_FUNC SfrScene* sfr_scene_create(SfrSceneObject* objects, i32 count) {
         m = sfr_mat_mul(m, sfr_mat_rot_z(rot.z));
         m = sfr_mat_mul(m, sfr_mat_translate(pos.x, pos.y, pos.z));
         obj->_model = m;
-        obj->_invModel = sfr_mat_qinv(m);
+
+        // manually construct the inverse (scale * rot * trans)
+        sfrmat invM = sfr_mat_translate(-pos.x, -pos.y, -pos.z);
+        invM = sfr_mat_mul(invM, sfr_mat_rot_z(-rot.z));
+        invM = sfr_mat_mul(invM, sfr_mat_rot_y(-rot.y));
+        invM = sfr_mat_mul(invM, sfr_mat_rot_x(-rot.x));
+        invM = sfr_mat_mul(invM, sfr_mat_scale(1.f / scale.x, 1.f / scale.y, 1.f / scale.z));
+        obj->_invModel = invM;
 
         obj->_normal = sfr__calc_normal_mat(m);
 
