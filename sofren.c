@@ -1,5 +1,3 @@
-#define SFR_IMPL
-
 #ifndef SFR_H
 #define SFR_H
 
@@ -39,21 +37,13 @@ extern "C" {
     #ifndef SFR_TILE_HEIGHT
         #define SFR_TILE_HEIGHT 64
     #endif
-    #ifndef SFR_MAX_BINS_PER_TILE
-        // max triangles binned to a single tile
-        #define SFR_MAX_BINS_PER_TILE (1024 * 8)
-    #endif
-    #ifndef SFR_MAX_BINS_PER_FRAME
-        // max triangles binned per frame
-        #define SFR_MAX_BINS_PER_FRAME (1024 * 256)
-    #endif
     #ifndef SFR_GEOMETRY_JOB_SIZE
         // number of triangles per geometry job
         #define SFR_GEOMETRY_JOB_SIZE 64
     #endif
-    #ifndef SFR_MAX_GEOMETRY_JOBS
-        // max mesh chunks to be processed per frame
-        #define SFR_MAX_GEOMETRY_JOBS (1024 * 8)
+    #ifndef SFR_BIN_PAGE_SIZE
+        // number of triangles per geometry job
+        #define SFR_BIN_PAGE_SIZE 4096
     #endif
 #endif
 
@@ -243,7 +233,8 @@ SFR_FUNC sfrmat sfr_mat_qinv(sfrmat m);
 SFR_FUNC sfrmat sfr_mat_look_at(sfrvec pos, sfrvec target, sfrvec up);
 
 //: core functions
-SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void (*freeFunc)(void*));
+SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg,
+    void* (*mallocFunc)(u64), void (*freeFunc)(void*), void* (*reallocFunc)(void*, u64));
 SFR_FUNC void sfr_release(void);
 
 #ifdef SFR_MULTITHREADED
@@ -511,8 +502,10 @@ typedef struct sfrTriangleBin {
 typedef struct sfrTile {
     i32 minX, minY, maxX, maxY;
     #ifdef SFR_MULTITHREADED
-        SfrTriangleBin* bins[SFR_MAX_BINS_PER_TILE];
+        SfrTriangleBin** bins; 
+        i32 binsCapacity;
         SfrAtomic32 binCount;
+        SfrMutex mutex;
     #endif
 } SfrTile;
 
@@ -540,20 +533,29 @@ typedef struct sfrTile {
             ((SFR_MAX_HEIGHT + SFR_TILE_WIDTH - 1) / SFR_TILE_WIDTH) *
             ((SFR_MAX_WIDTH + SFR_TILE_WIDTH - 1) / SFR_TILE_WIDTH)];
         i32 tileCols, tileRows, tileCount;
-        SfrTriangleBin triangleBinPool[SFR_MAX_BINS_PER_FRAME];
-        SfrAtomic32 triangleBinAllocator;
+        
+        SfrTriangleBin** binPages; // dynamic array of pointers to fixed size pages
+        i32 binPagesCapacity; // how many pages pointers have been allocated for
+        SfrAtomic32 triangleBinAllocator; // total bins allocated across all pages
+        SfrMutex binPoolMutex; // protects the binPages array resizing
 
         // rasterizer work dispatch data
         i32 rasterWorkQueue[(SFR_MAX_WIDTH / SFR_TILE_WIDTH + 1) * (SFR_MAX_HEIGHT / SFR_TILE_HEIGHT + 1)];
         SfrAtomic32 rasterWorkQueueCount;
         SfrAtomic32 rasterWorkQueueHead;
 
-        // geometry job system data
-        SfrMeshChunkJob meshJobPool[SFR_MAX_GEOMETRY_JOBS];
+        // dynamic pool for mesh jobs
+        SfrMeshChunkJob* meshJobPool;
+        i32 meshJobPoolCapacity;
         SfrAtomic32 meshJobAllocator;
-        i32 geometryWorkQueue[SFR_MAX_GEOMETRY_JOBS];
+        
+        // dynamic queue for geometry work
+        i32* geometryWorkQueue;
+        i32 geometryWorkQueueCapacity;
         SfrAtomic32 geometryWorkQueueCount;
         SfrAtomic32 geometryWorkQueueHead;
+        
+        SfrMutex geometryMutex; // protects resizing of job pool and work queue
 
         // thread management data
         struct sfrThreadData threads[SFR_THREAD_COUNT];
@@ -641,6 +643,7 @@ f32 sfrNearDist = 0.1f, sfrFarDist = 100.f;
 static SfrState sfrState = {0};
 static void* (*sfrMalloc)(u64);
 static void  (*sfrFree)(void*);
+static void* (*sfrRealloc)(void*, u64);
 
 //================================================
 //:         MISC HELPER MACROS
@@ -1890,63 +1893,107 @@ SFR_FUNC void sfr__bin_triangle(
     u32 col, const SfrTexture* tex
 ) {
     #ifdef SFR_MULTITHREADED
-        // get a new triangle bin from the global pool
-        const i32 binInd = sfr_atomic_add(&sfrThreadBuf->triangleBinAllocator, 1) - 1;
-        if (binInd >= SFR_MAX_BINS_PER_FRAME) {
-            return;
+        // auto reserve slot
+        const i32 globalInd = sfr_atomic_add(&sfrThreadBuf->triangleBinAllocator, 1) - 1;
+
+        // calculate page and offset
+        const i32 pageInd = globalInd / SFR_BIN_PAGE_SIZE;
+        const i32 pageOffset = globalInd % SFR_BIN_PAGE_SIZE;
+
+        // ensure page exists
+        // if crossed into a new page (or beyond cap) need to check
+        if (pageInd >= sfrThreadBuf->binPagesCapacity || !sfrThreadBuf->binPages[pageInd]) {
+            sfr_mutex_lock(&sfrThreadBuf->binPoolMutex);
+            
+            // resize page pointer array
+            if (pageInd >= sfrThreadBuf->binPagesCapacity) {
+                i32 newCap = sfrThreadBuf->binPagesCapacity * 2;
+                while (pageInd >= newCap) newCap *= 2;
+                
+                SfrTriangleBin** newPageArr = (SfrTriangleBin**)sfrRealloc(sfrThreadBuf->binPages, sizeof(SfrTriangleBin*) * newCap);
+                if (newPageArr) {
+                    sfr_memset(newPageArr + sfrThreadBuf->binPagesCapacity, 0, 
+                        (newCap - sfrThreadBuf->binPagesCapacity) * sizeof(SfrTriangleBin*));
+                    sfrThreadBuf->binPages = newPageArr;
+                    sfrThreadBuf->binPagesCapacity = newCap;
+                }
+            }
+
+            // allocate specific page if it's missing
+            if (!sfrThreadBuf->binPages[pageInd]) {
+                sfrThreadBuf->binPages[pageInd] = (SfrTriangleBin*)sfrMalloc(sizeof(SfrTriangleBin) * SFR_BIN_PAGE_SIZE);
+            }
+            
+            sfr_mutex_unlock(&sfrThreadBuf->binPoolMutex);
         }
 
-        SfrTriangleBin* bin = &sfrThreadBuf->triangleBinPool[binInd];
+        if (!sfrThreadBuf->binPages[pageInd]) {
+            return; // shouldnt happen
+        }
+
+        SfrTriangleBin* bin = &sfrThreadBuf->binPages[pageInd][pageOffset];
+        
         #ifdef SFR_USE_PHONG
             *bin = (SfrTriangleBin){
-                ax, ay, az, aInvZ, auoz, avoz,
-                bx, by, bz, bInvZ, buoz, bvoz,
-                cx, cy, cz, cInvZ, cuoz, cvoz,
-                aNorm, bNorm, cNorm,
-                aPos, bPos, cPos,
-                col, tex
+                .ax = ax, .ay = ay, .az = az, .aInvZ = aInvZ, .auoz = auoz, .avoz = avoz,
+                .bx = bx, .by = by, .bz = bz, .bInvZ = bInvZ, .buoz = buoz, .bvoz = bvoz,
+                .cx = cx, .cy = cy, .cz = cz, .cInvZ = cInvZ, .cuoz = cuoz, .cvoz = cvoz,
+                .aNorm = aNorm, .bNorm = bNorm, .cNorm = cNorm,
+                .aPos = aPos, .bPos = bPos, .cPos = cPos,
+                .col = col, .tex = tex
             };
         #else
             *bin = (SfrTriangleBin){
-                ax, ay, az, aInvZ, auoz, avoz,
-                bx, by, bz, bInvZ, buoz, bvoz,
-                cx, cy, cz, cInvZ, cuoz, cvoz,
-                aIntensity, bIntensity, cIntensity,
-                col, tex
+                .ax = ax, .ay = ay, .az = az, .aInvZ = aInvZ, .auoz = auoz, .avoz = avoz,
+                .bx = bx, .by = by, .bz = bz, .bInvZ = bInvZ, .buoz = buoz, .bvoz = bvoz,
+                .cx = cx, .cy = cy, .cz = cz, .cInvZ = cInvZ, .cuoz = cuoz, .cvoz = cvoz,
+                .aIntensity = aIntensity, .bIntensity = bIntensity, .cIntensity = cIntensity,
+                .col = col, .tex = tex
             };
         #endif
         sfr_atomic_add(&sfrRasterCount, 1);
 
-        // calculate screen space bounding box of the triangle
         const f32 minX = sfr_fmaxf(0.f,             sfr_fminf(ax, SFR_MIN(bx, cx)));
         const f32 maxX = sfr_fminf(sfrWidth - 1.f,  sfr_fmaxf(ax, SFR_MAX(bx, cx)));
         const f32 minY = sfr_fmaxf(0.f,             sfr_fminf(ay, SFR_MIN(by, cy)));
         const f32 maxY = sfr_fminf(sfrHeight - 1.f, sfr_fmaxf(ay, SFR_MAX(by, cy)));
 
-        // determine which tiles the triangle overlaps
         const i32 xStart = (i32)minX / SFR_TILE_WIDTH;
         const i32 xEnd   = (i32)maxX / SFR_TILE_WIDTH;
         const i32 yStart = (i32)minY / SFR_TILE_HEIGHT;
         const i32 yEnd   = (i32)maxY / SFR_TILE_HEIGHT;
 
-        // add the bin to all overlapped tiles
+        // dynamic tile binning
         for (i32 ty = yStart; ty <= yEnd; ty += 1) {
             for (i32 tx = xStart; tx <= xEnd; tx += 1) {
                 const i32 tileInd = ty * sfrThreadBuf->tileCols + tx;
                 SfrTile* tile = &sfrThreadBuf->tiles[tileInd];
 
-                const i32 tileBinInd = sfr_atomic_add(&tile->binCount, 1) - 1;
-                if (tileBinInd >= SFR_MAX_BINS_PER_TILE) {
-                    continue;
+                // lock per tile to safely handle resize
+                sfr_mutex_lock(&tile->mutex);
+                
+                if (tile->binCount >= tile->binsCapacity) {
+                    i32 newCap = tile->binsCapacity * 2;
+                    SfrTriangleBin** newBins = (SfrTriangleBin**)sfrRealloc(tile->bins, sizeof(SfrTriangleBin*) * newCap);
+                    if (!newBins) {
+                        sfr_mutex_unlock(&tile->mutex);
+                        continue;
+                    }
+                    tile->bins = newBins;
+                    tile->binsCapacity = newCap;
                 }
-
-                if (0 == tileBinInd) {
+                
+                // add the bin inside the lock
+                const i32 ind = tile->binCount++;
+                if (0 == ind) {
                     const i32 workInd = sfr_atomic_add(&sfrThreadBuf->rasterWorkQueueCount, 1) - 1;
                     if (workInd < SFR_ARRLEN(sfrThreadBuf->rasterWorkQueue)) {
                         sfrThreadBuf->rasterWorkQueue[workInd] = tileInd;
                     }
                 }
-                tile->bins[tileBinInd] = bin;
+                tile->bins[ind] = bin;
+                
+                sfr_mutex_unlock(&tile->mutex);
             }
         }
     #else
@@ -2327,11 +2374,11 @@ SFR_FUNC SfrBounds sfr__calc_mesh_bounds(const SfrMesh* mesh) {
 //:         PUBLIC API FUNCTION DEFINITIONS
 //================================================
 
-SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void (*freeFunc)(void*)) {
-    if (!mallocFunc || !freeFunc) {
-        SFR__ERR_EXIT("sfr_init: malloc and free must be provided to initialize buffers\n");
+SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void (*freeFunc)(void*), void* (*reallocFunc)(void*, u64)) {
+    if (!mallocFunc || !freeFunc || !reallocFunc) {
+        SFR__ERR_EXIT("sfr_init: malloc, free, and realloc must be provided\n");
     }
-    sfrMalloc = mallocFunc, sfrFree = freeFunc;
+    sfrMalloc = mallocFunc, sfrFree = freeFunc, sfrRealloc = reallocFunc;
 
     if (w > SFR_MAX_WIDTH) {
         SFR__ERR_EXIT("sfr_init: width > SFR_MAX_WIDTH (%d > %d)\n", w, SFR_MAX_WIDTH);
@@ -2371,6 +2418,25 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
                 freeFunc(sfrLights);
             #endif
             SFR__ERR_EXIT("sfr_init: failed to allocate sfrThreadBuf (%ld bytes)\n", sizeof(SfrThreadBuf));
+        }
+
+        sfr_mutex_init(&sfrThreadBuf->binPoolMutex);
+        sfr_mutex_init(&sfrThreadBuf->geometryMutex);
+
+        sfrThreadBuf->binPagesCapacity = 64; 
+        sfrThreadBuf->binPages = (SfrTriangleBin**)mallocFunc(sizeof(SfrTriangleBin*) * sfrThreadBuf->binPagesCapacity);
+        sfr_memset(sfrThreadBuf->binPages, 0, sizeof(SfrTriangleBin*) * sfrThreadBuf->binPagesCapacity);
+        
+        // pre allocate first page
+        sfrThreadBuf->binPages[0] = (SfrTriangleBin*)mallocFunc(sizeof(SfrTriangleBin) * SFR_BIN_PAGE_SIZE);
+        sfrThreadBuf->meshJobPoolCapacity = 1024 * 8;
+        sfrThreadBuf->meshJobPool = (SfrMeshChunkJob*)mallocFunc(sizeof(SfrMeshChunkJob) * sfrThreadBuf->meshJobPoolCapacity);
+
+        sfrThreadBuf->geometryWorkQueueCapacity = 1024 * 8;
+        sfrThreadBuf->geometryWorkQueue = (i32*)mallocFunc(sizeof(i32) * sfrThreadBuf->geometryWorkQueueCapacity);
+
+        if (!sfrThreadBuf->binPages || !sfrThreadBuf->meshJobPool || !sfrThreadBuf->geometryWorkQueue) {
+            SFR__ERR_EXIT("sfr_init: failed to allocate dynamic buffers\n");
         }
 
         sfrState.shutdown = 0;
@@ -2456,6 +2522,21 @@ SFR_FUNC void sfr__shutdown(void) {
         #endif
     }
 
+    if (sfrThreadBuf->meshJobPool) sfrFree(sfrThreadBuf->meshJobPool);
+    if (sfrThreadBuf->geometryWorkQueue) sfrFree(sfrThreadBuf->geometryWorkQueue);
+    
+    sfr_mutex_destroy(&sfrThreadBuf->binPoolMutex);
+    sfr_mutex_destroy(&sfrThreadBuf->geometryMutex);
+
+    if (sfrThreadBuf->binPages) {
+        for (i32 i = 0; i < sfrThreadBuf->binPagesCapacity; i += 1) {
+            if (sfrThreadBuf->binPages[i]) {
+                sfrFree(sfrThreadBuf->binPages[i]);
+            }
+        }
+        sfrFree(sfrThreadBuf->binPages);
+    }
+
     sfr_semaphore_destroy(&sfrThreadBuf->geometryStartSem);
     sfr_semaphore_destroy(&sfrThreadBuf->geometryDoneSem);
     sfr_semaphore_destroy(&sfrThreadBuf->rasterStartSem);
@@ -2532,6 +2613,10 @@ SFR_FUNC void sfr_resize(i32 width, i32 height) {
                 tile->minY = y * SFR_TILE_HEIGHT;
                 tile->maxX = SFR_MIN((x + 1) * SFR_TILE_WIDTH, width);
                 tile->maxY = SFR_MIN((y + 1) * SFR_TILE_HEIGHT, height);
+                
+                sfr_mutex_init(&tile->mutex);
+                tile->binsCapacity = 1024 * 8;
+                tile->bins = (SfrTriangleBin**)sfrMalloc(sizeof(SfrTriangleBin*) * tile->binsCapacity);
                 sfr_atomic_set(&tile->binCount, 0);
             }
         }
@@ -2888,31 +2973,21 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
         // divide the mesh into jobs
         for (i32 i = 0; i < triangleCount; i += SFR_GEOMETRY_JOB_SIZE) {
             const i32 jobInd = sfr_atomic_add(&sfrThreadBuf->meshJobAllocator, 1) - 1;
-            if (jobInd >= SFR_MAX_GEOMETRY_JOBS) {
-                // not enough job slots,
-                // process remaining triangles serially so they aren't just dropped
-                sfr_flush_and_wait();
-                const i32 remaining = triangleCount - i;
-                for (i32 j = 0; j < remaining; j += 1) {
-                    const i32 triInd = (i + j) * 9;
-                    const i32 uvInd = (i + j) * 6;
-                    sfr__process_and_bin_triangle(
-                        &sfrMatModel, &sfrState.matNormal,
-                        mesh->tris[triInd + 0], mesh->tris[triInd + 1], mesh->tris[triInd + 2],
-                        mesh->uvs ? mesh->uvs[uvInd + 0] : 0.f, mesh->uvs ? mesh->uvs[uvInd + 1] : 0.f,
-                        mesh->normals[triInd + 0], mesh->normals[triInd + 1], mesh->normals[triInd + 2],
-
-                        mesh->tris[triInd + 3], mesh->tris[triInd + 4], mesh->tris[triInd + 5],
-                        mesh->uvs ? mesh->uvs[uvInd + 2] : 0.f, mesh->uvs ? mesh->uvs[uvInd + 3] : 0.f,
-                        mesh->normals[triInd + 3], mesh->normals[triInd + 4], mesh->normals[triInd + 5],
-
-                        mesh->tris[triInd + 6], mesh->tris[triInd + 7], mesh->tris[triInd + 8],
-                        mesh->uvs ? mesh->uvs[uvInd + 4] : 0.f, mesh->uvs ? mesh->uvs[uvInd + 5] : 0.f,
-                        mesh->normals[triInd + 6], mesh->normals[triInd + 7], mesh->normals[triInd + 8],
-                        col, tex
-                    );
+            if (jobInd >= sfrThreadBuf->meshJobPoolCapacity) {
+                sfr_mutex_lock(&sfrThreadBuf->geometryMutex);
+                if (jobInd >= sfrThreadBuf->meshJobPoolCapacity) {
+                    i32 newCap = sfrThreadBuf->meshJobPoolCapacity * 2;
+                    while (jobInd >= newCap) {
+                        newCap *= 2;
+                    }
+                    
+                    SfrMeshChunkJob* const newPool = (SfrMeshChunkJob*)sfrRealloc(sfrThreadBuf->meshJobPool, sizeof(SfrMeshChunkJob) * newCap);
+                    if (newPool) {
+                        sfrThreadBuf->meshJobPool = newPool;
+                        sfrThreadBuf->meshJobPoolCapacity = newCap;
+                    }
                 }
-                return;
+                sfr_mutex_unlock(&sfrThreadBuf->geometryMutex);
             }
 
             // create and populate the job
@@ -2929,9 +3004,24 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
 
             // add job to the queue
             const i32 queueInd = sfr_atomic_add(&sfrThreadBuf->geometryWorkQueueCount, 1) - 1;
-            if (queueInd < SFR_MAX_GEOMETRY_JOBS) {
-                sfrThreadBuf->geometryWorkQueue[queueInd] = jobInd;
+            if (queueInd >= sfrThreadBuf->geometryWorkQueueCapacity) {
+                sfr_mutex_lock(&sfrThreadBuf->geometryMutex);
+                if (queueInd >= sfrThreadBuf->geometryWorkQueueCapacity) {
+                    i32 newCap = sfrThreadBuf->geometryWorkQueueCapacity * 2;
+                    while (queueInd >= newCap) {
+                        newCap *= 2;
+                    }
+
+                    i32* const newQ = (i32*)sfrRealloc(sfrThreadBuf->geometryWorkQueue, sizeof(i32) * newCap);
+                    if (newQ) {
+                        sfrThreadBuf->geometryWorkQueue = newQ;
+                        sfrThreadBuf->geometryWorkQueueCapacity = newCap;
+                    }
+                }
+                sfr_mutex_unlock(&sfrThreadBuf->geometryMutex);
             }
+            
+            sfrThreadBuf->geometryWorkQueue[queueInd] = jobInd;
         }
     #else
         for (i32 i = 0; i < mesh->vertCount; i += 9) {
@@ -3823,7 +3913,6 @@ static void* sfr__worker_thread_func(void* arg) {
             // get the tile and rasterize its contents
             SfrTile* tile = &sfrThreadBuf->tiles[sfrThreadBuf->rasterWorkQueue[head]];
             i32 binCount = sfr_atomic_get(&tile->binCount);
-            binCount = SFR_MIN(binCount, SFR_MAX_BINS_PER_TILE);
             for (i32 i = 0; i < binCount; i += 1) {
                 sfr__rasterize_bin(tile->bins[i], tile);
             }
