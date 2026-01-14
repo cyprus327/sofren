@@ -430,6 +430,17 @@ typedef struct sfrScene {
     i32 count;
 } SfrScene;
 
+typedef struct sfrBvhNode {
+    f32 minX, minY, minZ;
+    f32 maxX, maxY, maxZ;
+    
+    // if count == 0 this is an internal node and 'leftFirst' is the index of the left child
+    // the right child is always at 'leftFirst + 1'
+    // if count > 0 this is a leaf node and 'leftFirst' is the index of the first triangle
+    i32 leftFirst; 
+    i32 count;
+} SfrBvhNode;
+
 typedef struct sfrSceneObject {
     // all provided when creating the list of objects
     SfrMesh* mesh;
@@ -438,9 +449,11 @@ typedef struct sfrSceneObject {
     u32 col;
 
     // calculated and set in sfr_scene_create
-    sfrmat _model, _normal;
-    SfrBounds* _bounds;
-    i32 _boundsCount, _boundsCap;
+    sfrmat _model, _invModel, _normal;
+    
+    struct sfrBvhNode* _bvhNodes;
+    i32 _bvhRoot;
+    i32 _bvhNodeCount;
 } SfrSceneObject;
 
 typedef struct sfrRayHit {
@@ -583,11 +596,6 @@ typedef struct sfrTexVert {
         f32 intensity; // intensity for goraud shading
     #endif
 } SfrTexVert;
-
-typedef struct sfrSortPacket {
-    u32 code;
-    i32 ind; // original triangle index
-} SfrSortPacket;
 
 
 //================================================
@@ -1127,168 +1135,122 @@ SFR_FUNC sfrmat sfr_mat_lerp(sfrmat a, sfrmat b, f32 t) {
 //: PRIVATE FUNCTIONS
 //================================================
 
-// expands a 10 bit integer into 30 bits by inserting 2 zeros after each bit
-SFR_FUNC u32 sfr__expand_bits(u32 v) {
-    v = (v * 0x00010001u) & 0xFF0000FFu;
-    v = (v * 0x00000101u) & 0x0F00F00Fu;
-    v = (v * 0x00000011u) & 0xC30C30C3u;
-    v = (v * 0x00000005u) & 0x49249249u;
-    return v;
-}
-
-// calculates a 30 bit Morton code for a 3D point in [0, 1]
-SFR_FUNC u32 sfr__morton(f32 x, f32 y, f32 z) {
-    x = SFR_CLAMP(x * 1023.f, 0.f, 1023.f);
-    y = SFR_CLAMP(y * 1023.f, 0.f, 1023.f);
-    z = SFR_CLAMP(z * 1023.f, 0.f, 1023.f);
-    return sfr__expand_bits((u32)x) | (sfr__expand_bits((u32)y) << 1) | (sfr__expand_bits((u32)z) << 2);
-}
-
-// radix sort SfrSortPacket array by 32 bit code
-SFR_FUNC void sfr__radix_sort_packets(SfrSortPacket* const packets, i32 n) {
-    if (n <= 1) {
+SFR_FUNC void sfr__mesh_swap_tri(SfrMesh* mesh, i32 a, i32 b) {
+    if (a == b) {
         return;
     }
 
-    SfrSortPacket* const temp = (SfrSortPacket*)sfrMalloc(sizeof(SfrSortPacket) * n);
-    if (!temp) {
-        SFR__ERR_RET(, "sfr__radix_sort_packets: out of memory allocating %ld bytes\n",
-            sizeof(SfrSortPacket) * n);
+    // swap positions
+    for (i32 i = 0; i < 9; i += 1) {
+        SFR__SWAP(f32, mesh->tris[a * 9 + i], mesh->tris[b * 9 + i]);
     }
 
-    SfrSortPacket* src = packets;
-    SfrSortPacket* dest = temp;
-
-    // 1 for each byte
-    i32 counts[256];
-    i32 offsets[256];
-
-    for (i32 pass = 0; pass < 4; pass += 1) {
-        sfr_memset(counts, 0, sizeof(counts));
-        i32 shift = pass * 8;
-
-        // count occurrences for this byte
-        for (i32 i = 0; i < n; i += 1) {
-            const u32 b = (src[i].code >> shift) & 0xFFu;
-            counts[b] += 1;
-        }
-
-        // prefix - sum -> offsets
-        offsets[0] = 0;
-        for (i32 i = 1; i < 256; i += 1) {
-            offsets[i] = offsets[i - 1] + counts[i - 1];
-        }
-
-        // distribute into dest
-        for (i32 i = 0; i < n; i += 1) {
-            const u32 b = (src[i].code >> shift) & 0xFFu;
-            dest[offsets[b]++] = src[i];
-        }
-
-        // swap buffers for next pass
-        SfrSortPacket* swap = src;
-        src = dest;
-        dest = swap;
-    }
-
-    // after 4 passes if src != original packets then copy back
-    if (packets != src) {
-        for (i32 i = 0; i < n; i += 1) {
-            packets[i] = src[i];
-        }
-    }
-
-    sfrFree(temp);
-}
-
-// reorders the mesh's triangles to be spatially coherent
-SFR_FUNC void sfr__sort_mesh_spatially(SfrMesh* mesh) {
-    if (0 == mesh->vertCount) {
-        return;
-    }
-
-    const i32 triCount = mesh->vertCount / 9;
-
-    // vv calculate mesh bounds in local space to normalize coordinates vv
-    f32 minX = 1e30f, minY = 1e30f, minZ = 1e30f;
-    f32 maxX = -1e30f, maxY = -1e30f, maxZ = -1e30f;
-    for (i32 i = 0; i < mesh->vertCount; i += 3) {
-        minX = SFR_MIN(minX, mesh->tris[i + 0]);
-        minY = SFR_MIN(minY, mesh->tris[i + 1]);
-        minZ = SFR_MIN(minZ, mesh->tris[i + 2]);
-        maxX = SFR_MAX(maxX, mesh->tris[i + 0]);
-        maxY = SFR_MAX(maxY, mesh->tris[i + 1]);
-        maxZ = SFR_MAX(maxZ, mesh->tris[i + 2]);
-    }
-    
-    const f32 extentX = (maxX - minX) > SFR_EPSILON ? (maxX - minX) : 1.f;
-    const f32 extentY = (maxY - minY) > SFR_EPSILON ? (maxY - minY) : 1.f;
-    const f32 extentZ = (maxZ - minZ) > SFR_EPSILON ? (maxZ - minZ) : 1.f;
-
-    // vv generate sort keys based on triangle centroids vv
-    SfrSortPacket* packets = (SfrSortPacket*)sfrMalloc(triCount * sizeof(SfrSortPacket));
-    
-    for (i32 i = 0; i < triCount; i += 1) {
-        // centroid
-        const f32 cx = (mesh->tris[i * 9 + 0] + mesh->tris[i * 9 + 3] + mesh->tris[i * 9 + 6]) / 3.f;
-        const f32 cy = (mesh->tris[i * 9 + 1] + mesh->tris[i * 9 + 4] + mesh->tris[i * 9 + 7]) / 3.f;
-        const f32 cz = (mesh->tris[i * 9 + 2] + mesh->tris[i * 9 + 5] + mesh->tris[i * 9 + 8]) / 3.f;
-
-        // normalize
-        const f32 nx = (cx - minX) / extentX;
-        const f32 ny = (cy - minY) / extentY;
-        const f32 nz = (cz - minZ) / extentZ;
-
-        packets[i].code = sfr__morton(nx, ny, nz);
-        packets[i].ind = i;
-    }
-
-    // vv sort packets based on Morton code vv
-    sfr__radix_sort_packets(packets, triCount);
-
-    // vv reorder mesh arrays vv
-    f32* newTris = (f32*)sfrMalloc(sizeof(f32) * mesh->vertCount);
-    f32* newUvs = mesh->uvs ? (f32*)sfrMalloc(sizeof(f32) * (mesh->vertCount / 3 * 2)) : NULL;
-    f32* newNorms = mesh->normals ? (f32*)sfrMalloc(sizeof(f32) * mesh->vertCount) : NULL;
-
-    for (i32 i = 0; i < triCount; i += 1) {
-        const i32 oldInd = packets[i].ind;
-        
-        // copy 9 floats (3 verts * 3 coords) per tri
-        sfr_memset(&newTris[i * 9], 0, sizeof(f32) * 9); // safety
-        for (i32 j = 0; j < 9; j += 1) {
-            newTris[i * 9 + j] = mesh->tris[oldInd * 9 + j];
-        }
-
-        if (newUvs) {
-            // copy 6 floats (3 verts * 2 coords) per tri
-            for (i32 k = 0; k < 6; k += 1) {
-                newUvs[i * 6 + k] = mesh->uvs[oldInd*6+k];
-            }
-        }
-        if (newNorms) {
-            // copy 9 floats
-            for (i32 k = 0; k < 9; k += 1) {
-                newNorms[i * 9 + k] = mesh->normals[oldInd * 9 + k];
-            }
-        }
-    }
-
-    // vv swap and free vv
-    sfrFree(packets);
-    
-    sfrFree(mesh->tris);
-    mesh->tris = newTris;
-    
+    // swap uvs
     if (mesh->uvs) {
-        sfrFree(mesh->uvs);
-        mesh->uvs = newUvs;
+        for (i32 i = 0; i < 6; i += 1) {
+            SFR__SWAP(f32, mesh->uvs[a * 6 + i], mesh->uvs[b * 6 + i]);
+        }
     }
 
+    // swap normals
     if (mesh->normals) {
-        sfrFree(mesh->normals);
-        mesh->normals = newNorms;
+        for (i32 i = 0; i < 9; i += 1) {
+            SFR__SWAP(f32, mesh->normals[a * 9 + i], mesh->normals[b * 9 + i]);
+        }
     }
+}
+
+// recursively build bvh
+SFR_FUNC void sfr__bvh_update_bounds(i32 nodeInd, SfrBvhNode* const nodes, const SfrMesh* mesh, i32 count) {
+    SfrBvhNode* const node = &nodes[nodeInd];
+    node->minX = node->minY = node->minZ = 1e30f;
+    node->maxX = node->maxY = node->maxZ = -1e30f;
+
+    for (i32 i = 0; i < count; i += 1) {
+        // current triangle ind in the mesh arrays
+        const i32 triInd = node->leftFirst + i; // because they're swapped they're contiguous
+        
+        for (i32 v = 0; v < 3; v += 1) {
+            const f32 vx = mesh->tris[triInd * 9 + v * 3 + 0];
+            const f32 vy = mesh->tris[triInd * 9 + v * 3 + 1];
+            const f32 vz = mesh->tris[triInd * 9 + v * 3 + 2];
+
+            node->minX = SFR_MIN(node->minX, vx);
+            node->minY = SFR_MIN(node->minY, vy);
+            node->minZ = SFR_MIN(node->minZ, vz);
+            node->maxX = SFR_MAX(node->maxX, vx);
+            node->maxY = SFR_MAX(node->maxY, vy);
+            node->maxZ = SFR_MAX(node->maxZ, vz);
+        }
+    }
+}
+
+SFR_FUNC void sfr__bvh_subdivide(SfrBvhNode* const nodes, i32 nodeInd, i32* nodePtr, SfrMesh* mesh) {
+    SfrBvhNode* const node = &nodes[nodeInd];
+
+    if (node->count <= 4) {
+        return; 
+    }
+
+    const f32 extentX = node->maxX - node->minX;
+    const f32 extentY = node->maxY - node->minY;
+    const f32 extentZ = node->maxZ - node->minZ;
+    
+    const i32 axis = (extentZ > extentY && extentZ > extentX) ? 2 : ((extentY > extentX) ? 1 : 0);
+    // i32 axis = 0;
+    // if (extentY > extentX) axis = 1;
+    // if (extentZ > extentY && extentZ > extentX) axis = 2;
+
+    const f32 splitPos =
+        (0 == axis) ? (node->minX + extentX * 0.5f) :
+        (1 == axis) ? (node->minY + extentY * 0.5f) :
+                      (node->minZ + extentZ * 0.5f);
+
+    i32 i = node->leftFirst;
+    i32 j = i + node->count - 1;
+
+    while (i <= j) {
+        const f32 c =
+            (0 == axis) ? (mesh->tris[i * 9 + 0] + mesh->tris[i * 9 + 3] + mesh->tris[i * 9 + 6]) / 3.f :
+            (1 == axis) ? (mesh->tris[i * 9 + 1] + mesh->tris[i * 9 + 4] + mesh->tris[i * 9 + 7]) / 3.f :
+                          (mesh->tris[i * 9 + 2] + mesh->tris[i * 9 + 5] + mesh->tris[i * 9 + 8]) / 3.f;
+
+        if (c < splitPos) {
+            i += 1;
+        } else {
+            sfr__mesh_swap_tri(mesh, i, j);
+            j -= 1;
+        }
+    }
+
+    const i32 leftCount = i - node->leftFirst;
+    if (0 == leftCount || leftCount == node->count) {
+        return;
+    }
+
+    // save originals
+    const i32 originalLeftFirst = node->leftFirst;
+    const i32 originalCount = node->count;
+
+    // allocate children
+    const i32 leftChildInd = *nodePtr; 
+    (*nodePtr) += 2; 
+
+    // update current node to internal
+    node->leftFirst = leftChildInd; 
+    node->count = 0; 
+
+    // init left and right
+    nodes[leftChildInd].leftFirst = originalLeftFirst;
+    nodes[leftChildInd].count = leftCount;
+    nodes[leftChildInd + 1].leftFirst = i; // i is the start of the right partition
+    nodes[leftChildInd + 1].count = originalCount - leftCount;
+
+    // recurse
+    sfr__bvh_update_bounds(leftChildInd, nodes, mesh, leftCount);
+    sfr__bvh_subdivide(nodes, leftChildInd, nodePtr, mesh);
+    sfr__bvh_update_bounds(leftChildInd + 1, nodes, mesh, nodes[leftChildInd + 1].count);
+    sfr__bvh_subdivide(nodes, leftChildInd + 1, nodePtr, mesh);
 }
 
 // used in rasterizing to wrap texture coords
@@ -3039,61 +3001,28 @@ SFR_FUNC SfrScene* sfr_scene_create(SfrSceneObject* objects, i32 count) {
         m = sfr_mat_mul(m, sfr_mat_rot_z(rot.z));
         m = sfr_mat_mul(m, sfr_mat_translate(pos.x, pos.y, pos.z));
         obj->_model = m;
+        obj->_invModel = sfr_mat_qinv(m);
 
-        // init normal matrix
         obj->_normal = sfr__calc_normal_mat(m);
 
-        // without this the bounds generated overlap too much
-        sfr__sort_mesh_spatially(obj->mesh);
-
-        // vv generate bounds vv
         const SfrMesh* const mesh = obj->mesh;
         const i32 triCount = mesh->vertCount / 9;
-
-        // number of bounds needed
-        i32 boundsCount = (triCount + SFR__TRIS_PER_BOUNDS - 1) / SFR__TRIS_PER_BOUNDS;
-        if (boundsCount < 1) {
-            boundsCount = 1;
-        }
-
-        obj->_bounds = (SfrBounds*)sfrMalloc(sizeof(SfrBounds) * boundsCount);
-        obj->_boundsCount = boundsCount;
-        obj->_boundsCap = boundsCount;
-
-        for (i32 b = 0; b < boundsCount; b += 1) {
-            SfrBounds* const bound = &obj->_bounds[b];
-
-            bound->minX = bound->minY = bound->minZ = 1e30f;
-            bound->maxX = bound->maxY = bound->maxZ = -1e30f;
-
-            if (0 == triCount) {
-                continue;
-            }
-
-            const i32 startTri = b * SFR__TRIS_PER_BOUNDS;
-            const i32 endTri = SFR_MIN(startTri + SFR__TRIS_PER_BOUNDS, triCount);
-
-            for (i32 t = startTri; t < endTri; t += 1) {
-                const i32 baseInd = t * 9; 
-
-                for (i32 v = 0; v < 3; v += 1) {
-                    // transform to world space so bounds are ready for raycasting
-                    const sfrvec vert = sfr_mat_mul_vec(m, (sfrvec){
-                        .x = mesh->tris[baseInd + v * 3 + 0],
-                        .y = mesh->tris[baseInd + v * 3 + 1],
-                        .z = mesh->tris[baseInd + v * 3 + 2],
-                        .w = 1.f
-                    });
-                    
-                    bound->minX = SFR_MIN(bound->minX, vert.x);
-                    bound->minY = SFR_MIN(bound->minY, vert.y);
-                    bound->minZ = SFR_MIN(bound->minZ, vert.z);
-
-                    bound->maxX = SFR_MAX(bound->maxX, vert.x);
-                    bound->maxY = SFR_MAX(bound->maxY, vert.y);
-                    bound->maxZ = SFR_MAX(bound->maxZ, vert.z);
-                }
-            }
+        if (triCount > 0) {
+            // a binary tree has at most 2 * n - 1
+            obj->_bvhNodes = (SfrBvhNode*)sfrMalloc(sizeof(SfrBvhNode) * (2 * triCount - 1));
+            obj->_bvhRoot = 0;
+            
+            // setup root
+            obj->_bvhNodes[0].leftFirst = 0;
+            obj->_bvhNodes[0].count = triCount;
+            
+            i32 nodePtr = 1; // next free is 1
+            sfr__bvh_update_bounds(0, obj->_bvhNodes, mesh, triCount);
+            sfr__bvh_subdivide(obj->_bvhNodes, 0, &nodePtr, obj->mesh);
+            obj->_bvhNodeCount = nodePtr;
+        } else {
+            obj->_bvhNodes = NULL;
+            obj->_bvhNodeCount = 0;
         }
     }
 
@@ -3101,29 +3030,21 @@ SFR_FUNC SfrScene* sfr_scene_create(SfrSceneObject* objects, i32 count) {
 }
 
 SFR_FUNC void sfr_scene_release(SfrScene** scene, u8 freeObjects) {
-    if (!scene || !(*scene)) {
-        return;
-    }
+    if (!scene || !(*scene)) return;
 
     if ((*scene)->objects) {
         for (i32 i = 0; i < (*scene)->count; i += 1) {
-            sfrFree((*scene)->objects[i]._bounds);
-            (*scene)->objects[i]._bounds = (void*)0;
+            if ((*scene)->objects[i]._bvhNodes) {
+                sfrFree((*scene)->objects[i]._bvhNodes);
+                (*scene)->objects[i]._bvhNodes = NULL;
+            }
         }
-
         if (freeObjects) {
             sfrFree((*scene)->objects);
-            (*scene)->objects = (void*)0;
         }
     }
-
-    if ((*scene)->objects) {
-        sfrFree((*scene)->objects);
-        (*scene)->objects = (void*)0;
-    }
-
     sfrFree(*scene);
-    *scene = (void*)0;
+    *scene = NULL;
 }
 
 SFR_FUNC void sfr_scene_draw(const SfrScene* scene) {
@@ -3159,66 +3080,87 @@ SFR_FUNC SfrRayHit sfr_scene_raycast(const SfrScene* scene, f32 ox, f32 oy, f32 
     const sfrvec rayDirRaw = { dx, dy, dz, 0.f };
     const sfrvec rayDir = sfr_vec_norm(rayDirRaw);
 
-    // for slab method optimization
-    const sfrvec rayDirInv = {
-        1.f / (sfr_fabsf(rayDir.x) > SFR_EPSILON ? rayDir.x : SFR_EPSILON),
-        1.f / (sfr_fabsf(rayDir.y) > SFR_EPSILON ? rayDir.y : SFR_EPSILON),
-        1.f / (sfr_fabsf(rayDir.z) > SFR_EPSILON ? rayDir.z : SFR_EPSILON),
-        0.f
-    };
 
     for (i32 i = 0; i < scene->count; i += 1) {
         SfrSceneObject* const obj = &scene->objects[i];
-        if (!obj->mesh || 0 == obj->_boundsCount) {
+        if (!obj->mesh || !obj->_bvhNodes) {
             continue;
         }
 
-        // TODO object level bounds check here
+        // faster to transform the ray to the object than the box to world
+        // so we must raycast in local space.
+        
+        const sfrvec localOrigin = sfr_mat_mul_vec(obj->_invModel, rayOrigin);
+        const sfrvec localDirRaw = sfr_mat_mul_vec(obj->_invModel, (sfrvec){dx, dy, dz, 0.f});
+        const sfrvec localDir = sfr_vec_norm(localDirRaw);
+        
+        const sfrvec localDirInv = {
+            1.f / (sfr_fabsf(localDir.x) > SFR_EPSILON ? localDir.x : SFR_EPSILON),
+            1.f / (sfr_fabsf(localDir.y) > SFR_EPSILON ? localDir.y : SFR_EPSILON),
+            1.f / (sfr_fabsf(localDir.z) > SFR_EPSILON ? localDir.z : SFR_EPSILON),
+            0.f
+        };
 
-        // broad phase
-        for (i32 b = 0; b < obj->_boundsCount; b += 1) {
-            const SfrBounds* const bound = &obj->_bounds[b];
+        i32 stack[64];
+        i32 stackPtr = 0;
+        stack[stackPtr++] = 0; // push root
 
-            // check if ray hits this chunk's bounds
-            if (!sfr__intersect_bounds(rayOrigin, rayDirInv, *bound, hit.distance)) {
-                continue;
+        while (stackPtr > 0) {
+            const i32 nodeInd = stack[--stackPtr];
+            SfrBvhNode* node = &obj->_bvhNodes[nodeInd];
+
+            // vv check bounds intersection (in local space) vv
+            f32 tMinBox = 0.f, tMaxBox = 1e30f;
+            
+            const f32 tx1 = (node->minX - localOrigin.x) * localDirInv.x;
+            const f32 tx2 = (node->maxX - localOrigin.x) * localDirInv.x;
+            f32 tmin = sfr_fminf(tx1, tx2);
+            f32 tmax = sfr_fmaxf(tx1, tx2);
+            
+            const f32 ty1 = (node->minY - localOrigin.y) * localDirInv.y;
+            const f32 ty2 = (node->maxY - localOrigin.y) * localDirInv.y;
+            tmin = sfr_fmaxf(tmin, sfr_fminf(ty1, ty2));
+            tmax = sfr_fminf(tmax, sfr_fmaxf(ty1, ty2));
+
+            const f32 tz1 = (node->minZ - localOrigin.z) * localDirInv.z;
+            const f32 tz2 = (node->maxZ - localOrigin.z) * localDirInv.z;
+            tmin = sfr_fmaxf(tmin, sfr_fminf(tz1, tz2));
+            tmax = sfr_fminf(tmax, sfr_fmaxf(tz1, tz2));
+
+            // if missed box or box is further than current closest hit
+            if (tmax < tmin || tmax < 0 || tmin > hit.distance) {
+                if (tmax < tmin || tmax < 0) {
+                    continue; 
+                }
             }
 
-            // vv narrow phase vv
+            // leaf or internal
+            if (node->count > 0) { // leaf
+                for (i32 t = 0; t < node->count; t += 1) {
+                    const i32 baseInd = (node->leftFirst + t) * 9;
 
-            const i32 triCount = obj->mesh->vertCount / 9;
-            const i32 startTri = b * SFR__TRIS_PER_BOUNDS;
-            const i32 endTri = SFR_MIN(startTri + SFR__TRIS_PER_BOUNDS, triCount);
+                    sfrvec v0 = { obj->mesh->tris[baseInd + 0], obj->mesh->tris[baseInd + 1], obj->mesh->tris[baseInd + 2], 1.f };
+                    sfrvec v1 = { obj->mesh->tris[baseInd + 3], obj->mesh->tris[baseInd + 4], obj->mesh->tris[baseInd + 5], 1.f };
+                    sfrvec v2 = { obj->mesh->tris[baseInd + 6], obj->mesh->tris[baseInd + 7], obj->mesh->tris[baseInd + 8], 1.f };
 
-            for (i32 t = startTri; t < endTri; t += 1) {
-                const i32 baseInd = t * 9;
-                
-                // read vertices (local space)
-                sfrvec v0 = { obj->mesh->tris[baseInd + 0], obj->mesh->tris[baseInd + 1], obj->mesh->tris[baseInd + 2], 1.f };
-                sfrvec v1 = { obj->mesh->tris[baseInd + 3], obj->mesh->tris[baseInd + 4], obj->mesh->tris[baseInd + 5], 1.f };
-                sfrvec v2 = { obj->mesh->tris[baseInd + 6], obj->mesh->tris[baseInd + 7], obj->mesh->tris[baseInd + 8], 1.f };
+                    // transform to world space for the actual hit check
+                    v0 = sfr_mat_mul_vec(obj->_model, v0);
+                    v1 = sfr_mat_mul_vec(obj->_model, v1);
+                    v2 = sfr_mat_mul_vec(obj->_model, v2);
 
-                // transform to world space
-                // per triangle because the bounds are in world space, but the mesh is local
-                // so this handles scaling, rotation, and translation correctly
-                v0 = sfr_mat_mul_vec(obj->_model, v0);
-                v1 = sfr_mat_mul_vec(obj->_model, v1);
-                v2 = sfr_mat_mul_vec(obj->_model, v2);
-
-                f32 u = 0.f, v = 0.f;
-                // intersection test
-                if (sfr__intersect_triangle(rayOrigin, rayDir, v0, v1, v2, &hit.distance, &u, &v)) {
-                    hit.hit = 1;
-                    hit.objectInd = i;
-                    hit.triangleInd = t;
-                    hit.obj = obj;
-                    
-                    // calculate world pos
-                    hit.pos = sfr_vec_add(rayOrigin, sfr_vec_mul(rayDir, hit.distance));
-                    
-                    // calculate geometric normal (world space)
-                    hit.normal = sfr_vec_face_normal(v0, v1, v2);
+                    f32 u, v;
+                    if (sfr__intersect_triangle(rayOrigin, rayDir, v0, v1, v2, &hit.distance, &u, &v)) {
+                        hit.hit = 1;
+                        hit.objectInd = i;
+                        hit.triangleInd = node->leftFirst + t;
+                        hit.obj = obj;
+                        hit.pos = sfr_vec_add(rayOrigin, sfr_vec_mul(rayDir, hit.distance));
+                        hit.normal = sfr_vec_face_normal(v0, v1, v2);
+                    }
                 }
+            } else { // internal
+                stack[stackPtr++] = node->leftFirst;
+                stack[stackPtr++] = node->leftFirst + 1;
             }
         }
     }
