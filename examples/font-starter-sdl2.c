@@ -25,7 +25,7 @@ small example showing usage of a SfrFont struct and .srft file
 i32 main() {
     { // initialize sofren
         const i32 w = 1280 * RES_SCALE, h = 720 * RES_SCALE;
-        sfr_init(w, h, 50.f, malloc, free);
+        sfr_init(w, h, 50.f, malloc, free, realloc);
         sfr_set_lighting(0);
     }
 

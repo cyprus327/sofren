@@ -7,17 +7,16 @@ demonstrates:
     camera controller,
     a directional light,
     particle system,
-    resizeable SDL2 window
+    resizeable SDL2 window,
+    raycasting in a static scene
 
 */
 
 #define SFR_IMPL
 #define SFR_USE_SIMD
 #define SFR_THREAD_COUNT 8
-#define SFR_MAX_BINS_PER_TILE (1024 * 8)
-#define SFR_MAX_BINNED_TRIS (1024 * 16)
-#define SFR_TILE_WIDTH 64
-#define SFR_TILE_HEIGHT 64
+#define SFR_TILE_WIDTH 32
+#define SFR_TILE_HEIGHT 32
 #define SFR_MAX_WIDTH 1280
 #define SFR_MAX_HEIGHT 720
 #define SFR_MAX_LIGHTS 1
@@ -44,44 +43,40 @@ static struct {
     u8 turnUp, turnDown, turnLeft, turnRight;
 } inputs = {0};
 
-static SfrMesh* mesh;
-static SfrTexture* meshTex;
+static SfrScene* scene;
 static SfrTexture* cubeTex;
 static SfrFont* font;
 
-static SfrTexture* particleTex;
-static SfrParticleSystem particles;
+// made global for raycasting forward direction calculation
+static f32 camYaw = 0.f, camPitch = 0.f;
 
 i32 main() {    
     // initial window dimensions
     const i32 startWidth = 1280 * RES_SCALE, startHeight = 720 * RES_SCALE;
     
-    // initialize sofren, malloc needed to allocate buffers and free needed in case of error
+    // initialize sofren, function pointers needed to allocate / manage buffers
     // to update the window yourself, 'sfrPixelBuf[0] = 0xFFFFFFFF;' sets the first pixel to white
-    sfr_init(startWidth, startHeight, 50.f, malloc, free);
+    sfr_init(startWidth, startHeight, 70.f, malloc, free, realloc);
 
-    // load mesh, textures, font
-    mesh = sfr_load_mesh("examples/res/hawk.obj");
-    meshTex = sfr_load_texture("examples/res/hawk.bmp");
+    // load assets
     cubeTex = sfr_load_texture("examples/res/test.bmp");
-    particleTex = sfr_load_texture("examples/res/parrot.bmp");
     font = sfr_load_font("examples/res/basic-font.srft");
-    if (!mesh || !meshTex || !cubeTex || !particleTex || !font) {
-        sfr_release_mesh(&mesh);
-        sfr_release_texture(&meshTex);
-        sfr_release_texture(&cubeTex);
-        sfr_release_texture(&particleTex);
-        sfr_release_font(&font);
+    if (!cubeTex || !font) {
         return 1;
     }
 
-    // create particle system
-    const i64 particleBufSize = sizeof(SfrParticle) * 200;
-    SfrParticle* particleBuf = malloc(particleBufSize);
-    if (!particleBuf) {
-        SFR__ERR_EXIT("main: failed to allocate particleBuf, %ld bytes\n", particleBufSize);
-    }
-    particles = sfr_particles_create(particleBuf, particleBufSize / sizeof(SfrParticle), particleTex);
+    // load the scene with just one object
+    SfrSceneObject objects[1] = {
+        (SfrSceneObject){ // mesh and tex below don't get released in this example
+            .mesh = sfr_load_mesh("examples/res/hawk.obj"),
+            .tex = sfr_load_texture("examples/res/hawk.bmp"),
+            .col = 0xFFFFFFFF,
+            .rot   = (sfrvec){ .x = SFR_PI * 1.5f, .y = SFR_PI * 0.5f, .z = 0.f },
+            .pos   = (sfrvec){ .x = 0.f, .y = -5.f, .z = 9.f },
+            .scale = (sfrvec){ .x = 0.25f, .y = 0.25f, .z = 0.25f },
+        }
+    };
+    scene = sfr_scene_create(objects, 1);
 
     // add directional light
     const sfrvec lightDir = sfr_vec_normf(0.2f, 0.3f, -0.6f);
@@ -155,9 +150,7 @@ i32 main() {
     // cleanup and close SDL window
     sfr_release_font(&font);
     sfr_release_texture(&cubeTex);
-    sfr_release_texture(&meshTex);
-    sfr_release_texture(&particleTex);
-    sfr_release_mesh(&mesh);
+    sfr_scene_release(&scene, 0);
     sfr_release();
 
     SDL_DestroyTexture(sdlTex);
@@ -169,47 +162,13 @@ i32 main() {
 }
 
 static void draw(f32 time, f32 frameTime) {
-    u32 col;
     { // draw scene
-        static f32 timer = 0.f;
-        timer -= frameTime;
-        
-        if (timer <= -0.5f) {
-            timer += 3.5f;
-        } else if (timer <= 0.f) {
-            col = 0xFFFFFFFF;
-        } else if (timer <= 0.5f) {
-            col = 0xFFFF7777;
-        } else if (timer <= 1.f) {
-            col = 0xFF77FF77;
-        } else if (timer <= 1.5f) {
-            col = 0xFF7777FF;
-        } else if (timer <= 2.f) {
-            col = 0xFFFF0000;
-        } else if (timer <= 2.5f) {
-            col = 0xFF00FF00;
-        } else if (timer <= 3.f) {
-            col = 0xFF0000FF;
-        }
-    
-        // lighting settings
+        // enable lighting
         sfr_set_lighting(1);
 
-        // transparent hawk
+        // draw scene
         sfr_reset();
-        sfr_rotate_x(SFR_PI * 1.5f);
-        sfr_rotate_y(time);
-        sfr_scale(0.125f, 0.125f, 0.125f);
-        sfr_translate(-2.5f, -2.f, 8.f);
-        sfr_mesh(mesh, col, meshTex);
-    
-        // solid untextured hawk
-        sfr_reset();
-        sfr_rotate_x(SFR_PI * 1.5f);
-        sfr_rotate_y(time);
-        sfr_scale(0.125f, 0.125f, 0.125f);
-        sfr_translate(2.5f, -2.f, 8.f);
-        sfr_mesh(mesh, col, cubeTex);
+        sfr_scene_draw(scene);
     
         // textured cube
         sfr_reset();
@@ -226,35 +185,35 @@ static void draw(f32 time, f32 frameTime) {
         sfr_cube_inv(0xFFAABBCC, NULL);
     }
 
-    if (1) { // draw particle system
-        #ifdef SFR_MULTITHREADED
-            // because lighting changes
-            sfr_flush_and_wait();
-        #endif
-        sfr_set_lighting(0);
+    { // simple raycasting example, will only interact with the scene (hawk)
+        const sfrvec f = sfr_vec_normf(
+            -sinf(camYaw) * cosf(camPitch),
+            -sinf(camPitch),
+            cosf(camYaw) * cosf(camPitch));
+    
+        const SfrRayHit hit = sfr_scene_raycast(scene, sfrCamPos.x, sfrCamPos.y, sfrCamPos.z, f.x, f.y, f.z);
 
-        static f32 timer = 0.f;
-        timer += frameTime;
+        if (hit.hit) {
+            #ifdef SFR_MULTITHREADED
+                sfr_flush_and_wait();
+            #endif
 
-        if (timer >= 0.334f) {
-            timer -= 0.334f;
-            const f32 px = sfr_rand_flt(-3.f, 3.f);
-            const f32 py = sfr_rand_flt(0.f, 1.5f);
-            const f32 pz = sfr_rand_flt(7.f, 9.f);
-            for (i32 i = 0; i < 33; i += 1) {
-                sfr_particles_emit(&particles,
-                    px, py, pz,
-                    sfr_rand_flt(-3.f, 3.f), sfr_rand_flt(3.f, 5.f), sfr_rand_flt(-3.f, 3.f),
-                    0.f, -9.8f, 0.f,
-                    0.6f, 0.1f,
-                    col | 0xFF000000, col & 0x00FFFFFF,
-                    1.3f
-                );
-            }
+            const SfrSceneObject* const obj = &scene->objects[hit.objectInd];
+            
+            sfrMatModel = obj->_model;
+            sfrState.normalMatDirty = 1; 
+
+            const f32* t = &obj->mesh->tris[hit.triangleInd * 9];
+
+            sfr_triangle(
+                t[0], t[1], t[2],
+                t[3], t[4], t[5],
+                t[6], t[7], t[8],
+                0xFFFFFF00
+            );
+
+            sfr_reset();
         }
-
-        sfr_particles_update(&particles, frameTime);
-        sfr_particles_draw(&particles);
     }
 
     { // draw ui text
@@ -348,7 +307,6 @@ static void handle_resize(SDL_Window* window, SDL_Renderer* renderer, SDL_Textur
 static void handle_inputs(f32 frameTime) {
     const f32 camStandHeight = 1.f;
     static f32 camX = 0.f, camZ = 0.f, camY = 1.f;
-    static f32 camYaw = 0.f, camPitch = 0.f;
     static f32 camForwardSpeed = 0.f;
     static f32 camStrafeSpeed = 0.f;
     static f32 camUpSpeed = 0.f;

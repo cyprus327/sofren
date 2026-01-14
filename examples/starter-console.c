@@ -45,7 +45,7 @@ i32 main() {
             return 1;
         }
 
-        sfr_init(w, h, 80.f, malloc, free);
+        sfr_init(w, h, 80.f, malloc, free, realloc);
     
         const sfrvec l = sfr_vec_normf(-0.5f, 0.1f, -1.f);
         sfr_set_light(0, (SfrLight){
