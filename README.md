@@ -8,7 +8,8 @@ Sponza at 720p 60fps on an older laptop while recording
 <details>
   <summary>About...</summary>
   The model was loading using raylib's LoadModel function and then converted to sofren's structs,
-  and the textures were resized down to 128x128 from 1024x1024 (from profiling, like 40% of the
+  after which an SfrScene was created to allow for raycasting.
+  Additionally, textures were resized down to 128x128 from 1024x1024 (from profiling, like 40% of the
   program's time was just from cache misses so this was the "fix", mipmapping is on the TODO list).
 </details>
 
@@ -36,6 +37,7 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Single file with as few a 0 other headers, can be 100% standalone
 - Cross platform multithreading (Windows or pthreads)
 - Perspective correct texture mapping (currently only .bmp image support)
+- Efficient static scene rendering with fast raycasting (BVH)
 - Phong shading, with directional and sphere lights
 - Gouraud shading with a directional light
 - Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
@@ -102,10 +104,8 @@ For examples and good starting points rendering to an SDL2 window or console win
 #define SFR_THREAD_COUNT       // default of 1, i.e. single threaded
 #define SFR_TILE_WIDTH         // default of 64, in pixels
 #define SFR_TILE_HEIGHT        // default of 64, in pixels
-#define SFR_MAX_BINS_PER_TILE  // default of 8128, max tris that can be rendered on one screen tile 
-#define SFR_MAX_BINS_PER_FRAME // default of 256k, max tris that can be rendered per frame
 #define SFR_GEOMETRY_JOB_SIZE  // default of 64, number of tris per geometry job
-#define SFR_MAX_GEOMETRY_JOBS  // default of 8128, max mesh chunks that can be processed per frame
+#define SFR_BIN_PAGE_SIZE      // default of 4096, number of tris per page for tiles
 ```
 
 ## Global Variables
@@ -158,11 +158,11 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A current
 ``` 
 
 ## TODO / Upcoming Features / Known Bugs
+- Skeletal animation / some animation system
 - Mipmapping / memory optimizations, complex scenes are currently memory bound
 - Shadowmapping for static scenes
 - Further optimized rendering/rasterizing
 - Change to fixed point math, maybe
-- AA, maybe
 - Dynamic shadows, maybe maybe
 
 # License
