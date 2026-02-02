@@ -226,6 +226,7 @@ SFR_FUNC sfrvec sfr_vec_cross(sfrvec a, sfrvec b);
 SFR_FUNC sfrvec sfr_vec_norm(sfrvec v);
 SFR_FUNC sfrvec sfr_vec_normf(f32 x, f32 y, f32 z);
 SFR_FUNC sfrvec sfr_vec_face_normal(sfrvec a, sfrvec b, sfrvec c);
+SFR_FUNC sfrvec sfr_vec_lerp(sfrvec a, sfrvec b, f32 t);
 SFR_FUNC sfrmat sfr_mat_identity();
 SFR_FUNC sfrmat sfr_mat_rot_x(f32 a);
 SFR_FUNC sfrmat sfr_mat_rot_y(f32 a);
@@ -238,6 +239,9 @@ SFR_FUNC sfrvec sfr_mat_mul_vec(sfrmat m, sfrvec v);
 SFR_FUNC sfrmat sfr_mat_qinv(sfrmat m);
 SFR_FUNC sfrmat sfr_mat_look_at(sfrvec pos, sfrvec target, sfrvec up);
 SFR_FUNC void sfr_mat_decompose(sfrmat m, sfrvec* pos, sfrvec* rot, sfrvec* scale);
+SFR_FUNC sfrmat sfr_mat_from_quat(sfrvec q);
+SFR_FUNC sfrvec sfr_quat_mul(sfrvec a, sfrvec b);
+SFR_FUNC sfrvec sfr_quat_slerp(sfrvec a, sfrvec b, f32 t);
 
 //: core functions
 SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg,
@@ -288,9 +292,6 @@ SFR_FUNC SfrScene* sfr_scene_create(SfrSceneObject* objects, i32 count);
 SFR_FUNC void sfr_scene_release(SfrScene** scene, u8 freeObjects);
 SFR_FUNC void sfr_scene_draw(const SfrScene* scene);
 SFR_FUNC SfrRayHit sfr_scene_raycast(const SfrScene* scene, f32 ox, f32 oy, f32 oz, f32 dx, f32 dy, f32 dz);
-#ifdef SFR_USE_CGLTF
-    SFR_FUNC SfrScene* sfr_scene_from_model(const SfrModel* model);
-#endif
 
 // project the world position specified to screen coordinates
 SFR_FUNC u8 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY);
@@ -300,6 +301,15 @@ SFR_FUNC void sfr_set_camera(f32 x, f32 y, f32 z, f32 yaw, f32 pitch, f32 roll);
 SFR_FUNC void sfr_set_fov(f32 fovDeg); // update projection matrix with new fov
 SFR_FUNC void sfr_set_light(i32 id, SfrLight light); // update light at index id [0..SFR_MAX_LIGHTS)
 SFR_FUNC void sfr_set_lighting(u8 enabled);
+
+#ifdef SFR_USE_CGLTF
+    SFR_FUNC void sfr_model_animate(SfrModel* model, i32 animInd, f32 time);
+    SFR_FUNC SfrModel* sfr_load_gltf(const char* filename);
+    SFR_FUNC void sfr_model_draw(const SfrModel* model, sfrmat transform, const SfrTexture* overrideTex);
+    SFR_FUNC SfrScene* sfr_scene_from_model(const SfrModel* model);
+    SFR_FUNC void sfr_release_model(SfrModel** model);
+
+#endif
 
 // things requiring stdio
 #ifndef SFR_NO_STD
@@ -471,16 +481,66 @@ typedef struct sfrRayHit {
 
 #ifdef SFR_USE_CGLTF
 
+typedef enum SfrAnimPathType {
+    SFR_ANIM_PATH_TRANSLATION,
+    SFR_ANIM_PATH_ROTATION,
+    SFR_ANIM_PATH_SCALE
+} SfrAnimPathType;
+
+typedef struct SfrAnimSampler {
+    f32* inputs;  // times
+    f32* outputs; // values
+    i32 count;
+} SfrAnimSampler;
+
+typedef struct SfrAnimChannel {
+    i32 transformNodeInd; // into model->transforms
+    i32 samplerInd;
+    SfrAnimPathType path;
+} SfrAnimChannel;
+
+typedef struct SfrAnimation {
+    char* name;
+    f32 duration;
+    
+    SfrAnimSampler* samplers;
+    i32 samplerCount;
+    
+    SfrAnimChannel* channels;
+    i32 channelCount;
+} SfrAnimation;
+
+typedef struct SfrTransformNode {
+    // Local transform components
+    sfrvec localPos;
+    sfrvec localRot; // Quaternion
+    sfrvec localScale;
+
+    // Hierarchy
+    i32 parentInd;
+    
+    // Cached matrices
+    sfrmat localMatrix;
+    sfrmat worldMatrix;
+} SfrTransformNode;
+
 typedef struct sfrModelNode {
     SfrMesh* mesh;
-    sfrmat transform;
     SfrTexture* tex;
+    i32 transformInd; // Link to the scene graph hierarchy
 } SfrModelNode;
 
 typedef struct sfrModel {
-    SfrModelNode* nodes;
+    SfrModelNode* nodes; // Renderable parts (primitives)
     i32 nodeCount;
 
+    SfrTransformNode* transforms; // Hierarchy logic (1:1 with glTF nodes)
+    i32 transformCount;
+
+    SfrAnimation* animations;
+    i32 animCount;
+
+    // Resource tracking for cleanup
     SfrMesh** _allMeshes;
     i32 _meshCount;
     SfrTexture** _allTextures;
@@ -1022,6 +1082,10 @@ SFR_FUNC sfrvec sfr_vec_face_normal(sfrvec a, sfrvec b, sfrvec c) {
     return sfr_vec_norm(sfr_vec_cross(edge1, edge2));
 }
 
+SFR_FUNC sfrvec sfr_vec_lerp(sfrvec a, sfrvec b, f32 t) {
+    return sfr_vec_add(a, sfr_vec_mul(sfr_vec_sub(b, a), t));
+}
+
 SFR_FUNC sfrmat sfr_mat_identity() {
     sfrmat r = {0};
     r.m[0][0] = 1.f;
@@ -1246,6 +1310,65 @@ SFR_FUNC void sfr_mat_decompose(sfrmat m, sfrvec* pos, sfrvec* rot, sfrvec* scal
         }
         rot->w = 0.f;
     }
+}
+
+SFR_FUNC sfrmat sfr_mat_from_quat(sfrvec q) {
+    sfrmat m = SFR__MAT_IDENTITY;
+    const f32 x = q.x, y = q.y, z = q.z, w = q.w;
+    const f32 x2 = x + x, y2 = y + y, z2 = z + z;
+    const f32 xx = x * x2, xy = x * y2, xz = x * z2;
+    const f32 yy = y * y2, yz = y * z2, zz = z * z2;
+    const f32 wx = w * x2, wy = w * y2, wz = w * z2;
+
+    m.m[0][0] = 1.f - (yy + zz);
+    m.m[0][1] = xy + wz;
+    m.m[0][2] = xz - wy;
+    m.m[0][3] = 0.f;
+
+    m.m[1][0] = xy - wz;
+    m.m[1][1] = 1.f - (xx + zz);
+    m.m[1][2] = yz + wx;
+    m.m[1][3] = 0.f;
+
+    m.m[2][0] = xz + wy;
+    m.m[2][1] = yz - wx;
+    m.m[2][2] = 1.f - (xx + yy);
+    m.m[2][3] = 0.f;
+    
+    m.m[3][3] = 1.f;
+    return m;
+}
+
+SFR_FUNC sfrvec sfr_quat_mul(sfrvec a, sfrvec b) {
+    sfrvec r;
+    r.x =  a.x * b.w + a.y * b.z - a.z * b.y + a.w * b.x;
+    r.y = -a.x * b.z + a.y * b.w + a.z * b.x + a.w * b.y;
+    r.z =  a.x * b.y - a.y * b.x + a.z * b.w + a.w * b.z;
+    r.w = -a.x * b.x - a.y * b.y - a.z * b.z + a.w * b.w;
+    return r;
+}
+
+SFR_FUNC sfrvec sfr_quat_slerp(sfrvec a, sfrvec b, f32 t) {
+    f32 dot = sfr_vec_dot(a, b);
+    if (dot < 0.f) {
+        b = sfr_vec_mul(b, -1.f);
+        dot = -dot;
+    }
+
+    if (dot > 0.9995f) {
+        // lerp for close angles
+        return sfr_vec_norm(sfr_vec_lerp(a, b, t));
+    }
+
+    const f32 theta0 = acosf(dot);
+    const f32 theta = theta0 * t;
+    const f32 sinTheta = sinf(theta);
+    const f32 sinTheta0 = sinf(theta0);
+
+    const f32 s0 = cosf(theta) - dot * sinTheta / sinTheta0;
+    const f32 s1 = sinTheta / sinTheta0;
+
+    return sfr_vec_add(sfr_vec_mul(a, s0), sfr_vec_mul(b, s1));
 }
 
 
@@ -3278,6 +3401,7 @@ SFR_FUNC void sfr_scene_release(SfrScene** scene, u8 freeObjects) {
     *scene = NULL;
 }
 
+// TODO don't fully overwrite sfrMatModel (see sfr_model_draw)
 SFR_FUNC void sfr_scene_draw(const SfrScene* scene) {
     const sfrmat savedModel = sfrMatModel;
     const sfrmat savedNormal = sfrState.matNormal;
@@ -3399,38 +3523,6 @@ SFR_FUNC SfrRayHit sfr_scene_raycast(const SfrScene* scene, f32 ox, f32 oy, f32 
     return hit;
 }
 
-#ifdef SFR_USE_CGLTF
-
-SFR_FUNC SfrScene* sfr_scene_from_model(const SfrModel* model) {
-    if (!model || model->nodeCount <= 0) {
-        SFR__ERR_RET(NULL, "sfr_scene_from_model: !model (%p) || model->nodeCount <= 0 (%d)\n",
-            model, model ? model->nodeCount : 0);
-    }
-
-    // array for scene objects
-    SfrSceneObject* objs = (SfrSceneObject*)sfrMalloc(sizeof(SfrSceneObject) * model->nodeCount);
-    if (!objs) {
-        SFR__ERR_RET(NULL, "sfr_scene_from_model: failed to allocate objs (%ld bytes)\n",
-            (u64)(sizeof(SfrSceneObject) * model->nodeCount));
-    }
-
-    for (i32 i = 0; i < model->nodeCount; i += 1) {
-        const SfrModelNode* const node = &model->nodes[i];
-        SfrSceneObject* const obj = &objs[i];
-        
-        obj->mesh = node->mesh;
-        obj->tex  = node->tex ? node->tex : &sfrState.baseTex;
-        obj->col  = 0xFFFFFFFF; // TODO pass color instead of just white
-
-        // decompose into pos/rot/scale so sfr_scene_create can correctly build everything
-        sfr_mat_decompose(node->transform, &obj->pos, &obj->rot, &obj->scale);
-    }
-
-    return sfr_scene_create(objs, model->nodeCount);
-}
-
-#endif // SFR_USE_CGLTF
-
 SFR_FUNC u8 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY) {
     sfrvec p = {x, y, z, 1.f};
     p = sfr_mat_mul_vec(sfrMatView, p);
@@ -3487,83 +3579,81 @@ SFR_FUNC void sfr_set_lighting(u8 enabled) {
 
 #ifdef SFR_USE_CGLTF
 
-// helper to recursively calculate global world transform
-// sofren uses row vectors (v' = v * m), so global = local * parent
-SFR_FUNC sfrmat sfr__gltf_get_world_transform(const cgltf_node* const node) {
-    // calculate local transform
-    sfrmat localMat;
-    if (node->has_matrix) {
-        // gltf is column major, [0,1,2] = x, [4,5,6] = y, [8,9,10] = z, [12,13,14] = trans
-        // sofren is row major,   row 0  = x,  row 1  = y,  row 2   = z,  row 3     = trans
+SFR_FUNC void sfr_model_animate(SfrModel* model, i32 animInd, f32 time) {
+    if (!model) {
+        SFR__ERR_RET(, "sfr_model_animate: model is NULL\n");
+    }
+    if (animInd < 0 || animInd >= model->animCount) {
+        SFR__ERR_RET(, "sfr_model_animate: animInd (%d) out of bounds [%d, %d)\n", animInd, 0, model->animCount);
+    }
+
+    const SfrAnimation* const anim = &model->animations[animInd];
+    
+    // loop
+    if (anim->duration > SFR_EPSILON) {
+        time = sfr_fmodf(time, anim->duration);
+    }
+
+    // vv update local transforms from channels vv
+    for (i32 i = 0; i < anim->channelCount; i += 1) {
+        const SfrAnimChannel* const channel = &anim->channels[i];
+        const SfrAnimSampler* const sampler = &anim->samplers[channel->samplerInd];
+        SfrTransformNode* const node = &model->transforms[channel->transformNodeInd];
+
+        // find frame
+        i32 f0 = 0, f1 = 0;
+        f32 t = 0.f;
         
-        // row 0 (x)
-        localMat.m[0][0] = node->matrix[0];
-        localMat.m[0][1] = node->matrix[1];
-        localMat.m[0][2] = node->matrix[2];
-        localMat.m[0][3] = 0.f;
-
-        // row 1 (y)
-        localMat.m[1][0] = node->matrix[4];
-        localMat.m[1][1] = node->matrix[5];
-        localMat.m[1][2] = node->matrix[6];
-        localMat.m[1][3] = 0.f;
-
-        // row 2 (z)
-        localMat.m[2][0] = node->matrix[8];
-        localMat.m[2][1] = node->matrix[9];
-        localMat.m[2][2] = node->matrix[10];
-        localMat.m[2][3] = 0.f;
-
-        // row 3 (trans)
-        localMat.m[3][0] = node->matrix[12];
-        localMat.m[3][1] = node->matrix[13];
-        localMat.m[3][2] = node->matrix[14];
-        localMat.m[3][3] = 1.f;
-    } else {
-        const sfrmat t = node->has_translation ?
-            sfr_mat_translate(node->translation[0], node->translation[1], node->translation[2]) : sfr_mat_identity();
-        const sfrmat s = node->has_scale ?
-            sfr_mat_scale(node->scale[0], node->scale[1], node->scale[2]) : sfr_mat_identity();
-            
-        sfrmat r = sfr_mat_identity();
-        if (node->has_rotation) {
-            // convert gltf quat to rotation matrix
-            const f32 x = node->rotation[0], y = node->rotation[1], z = node->rotation[2], w = node->rotation[3];
-            
-            // standard quaternion to matrix conversion
-            r.m[0][0] = 1.f -2.f * (y * y + z * z);
-            r.m[0][1] = 2.f * (x * y + z * w);
-            r.m[0][2] = 2.f * (x * z - y * w);
-            r.m[0][3] = 0.f;
-            
-            r.m[1][0] = 2.f * (x * y - z * w);
-            r.m[1][1] = 1.f - 2.f * (x * x + z * z);
-            r.m[1][2] = 2.f * (y * z + x * w);
-            r.m[1][3] = 0.f;
-            
-            r.m[2][0] = 2.f * (x * z + y * w);
-            r.m[2][1] = 2.f * (y * z - x * w);
-            r.m[2][2] = 1.f - 2.f * (x * x + y * y);
-            r.m[2][3] = 0.f;
-
-            r.m[3][0] = 0.f;
-            r.m[3][1] = 0.f;
-            r.m[3][2] = 0.f;
-            r.m[3][3] = 1.f;
+        if (time <= sampler->inputs[0]) {
+            f0 = f1 = 0;
+        } else if (time >= sampler->inputs[sampler->count - 1]) {
+            f0 = f1 = sampler->count - 1;
+        } else {
+            for (i32 k = 0; k < sampler->count - 1; k += 1) {
+                if (time >= sampler->inputs[k] && time < sampler->inputs[k+1]) {
+                    f0 = k;
+                    f1 = k + 1;
+                    t = (time - sampler->inputs[k]) / (sampler->inputs[k+1] - sampler->inputs[k]);
+                    break;
+                }
+            }
         }
+
+        const sfrvec* const values = (const sfrvec* const)sampler->outputs;
+        const sfrvec v0 = values[f0];
+        const sfrvec v1 = values[f1];
+
+        switch (channel->path) {
+            case SFR_ANIM_PATH_ROTATION: {
+                node->localRot = sfr_quat_slerp(v0, v1, t);
+            } break;
+            case SFR_ANIM_PATH_TRANSLATION: {
+                node->localPos = sfr_vec_lerp(v0, v1, t);
+            } break;
+            case SFR_ANIM_PATH_SCALE: {
+                node->localScale = sfr_vec_lerp(v0, v1, t);
+            } break;
+        }
+    }
+
+    // vv recompute hierarchy vv
+    for (i32 i = 0; i < model->transformCount; i += 1) {
+        SfrTransformNode* node = &model->transforms[i];
+
+        // reconstruct local matrix
+        const sfrmat scale = sfr_mat_scale(node->localScale.x, node->localScale.y, node->localScale.z);
+        const sfrmat rot   = sfr_mat_from_quat(node->localRot);
+        const sfrmat trans = sfr_mat_translate(node->localPos.x, node->localPos.y, node->localPos.z);
         
-        // scale rotate translate
-        localMat = sfr_mat_mul(s, sfr_mat_mul(r, t));
-    }
+        // multiply order S * R * T
+        node->localMatrix = sfr_mat_mul(scale, sfr_mat_mul(rot, trans));
 
-    // multiply by parent if needed
-    if (node->parent) {
-        sfrmat parentMat = sfr__gltf_get_world_transform(node->parent);
-        // v' = v * local * parent
-        return sfr_mat_mul(localMat, parentMat);
+        if (node->parentInd >= 0) {
+            node->worldMatrix = sfr_mat_mul(node->localMatrix, model->transforms[node->parentInd].worldMatrix);
+        } else {
+            node->worldMatrix = node->localMatrix;
+        }
     }
-
-    return localMat;
 }
 
 SFR_FUNC SfrModel* sfr_load_gltf(const char* filename) {
@@ -3666,6 +3756,53 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename) {
         SKIP:;
     #endif
 
+    // vv build transform hierarchy (1:1 with gltf nodes) vv
+    model->transforms = (SfrTransformNode*)sfrMalloc(sizeof(SfrTransformNode) * data->nodes_count);
+    model->transformCount = (i32)data->nodes_count;
+
+    for (i32 i = 0; i < model->transformCount; i += 1) {
+        const cgltf_node* const cnode = &data->nodes[i];
+        SfrTransformNode* const tnode = &model->transforms[i];
+
+        // init transforms
+        if (cnode->has_translation) {
+            tnode->localPos = (sfrvec){cnode->translation[0], cnode->translation[1], cnode->translation[2], 1.f};
+        } else {
+            tnode->localPos = (sfrvec){0.f, 0.f, 0.f, 1.f};
+        }
+        if (cnode->has_rotation) {
+            tnode->localRot = (sfrvec){cnode->rotation[0], cnode->rotation[1], cnode->rotation[2], cnode->rotation[3]};
+        } else {
+            tnode->localRot = (sfrvec){0.f, 0.f, 0.f, 1.f};
+        }
+        if (cnode->has_scale) {
+            tnode->localScale = (sfrvec){cnode->scale[0], cnode->scale[1], cnode->scale[2], 1.f};
+        } else {
+            tnode->localScale = (sfrvec){1.f, 1.f, 1.f, 1.f};
+        }
+
+        // parent ind
+        tnode->parentInd = -1;
+        if (cnode->parent) {
+            tnode->parentInd = (i32)(cnode->parent - data->nodes);
+        }
+
+        // calculate initial local matrix
+        const sfrmat scale = sfr_mat_scale(tnode->localScale.x, tnode->localScale.y, tnode->localScale.z);
+        const sfrmat rot   = sfr_mat_from_quat(tnode->localRot);
+        const sfrmat trans = sfr_mat_translate(tnode->localPos.x, tnode->localPos.y, tnode->localPos.z);
+        
+        // multiply order S * R * T
+        tnode->localMatrix = sfr_mat_mul(scale, sfr_mat_mul(rot, trans));
+        
+        // initial world matrix
+        if (tnode->parentInd >= 0) {
+            tnode->worldMatrix = sfr_mat_mul(tnode->localMatrix, model->transforms[tnode->parentInd].worldMatrix);
+        } else {
+            tnode->worldMatrix = tnode->localMatrix;
+        }
+    }
+
     // vv count primitives with each becoming an SfrModelNode vv
     i32 totalPrimitives = 0;
     for (cgltf_size i = 0; i < data->nodes_count; i += 1) {
@@ -3688,9 +3825,6 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename) {
         if (!node->mesh) {
             continue;
         }
-
-        // calculate world transform (baked parent hierarchy)
-        sfrmat worldMat = sfr__gltf_get_world_transform(node);
 
         for (cgltf_size p = 0; p < node->mesh->primitives_count; p += 1) {
             const cgltf_primitive* const prim = &node->mesh->primitives[p];
@@ -3730,7 +3864,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename) {
             sm->uvs     = (f32*)sfrMalloc(sizeof(f32) * count * 2);
             if (!sm->tris || !sm->normals || !sm->uvs) {
                 // TODO memory leak
-                SFR__ERR_RET(NULL, "sfr_load_gltf: failed to allocate sm buffers (%ld, %ld, %ld bytes)\n",
+                SFR__ERR_RET(NULL, "sfr_load_gltf: failed to allocate mesh buffers (%ld, %ld, %ld bytes)\n",
                     (u64)(sizeof(f32) * sm->vertCount), (u64)(sizeof(f32) * sm->vertCount), (u64)(sizeof(f32) * count * 2));
             }
 
@@ -3766,8 +3900,8 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename) {
 
             // vv assign to model node vv
             model->nodes[currentNodeInd].mesh = sm;
-            model->nodes[currentNodeInd].transform = worldMat;
             model->nodes[currentNodeInd].tex = NULL;
+            model->nodes[currentNodeInd].transformInd = i;
 
             // vv assign texture for this specific primitive vv
             #ifdef SFR_USE_STB_IMAGE
@@ -3788,13 +3922,71 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename) {
             currentNodeInd += 1;
         }
     }
-    
-    // update actual count in case some primitives were skipped (not triangles)
+
     model->nodeCount = currentNodeInd;
     model->_meshCount = currentNodeInd;
 
+    // vv load animations vv
+    model->animCount = (i32)data->animations_count;
+    if (model->animCount > 0) {
+        model->animations = (SfrAnimation*)sfrMalloc(sizeof(SfrAnimation) * model->animCount);
+        
+        for (i32 i = 0; i < model->animCount; i += 1) {
+            const cgltf_animation* const ca = &data->animations[i];
+            SfrAnimation* const sa = &model->animations[i];
+            
+            sa->duration = 0.f;
+            sa->samplerCount = (i32)ca->samplers_count;
+            sa->channelCount = (i32)ca->channels_count;
+            sa->samplers = (SfrAnimSampler*)sfrMalloc(sizeof(SfrAnimSampler) * sa->samplerCount);
+            sa->channels = (SfrAnimChannel*)sfrMalloc(sizeof(SfrAnimChannel) * sa->channelCount);
+
+            for (i32 j = 0; j < sa->samplerCount; j += 1) {
+                const cgltf_animation_sampler* const cs = &ca->samplers[j];
+                SfrAnimSampler* const ss = &sa->samplers[j];
+                
+                ss->count = (i32)cs->input->count;
+                ss->inputs = (f32*)sfrMalloc(sizeof(f32) * ss->count);
+                ss->outputs = (f32*)sfrMalloc(sizeof(f32) * ss->count * 4);
+
+                for (i32 k = 0; k < ss->count; k += 1) {
+                    cgltf_accessor_read_float(cs->input, k, &ss->inputs[k], 1);
+                    cgltf_accessor_read_float(cs->output, k, &ss->outputs[k * 4], 4);
+                }
+
+                if (ss->count > 0 && ss->inputs[ss->count - 1] > sa->duration) {
+                    sa->duration = ss->inputs[ss->count - 1];
+                }
+            }
+
+            for (i32 j = 0; j < sa->channelCount; j += 1) {
+                const cgltf_animation_channel* const cc = &ca->channels[j];
+                SfrAnimChannel* const sc = &sa->channels[j];
+                
+                sc->transformNodeInd = (i32)(cc->target_node - data->nodes);
+                sc->samplerInd = (i32)(cc->sampler - ca->samplers);
+                
+                switch (cc->target_path) {
+                    case cgltf_animation_path_type_translation: {
+                        sc->path = SFR_ANIM_PATH_TRANSLATION;
+                    } break;
+                    case cgltf_animation_path_type_rotation: {
+                        sc->path = SFR_ANIM_PATH_ROTATION;
+                    } break;
+                    case cgltf_animation_path_type_scale: {
+                        sc->path = SFR_ANIM_PATH_SCALE;
+                    } break;
+                    default: break;
+                }
+            }
+        }
+    } else {
+        model->animations = NULL;
+    }
+
     cgltf_free(data);
     sfrFree(fileContent);
+
     return model;
 }
 
@@ -3808,12 +4000,14 @@ SFR_FUNC void sfr_model_draw(const SfrModel* model, sfrmat transform, const SfrT
     const u8 savedDirty = sfrState.normalMatDirty;
 
     for (i32 i = 0; i < model->nodeCount; i += 1) {
-        sfrMatModel = sfr_mat_mul(transform, model->nodes[i].transform);
+        const sfrmat localWorld = model->transforms[model->nodes[i].transformInd].worldMatrix;
+        
+        const sfrmat m = sfr_mat_mul(localWorld, transform);
+        sfrMatModel = sfr_mat_mul(m, savedModel);
         sfrState.normalMatDirty = 1;
-        sfr__update_normal_mat();
-        sfr_mesh(model->nodes[i].mesh, 0xFFFFFFFF, overrideTex ?
-            overrideTex : 
-            (model->nodes[i].tex ? model->nodes[i].tex : &sfrState.baseTex));
+        
+        const SfrTexture* tex = overrideTex ? overrideTex : (model->nodes[i].tex ? model->nodes[i].tex : &sfrState.baseTex);
+        sfr_mesh(model->nodes[i].mesh, 0xFFFFFFFF, tex);
     }
 
     sfrMatModel = savedModel;
@@ -3821,30 +4015,68 @@ SFR_FUNC void sfr_model_draw(const SfrModel* model, sfrmat transform, const SfrT
     sfrState.normalMatDirty = savedDirty;
 }
 
-SFR_FUNC void sfr_release_model(SfrModel** model) {
-    if (!model || !(*model)) {
-        return;
+// lossy because of sfr_mat_decompose so might not work perfectly
+SFR_FUNC SfrScene* sfr_scene_from_model(const SfrModel* model) {
+    if (!model || model->nodeCount <= 0) {
+        SFR__ERR_RET(NULL, "sfr_scene_from_model: !model (%p) || model->nodeCount <= 0 (%d)\n", model, model ? model->nodeCount : 0);
     }
+
+    SfrSceneObject* objs = (SfrSceneObject*)sfrMalloc(sizeof(SfrSceneObject) * model->nodeCount);
+    if (!objs) {
+        SFR__ERR_RET(NULL, "sfr_scene_from_model: failed to allocate objs\n");
+    }
+
+    for (i32 i = 0; i < model->nodeCount; i += 1) {
+        SfrSceneObject* const obj = &objs[i];
+        
+        obj->mesh = model->nodes[i].mesh;
+        obj->tex  = model->nodes[i].tex ? model->nodes[i].tex : &sfrState.baseTex;
+        obj->col  = 0xFFFFFFFF;
+
+        sfr_mat_decompose(model->transforms[model->nodes[i].transformInd].worldMatrix, &obj->pos, &obj->rot, &obj->scale);
+    }
+
+    return sfr_scene_create(objs, model->nodeCount);
+}
+
+SFR_FUNC void sfr_release_model(SfrModel** model) {
+    if (!model || !(*model)) return;
 
     SfrModel* m = *model;
     
+    // meshes
     for (i32 i = 0; i < m->_meshCount; i += 1) {
         sfr_release_mesh(&m->_allMeshes[i]);
     }
     sfrFree(m->_allMeshes);
 
+    // textures
     if (m->_allTextures) {
         for (i32 i = 0; i < m->_texCount; i += 1) {
-            if (m->_allTextures[i]) {
-                sfr_release_texture(&m->_allTextures[i]);
-            }
+            if (m->_allTextures[i]) sfr_release_texture(&m->_allTextures[i]);
         }
         sfrFree(m->_allTextures);
     }
 
+    // animation data
+    if (m->animations) {
+        for (i32 i = 0; i < m->animCount; i += 1){
+            sfrFree(m->animations[i].samplers->inputs);
+            sfrFree(m->animations[i].samplers->outputs);
+            sfrFree(m->animations[i].samplers);
+            sfrFree(m->animations[i].channels);
+        }
+        sfrFree(m->animations);
+    }
+    
+    // hierarchy
+    if (m->transforms) {
+        sfrFree(m->transforms);
+    }
     if (m->nodes) {
         sfrFree(m->nodes);
     }
+    
     sfrFree(m);
     *model = NULL;
 }
