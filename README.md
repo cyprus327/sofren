@@ -9,6 +9,9 @@ Sponza at 720p 60fps on an older laptop while recording
   <summary>About...</summary>
   The model was loading using raylib's LoadModel function and then converted to sofren's structs,
   after which an SfrScene was created to allow for raycasting.
+
+  In newer versions, this model would've been loaded with the built in function that uses cgltf.
+
   Additionally, textures were resized down to 128x128 from 1024x1024 (from profiling, like 40% of the
   program's time was just from cache misses so this was the "fix", mipmapping is on the TODO list).
   If you're wondering why the triangle count is changing when nothing is moving, it changes because
@@ -47,9 +50,10 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Gouraud shading with a directional light
 - Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
 - OBJ mesh loading (requires `stdio.h`)
+- GLB / GLTF model loading (requires `optional/cgltf.h` (with `optional/stb_image.h` for textures))
 - Customizable math implementations (system or bundled)
 - Primitive drawing (triangles, cubes, billboards)
-- ARGB8888 color format support
+- ARGB8888 color format support (alpha currently unused)
 - Repeated or clamped textures
 - Backface culling, depth buffering, and clipping
 - Simplistic design, quick to learn and use
@@ -111,6 +115,12 @@ For examples and good starting points rendering to an SDL2 window or console win
 #define SFR_TILE_HEIGHT        // default of 64, in pixels
 #define SFR_GEOMETRY_JOB_SIZE  // default of 64, number of tris per geometry job
 #define SFR_BIN_PAGE_SIZE      // default of 4096, number of tris per page for tiles
+
+// glb / gltf related
+#define SFR_USE_CGLTF      // have model loading via cgltf
+#define SFR_USE_STB_IMAGE  // support all image types via stb_image (not just .bmp)
+#define SFR_CGLTF_PATH     // where cgltf.h is (used as #include SFR_CGLTF_PATH)
+#define SFR_STB_IMAGE_PATH // where stb_image.h is (used as #include SFR_STB_IMAGE_PATH)
 ```
 
 ## Global Variables
