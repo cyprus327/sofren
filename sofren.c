@@ -1,7 +1,3 @@
-#define SFR_IMPL
-#define SFR_USE_CGLTF
-#define SFR_USE_STB_IMAGE
-
 #ifndef SFR_H
 #define SFR_H
 
@@ -304,7 +300,7 @@ SFR_FUNC void sfr_set_lighting(u8 enabled);
 
 #ifdef SFR_USE_CGLTF
     SFR_FUNC void sfr_model_animate(SfrModel* model, i32 animInd, f32 time);
-    SFR_FUNC SfrModel* sfr_load_gltf(const char* filename);
+    SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel);
     SFR_FUNC void sfr_model_draw(const SfrModel* model, sfrmat transform, const SfrTexture* overrideTex);
     SFR_FUNC SfrScene* sfr_scene_from_model(const SfrModel* model);
     SFR_FUNC void sfr_release_model(SfrModel** model);
@@ -3656,7 +3652,7 @@ SFR_FUNC void sfr_model_animate(SfrModel* model, i32 animInd, f32 time) {
     }
 }
 
-SFR_FUNC SfrModel* sfr_load_gltf(const char* filename) {
+SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
     // vv read file vv
     FILE* file = fopen(filename, "rb");
     if (!file) {
@@ -3843,7 +3839,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename) {
                         normA = prim->attributes[a].data;
                     } break;
                     case cgltf_attribute_type_texcoord: {
-                        if (0 == prim->attributes[a].index) { // don't take lightmap uvs
+                        if (uvChannel == prim->attributes[a].index) {
                             uvA = prim->attributes[a].data;
                         }
                     } break;
