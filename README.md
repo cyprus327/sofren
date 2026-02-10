@@ -4,6 +4,20 @@
 
 ---
 
+<details>
+  <summary>About...</summary>
+  Lighting baked in Blender, exported to .glb, and loaded using sofren's cgltf wrapper (sfr_load_model).
+  
+  This is meant to show that lightmaps work in sofren, allowing for much better lighting than would otherwise be possible when rasterizing at high resolutions.
+  
+  Background skybox from [here](https://bumbadida.itch.io/skybox-textures-sdr).
+
+  The scene is being rendered at 1280x720 235fps.
+</details>
+<img width="1274" height="714" alt="cornellbox" src="https://github.com/user-attachments/assets/137517ac-d80d-4d9d-bb74-eccc85dca6a8" />
+
+---
+
 Sponza at 720p 60fps on an older laptop while recording
 <details>
   <summary>About...</summary>
@@ -15,19 +29,11 @@ Sponza at 720p 60fps on an older laptop while recording
   Additionally, textures were resized down to 128x128 from 1024x1024 (from profiling, like 40% of the
   program's time was just from cache misses so this was the "fix", mipmapping is on the TODO list).
   If you're wondering why the triangle count is changing when nothing is moving, it changes because
-  the text is just comprised of triangles in the very extremely super advanced .srft font format, and
+  the text showing FPS and the triangle count is comprised of triangles (.srft font format), and
   these triangles are still taken into account when counting triangles rendered.
 </details>
 
 https://github.com/user-attachments/assets/c11733d0-74b1-42f1-ad72-7a49711e4004
-
-*All of the following were originally at 1280x720, however the GIF quality is forced to be lower*
-
-[*examples/full-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/full-sdl2.c)
-
-*NOTE this gif is really old from when the renderer still just had flat shading, the Sponza video above is relatively recent*
-
-![birds demo](https://github.com/user-attachments/assets/73646581-9351-4320-b029-6f31cd42f79f)
 
 [*examples/font-starter-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/font-starter-sdl2.c)
 
@@ -44,8 +50,9 @@ For examples and good starting points rendering to an SDL2 window or console win
 ## Features
 - Single file with as few a 0 other headers, can be 100% standalone
 - Cross platform multithreading (Windows or pthreads)
-- Perspective correct texture mapping (currently only .bmp image support)
+- Perspective correct texture mapping (currently only .bmp image support unless `optional/stb_image.h` is used)
 - Efficient static scene rendering with fast raycasting (BVH)
+- SIMD rasterizing loop (or scalar fallback if SIMD is unavailable)
 - Phong shading, with directional and sphere lights
 - Gouraud shading with a directional light
 - Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
@@ -53,6 +60,7 @@ For examples and good starting points rendering to an SDL2 window or console win
 - GLB / GLTF model loading (requires `optional/cgltf.h` (with `optional/stb_image.h` for textures))
 - Customizable math implementations (system or bundled)
 - Primitive drawing (triangles, cubes, billboards)
+- Skyboxes (cubemaps not spheremaps)
 - ARGB8888 color format support (alpha currently unused)
 - Repeated or clamped textures
 - Backface culling, depth buffering, and clipping
@@ -61,7 +69,7 @@ For examples and good starting points rendering to an SDL2 window or console win
 ## Pre Processing Configuration 
 ```c
 // the default values are the opposite of the macro unless otherwise stated,
-// e.g. functions aren't inline by default
+// e.g. functions aren't inline by default and SIMD is enabled by default
 
 // indicate declaration of functions, only define this in one file
 #define SFR_IMPL
@@ -74,8 +82,8 @@ For examples and good starting points rendering to an SDL2 window or console win
 // disable culling triangles
 #define SFR_NO_CULLING
 
-// whether or not to use SSE 4.1 intrinsics
-#define SFR_USE_SIMD
+// whether or not to use SIMD (immintrin.h)
+#define SFR_NO_SIMD
 
 // whether or not to use expensive but pretty phong shading
 // defaults to goraud shading using one directional light (sfrLights[0]) otherwise
@@ -173,7 +181,7 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A current
 ``` 
 
 ## TODO / Upcoming Features / Known Bugs
-- Skeletal animation / some animation system
+- Skeletal animation / some improved animation system
 - Mipmapping / memory optimizations, complex scenes are currently memory bound
 - Shadowmapping for static scenes
 - Further optimized rendering/rasterizing
