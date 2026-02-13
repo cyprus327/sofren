@@ -53,7 +53,6 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Perspective correct texture mapping (currently only .bmp image support unless `optional/stb_image.h` is used)
 - Efficient static scene rendering with fast raycasting (BVH)
 - SIMD rasterizing loop (or scalar fallback if SIMD is unavailable)
-- Phong shading, with directional and sphere lights
 - Gouraud shading with a directional light
 - Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
 - OBJ mesh loading (requires `stdio.h`)
@@ -84,10 +83,6 @@ For examples and good starting points rendering to an SDL2 window or console win
 
 // whether or not to use SIMD (immintrin.h)
 #define SFR_NO_SIMD
-
-// whether or not to use expensive but pretty phong shading
-// defaults to goraud shading using one directional light (sfrLights[0]) otherwise
-#define SFR_USE_PHONG
 
 // types are defined as things like 'i32' or 'u64' internally,
 // if this causes some issue define this for types
@@ -145,8 +140,8 @@ extern i32 sfrWidth, sfrHeight;
 extern u32* sfrPixelBuf;
 extern f32* sfrDepthBuf;
 
-// of size SFR_MAX_LIGHTS, just an array of all the light sources
-extern SfrLight* sfrLights;
+// directional light for gouraud shading
+extern SfrLight sfrLight;
 
 // how many triangles have been rasterized since the last call to clear
 // atomic since it is updated by multiple threads when multithreading is enabled

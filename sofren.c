@@ -1,14 +1,18 @@
+#define SFR_IMPL
+#define SFR_THREAD_COUNT 8
+// #define SFR_NO_SIMD
+#define SFR_USE_CGLTF
+#define SFR_USE_STB_IMAGE
+
 #ifndef SFR_H
 #define SFR_H
-
-#define SFR_USE_SIMD
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 //================================================
-//:         PUBLIC API
+//: PUBLIC API
 //================================================
 
 #ifndef SFR_MAX_WIDTH
@@ -18,14 +22,10 @@ extern "C" {
     #define SFR_MAX_HEIGHT 1080
 #endif
 
-#ifndef SFR_MAX_LIGHTS
-    #define SFR_MAX_LIGHTS 16
-#endif
-
 //: threading config
 #ifdef SFR_THREAD_COUNT
     #if SFR_THREAD_COUNT < 1 || SFR_THREAD_COUNT > 32
-        #error "SFR_ERROR: SFR_THREAD_COUNT must be between 1 and 32 (32 arbitrary)"
+        #error "SFR ERROR: SFR_THREAD_COUNT must be between 1 and 32 (32 arbitrary)"
     #endif
 #else
     #define SFR_THREAD_COUNT 1
@@ -44,7 +44,7 @@ extern "C" {
         #define SFR_GEOMETRY_JOB_SIZE 64
     #endif
     #ifndef SFR_BIN_PAGE_SIZE
-        // number of triangles per geometry job
+        // number of triangles per page
         #define SFR_BIN_PAGE_SIZE 4096
     #endif
 #endif
@@ -76,13 +76,22 @@ extern "C" {
         #include <pthread.h>
         #include <semaphore.h>
         #include <sched.h> // for sched_yield
-        #include <time.h> // for timespec
         #include <errno.h>
         typedef pthread_t SfrThread;
         typedef sem_t SfrSemaphore;
         typedef pthread_mutex_t SfrMutex;
         typedef volatile int SfrAtomic32;
         typedef volatile long long SfrAtomic64;
+    #endif
+
+    #ifndef SFR_THREAD_LOCAL
+        #if defined(_MSC_VER)
+            #define SFR_THREAD_LOCAL __declspec(thread)
+        #elif defined(__GNUC__) || defined(__clang__)
+            #define SFR_THREAD_LOCAL __thread
+        #else
+            #define SFR_THREAD_LOCAL _Thread_local
+        #endif
     #endif
 #else
     #define SfrAtomic32 i32
@@ -126,11 +135,10 @@ extern "C" {
 typedef float  f32;
 typedef double f64;
 
-// #ifdef SFR_USE_SIMD
-//     typedef union sfrvec sfrvec;
-// #else
-    typedef struct sfrvec sfrvec;
-// #endif
+#ifndef SFR_NO_SIMD
+    #include <immintrin.h>
+#endif
+typedef union sfrvec sfrvec;
 typedef union sfrmat sfrmat;
 
 typedef enum sfrTexSampleMode SfrTexSampleMode;
@@ -166,7 +174,7 @@ extern i32 sfrWidth, sfrHeight;
 
 extern u32* sfrPixelBuf;
 extern f32* sfrDepthBuf;
-extern SfrLight* sfrLights;
+extern SfrLight sfrLight;
 
 // variables below can be managed by you, however
 // there is probably a function that will do what you want
@@ -178,12 +186,8 @@ extern sfrvec sfrCamPos, sfrCamUp, sfrCamTarget;
 extern f32 sfrCamFov;
 extern f32 sfrNearDist, sfrFarDist;
 
-#ifdef SFR_FUNC
-#ifdef SFR_USE_INLINE
-#ifndef SFR_NO_WARNINGS
+#if defined(SFR_FUNC) && defined(SFR_USE_INLINE) && !defined(SFR_NO_WARNINGS)
     #warning "SFR WARNING: SFR_FUNC and SFR_USE_INLINE both being defined is contradictory, using SFR_FUNC"
-#endif
-#endif
 #endif
 
 #ifndef SFR_FUNC
@@ -262,6 +266,9 @@ SFR_FUNC void sfr_look_at(f32 x, f32 y, f32 z);   // set view matrix to look at 
 SFR_FUNC void sfr_clear(u32 clearCol);
 SFR_FUNC void sfr_clear_depth(void);
 
+// texture order: front, right, back, left, top, bottom
+SFR_FUNC void sfr_skybox(const SfrTexture* faces[6]);
+
 // triangle drawing functions
 SFR_FUNC void sfr_triangle(
     f32 ax, f32 ay, f32 az,
@@ -295,7 +302,6 @@ SFR_FUNC u8 sfr_world_to_screen(f32 x, f32 y, f32 z, i32* screenX, i32* screenY)
 // update the camera with the new position and view
 SFR_FUNC void sfr_set_camera(f32 x, f32 y, f32 z, f32 yaw, f32 pitch, f32 roll);
 SFR_FUNC void sfr_set_fov(f32 fovDeg); // update projection matrix with new fov
-SFR_FUNC void sfr_set_light(i32 id, SfrLight light); // update light at index id [0..SFR_MAX_LIGHTS)
 SFR_FUNC void sfr_set_lighting(u8 enabled);
 
 #ifdef SFR_USE_CGLTF
@@ -366,7 +372,7 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
 
 
 //================================================
-//:         PUBLIC MACROS
+//: PUBLIC MACROS
 //================================================
 
 #define SFR_PI (3.14159265358979323846)
@@ -380,34 +386,29 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
 
 
 //================================================
-//:         TYPES
+//:TYPES
 //================================================
 
-// #ifdef SFR_USE_SIMD
-//     #ifdef _MSC_VER
-//         typedef union __declspec(align(16)) sfrvec {
-//             struct { f32 x, y, z, w; };
-//             __m128 v;
-//         } sfrvec;
-//     #else
-//         typedef union __attribute__((aligned(16))) sfrvec {
-//             struct { f32 x, y, z, w; };
-//             __m128 v;
-//         } sfrvec;
-//     #endif
-// #else
-    typedef struct sfrvec { f32 x, y, z, w; } sfrvec;
-// #endif
+#ifndef SFR_NO_SIMD
+    #ifdef _MSC_VER
+        typedef union __declspec(align(16)) sfrvec {
+            struct { f32 x, y, z, w; };
+            __m128 v;
+        } sfrvec;
+    #else
+        typedef union __attribute__((aligned(16))) sfrvec {
+            struct { f32 x, y, z, w; };
+            __m128 v;
+        } sfrvec;
+    #endif
+#else
+    typedef union sfrvec { struct { f32 x, y, z, w; }; } sfrvec;
+#endif
 
 typedef union sfrmat {
     struct { f32 m[4][4]; };
     sfrvec rows[4];
 } sfrmat;
-
-typedef enum sfrTexSampleMode {
-    SFR_TEX_SAMPLE_REPEAT, // default, tiles the texture
-    SFR_TEX_SAMPLE_CLAMP   // clamps uvs to the [0, 1] and stretches edges
-} SfrTexSampleMode;
 
 typedef struct sfrmesh {
     f32* tris;     // vertex positions
@@ -419,7 +420,6 @@ typedef struct sfrmesh {
 typedef struct sfrtex {
     u32* pixels;
     i32 w, h;
-    SfrTexSampleMode sampleMode;
 } SfrTexture;
 
 typedef struct sfrfont {
@@ -507,15 +507,14 @@ typedef struct SfrAnimation {
 } SfrAnimation;
 
 typedef struct SfrTransformNode {
-    // Local transform components
+    // local transform components
     sfrvec localPos;
-    sfrvec localRot; // Quaternion
+    sfrvec localRot; // quaternion
     sfrvec localScale;
 
-    // Hierarchy
     i32 parentInd;
     
-    // Cached matrices
+    // cached matrices
     sfrmat localMatrix;
     sfrmat worldMatrix;
 } SfrTransformNode;
@@ -523,20 +522,20 @@ typedef struct SfrTransformNode {
 typedef struct sfrModelNode {
     SfrMesh* mesh;
     SfrTexture* tex;
-    i32 transformInd; // Link to the scene graph hierarchy
+    i32 transformInd; // link to the scene graph hierarchy
 } SfrModelNode;
 
 typedef struct sfrModel {
-    SfrModelNode* nodes; // Renderable parts (primitives)
+    SfrModelNode* nodes; // renderable parts
     i32 nodeCount;
 
-    SfrTransformNode* transforms; // Hierarchy logic (1:1 with glTF nodes)
+    SfrTransformNode* transforms; // hierarchy logic (1:1 with gltf nodes)
     i32 transformCount;
 
     SfrAnimation* animations;
     i32 animCount;
 
-    // Resource tracking for cleanup
+    // resource tracking for cleanup
     SfrMesh** _allMeshes;
     i32 _meshCount;
     SfrTexture** _allTextures;
@@ -561,32 +560,22 @@ typedef struct sfrparticles {
 } SfrParticleSystem;
 
 typedef struct sfrlight {
-    f32 posX, posY, posZ;
     f32 dirX, dirY, dirZ;
-    f32 radius, ambient, intensity;
-    enum {
-        SFR_LIGHT_NONE,
-        SFR_LIGHT_DIRECTIONAL,
-        SFR_LIGHT_SPHERE,
-    } type;
+    f32 ambient, intensity;
 } SfrLight;
 
 typedef struct sfrTriangleBin {
     f32 ax, ay, az, aInvZ, auoz, avoz;
     f32 bx, by, bz, bInvZ, buoz, bvoz;
     f32 cx, cy, cz, cInvZ, cuoz, cvoz;
-    #ifdef SFR_USE_PHONG
-        sfrvec aNorm, bNorm, cNorm;
-        sfrvec aPos, bPos, cPos;
-    #else
-        f32 aIntensity, bIntensity, cIntensity;
-    #endif
+    f32 aIntensity, bIntensity, cIntensity;
     u32 col;
     const SfrTexture* tex;
 } SfrTriangleBin;
 
 typedef struct sfrTile {
     i32 minX, minY, maxX, maxY;
+    f32 maxZ; // furthest visible depth in the tile
     #ifdef SFR_MULTITHREADED
         SfrTriangleBin** bins; 
         i32 binsCapacity;
@@ -680,14 +669,12 @@ typedef struct sfrTexVert {
     sfrvec normal;   // world-space normal for lighting
     sfrvec worldPos; // world-space position for lighting
     f32 viewZ;       // z in view space for perspective correction
-    #ifndef SFR_USE_PHONG
-        f32 intensity; // intensity for goraud shading
-    #endif
+    f32 intensity; // intensity for goraud shading
 } SfrTexVert;
 
 
 //================================================
-//: IMPLEMENTATION
+//:IMPLEMENTATION
 //================================================
 
 #ifdef SFR_IMPL
@@ -699,7 +686,7 @@ f32* sfrDepthBuf;
 #ifdef SFR_MULTITHREADED
     static SfrThreadBuf* sfrThreadBuf;
 #endif
-SfrLight* sfrLights;
+SfrLight sfrLight;
 
 SfrAtomic32 sfrRasterCount;
 
@@ -713,9 +700,12 @@ static void* (*sfrMalloc)(u64);
 static void  (*sfrFree)(void*);
 static void* (*sfrRealloc)(void*, u64);
 
+// for bin batching to avoid atomic operation each time
+static SFR_THREAD_LOCAL i32 sfrTlsBinStart = 0;
+static SFR_THREAD_LOCAL i32 sfrTlsBinEnd = 0;
 
 //================================================
-//: OPTIONAL LIBS SETUP
+//:OPTIONAL LIBS SETUP
 //================================================
 
 #ifndef SFR_CGLTF_PATH
@@ -814,7 +804,7 @@ static void* (*sfrRealloc)(void*, u64);
 
 
 //================================================
-//:         MISC HELPER MACROS
+//:MISC HELPER MACROS
 //================================================
 
 #define SFR__SWAP(type, _a, _b) { const type _swapTemp = (_a); (_a) = (_b); (_b) = _swapTemp; }
@@ -851,7 +841,7 @@ static void* (*sfrRealloc)(void*, u64);
 
 
 //================================================
-//:         MATH
+//:MATH
 //================================================
 
 #ifndef SFR_NO_MATH
@@ -966,73 +956,73 @@ static void* (*sfrRealloc)(void*, u64);
 
 SFR_FUNC sfrvec sfr_vec_add(sfrvec a, sfrvec b) {
     sfrvec r;
-    // #ifdef SFR_USE_SIMD
-    //     r.v = _mm_add_ps(a.v, b.v);
-    // #else
+    #ifndef SFR_NO_SIMD
+        r.v = _mm_add_ps(a.v, b.v);
+    #else
         r.x = a.x + b.x;
         r.y = a.y + b.y;
         r.z = a.z + b.z;
         r.w = a.w + b.w;
-    // #endif
+    #endif
     return r;
 }
 
 SFR_FUNC sfrvec sfr_vec_sub(sfrvec a, sfrvec b) {
     sfrvec r;
-    // #ifdef SFR_USE_SIMD
-    //     r.v = _mm_sub_ps(a.v, b.v);
-    // #else
+    #ifndef SFR_NO_SIMD
+        r.v = _mm_sub_ps(a.v, b.v);
+    #else
         r.x = a.x - b.x;
         r.y = a.y - b.y;
         r.z = a.z - b.z;
         r.w = a.w - b.w;
-    // #endif
+    #endif
     return r;
 }
 
 SFR_FUNC sfrvec sfr_vec_mul(sfrvec a, f32 b) {
     sfrvec r;
-    // #ifdef SFR_USE_SIMD
-    //     const __m128 t = _mm_set1_ps(b);
-    //     r.v = _mm_mul_ps(a.v, t);
-    // #else
+    #ifndef SFR_NO_SIMD
+        const __m128 t = _mm_set1_ps(b);
+        r.v = _mm_mul_ps(a.v, t);
+    #else
         r.x = a.x * b;
         r.y = a.y * b;
         r.z = a.z * b;
         r.w = a.w * b;
-    // #endif
+    #endif
     return r;
 }
 
 SFR_FUNC sfrvec sfr_vec_div(sfrvec a, f32 b) {
     sfrvec r;
-    // #ifdef SFR_USE_SIMD
-    //     const __m128 t = _mm_set1_ps(b);
-    //     r.v = _mm_div_ps(a.v, t);
-    //     r.w = 1.f;
-    // #else
+    #ifndef SFR_NO_SIMD
+        const __m128 t = _mm_set1_ps(b);
+        r.v = _mm_div_ps(a.v, t);
+        r.w = 1.f;
+    #else
         r.x = a.x / b;
         r.y = a.y / b;
         r.z = a.z / b;
         r.w = 1.f;
-    // #endif
+    #endif
     return r;
 }
 
 SFR_FUNC f32 sfr_vec_dot(sfrvec a, sfrvec b) {
-    // #ifdef SFR_USE_SIMD
-    //     return _mm_cvtss_f32(_mm_dp_ps(a.v, b.v, 0x71));
-    // #else
+    #ifndef SFR_NO_SIMD
+        return _mm_cvtss_f32(_mm_dp_ps(a.v, b.v, 0x71));
+    #else
         return a.x * b.x + a.y * b.y + a.z * b.z;
-    // #endif
+    #endif
 }
 
 SFR_FUNC f32 sfr_vec_length(sfrvec v) {
-    // #ifdef SFR_USE_SIMD
-    //     return _mm_cvtss_f32(_mm_sqrt_ss(_mm_dp_ps(v.v, v.v, 0x71)));
-    // #else
+    #ifndef SFR_NO_SIMD
+        return _mm_cvtss_f32(_mm_sqrt_ss(_mm_dp_ps(v.v, v.v, 0x71)));
+    #else
         return sfr_sqrtf(sfr_vec_dot(v, v));
-    // #endif
+    #endif
 }
 
 SFR_FUNC f32 sfr_vec_length2(sfrvec v) {
@@ -1041,31 +1031,31 @@ SFR_FUNC f32 sfr_vec_length2(sfrvec v) {
 
 SFR_FUNC sfrvec sfr_vec_cross(sfrvec a, sfrvec b) {
     sfrvec r;
-    // #ifdef SFR_USE_SIMD
-    //     // y z x w, z x y w
-    //     r.v = _mm_sub_ps(
-    //         _mm_mul_ps(_mm_shuffle_ps(a.v, a.v, _MM_SHUFFLE(3, 0, 2, 1)), _mm_shuffle_ps(b.v, b.v, _MM_SHUFFLE(3, 1, 0, 2))),
-    //         _mm_mul_ps(_mm_shuffle_ps(a.v, a.v, _MM_SHUFFLE(3, 1, 0, 2)), _mm_shuffle_ps(b.v, b.v, _MM_SHUFFLE(3, 0, 2, 1))));
-    //     r.w = 1.f;
-    // #else
+    #ifndef SFR_NO_SIMD
+        // y z x w, z x y w
+        r.v = _mm_sub_ps(
+            _mm_mul_ps(_mm_shuffle_ps(a.v, a.v, _MM_SHUFFLE(3, 0, 2, 1)), _mm_shuffle_ps(b.v, b.v, _MM_SHUFFLE(3, 1, 0, 2))),
+            _mm_mul_ps(_mm_shuffle_ps(a.v, a.v, _MM_SHUFFLE(3, 1, 0, 2)), _mm_shuffle_ps(b.v, b.v, _MM_SHUFFLE(3, 0, 2, 1))));
+        r.w = 1.f;
+    #else
         r.x = a.y * b.z - a.z * b.y;
         r.y = a.z * b.x - a.x * b.z;
         r.z = a.x * b.y - a.y * b.x;
         r.w = 1.f;
-    // #endif
+    #endif
     return r;
 }
 
 SFR_FUNC sfrvec sfr_vec_norm(sfrvec v) {
-    // #ifdef SFR_USE_SIMD
-    //     const __m128 dp = _mm_dp_ps(v.v, v.v, 0x7F);
-    //     return _mm_cvtss_f32(dp) > SFR_EPSILON ?
-    //         (sfrvec){ .v = _mm_mul_ps(v.v, _mm_rsqrt_ps(dp)) } :
-    //         (sfrvec){0};
-    // #else
+    #ifndef SFR_NO_SIMD
+        const __m128 dp = _mm_dp_ps(v.v, v.v, 0x7F);
+        return _mm_cvtss_f32(dp) > SFR_EPSILON ?
+            (sfrvec){ .v = _mm_mul_ps(v.v, _mm_rsqrt_ps(dp)) } :
+            (sfrvec){0};
+    #else
         const f32 l = sfr_vec_length(v);
         return l > SFR_EPSILON ? sfr_vec_mul(v, 1.f / l) : (sfrvec){0};
-    // #endif
+    #endif
 }
 
 SFR_FUNC sfrvec sfr_vec_normf(f32 x, f32 y, f32 z) {
@@ -1154,24 +1144,24 @@ SFR_FUNC sfrmat sfr_mat_proj(f32 fovDev, f32 aspect, f32 near, f32 far) {
 
 SFR_FUNC sfrmat sfr_mat_mul(sfrmat a, sfrmat b) {
     sfrmat r;
-    // #ifdef SFR_USE_SIMD
-    //     for (int i = 0; i < 4; i += 1) {
-    //         const __m128 ar = a.rows[i].v;
-    //         const __m128 x = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(0, 0, 0, 0));
-    //         const __m128 y = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(1, 1, 1, 1));
-    //         const __m128 z = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(2, 2, 2, 2));
-    //         const __m128 w = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(3, 3, 3, 3));
+    #ifndef SFR_NO_SIMD
+        for (int i = 0; i < 4; i += 1) {
+            const __m128 ar = a.rows[i].v;
+            const __m128 x = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(0, 0, 0, 0));
+            const __m128 y = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(1, 1, 1, 1));
+            const __m128 z = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(2, 2, 2, 2));
+            const __m128 w = _mm_shuffle_ps(ar, ar, _MM_SHUFFLE(3, 3, 3, 3));
 
-    //         const __m128 r0 = _mm_mul_ps(x, b.rows[0].v);
-    //         const __m128 r1 = _mm_mul_ps(y, b.rows[1].v);
-    //         const __m128 r2 = _mm_mul_ps(z, b.rows[2].v);
-    //         const __m128 r3 = _mm_mul_ps(w, b.rows[3].v);
+            const __m128 r0 = _mm_mul_ps(x, b.rows[0].v);
+            const __m128 r1 = _mm_mul_ps(y, b.rows[1].v);
+            const __m128 r2 = _mm_mul_ps(z, b.rows[2].v);
+            const __m128 r3 = _mm_mul_ps(w, b.rows[3].v);
 
-    //         const __m128 sum01 = _mm_add_ps(r0, r1);
-    //         const __m128 sum23 = _mm_add_ps(r2, r3);
-    //         r.rows[i].v = _mm_add_ps(sum01, sum23);
-    //     }
-    // #else
+            const __m128 sum01 = _mm_add_ps(r0, r1);
+            const __m128 sum23 = _mm_add_ps(r2, r3);
+            r.rows[i].v = _mm_add_ps(sum01, sum23);
+        }
+    #else
         for (i32 i = 0; i < 4; i += 1) {
             const f32 a0 = a.m[i][0], a1 = a.m[i][1], a2 = a.m[i][2], a3 = a.m[i][3];
             r.m[i][0] = a0 * b.m[0][0] + a1 * b.m[1][0] + a2 * b.m[2][0] + a3 * b.m[3][0];
@@ -1179,30 +1169,30 @@ SFR_FUNC sfrmat sfr_mat_mul(sfrmat a, sfrmat b) {
             r.m[i][2] = a0 * b.m[0][2] + a1 * b.m[1][2] + a2 * b.m[2][2] + a3 * b.m[3][2];
             r.m[i][3] = a0 * b.m[0][3] + a1 * b.m[1][3] + a2 * b.m[2][3] + a3 * b.m[3][3];
         }
-    // #endif
+    #endif
     return r;
 }
 
 SFR_FUNC sfrvec sfr_mat_mul_vec(sfrmat m, sfrvec v) {
     sfrvec r;
-    // #ifdef SFR_USE_SIMD
-    //     const __m128 vx = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(0, 0, 0, 0));
-    //     const __m128 vy = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(1, 1, 1, 1));
-    //     const __m128 vz = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(2, 2, 2, 2));
-    //     const __m128 vw = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(3, 3, 3, 3));
+    #ifndef SFR_NO_SIMD
+        const __m128 vx = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(0, 0, 0, 0));
+        const __m128 vy = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(1, 1, 1, 1));
+        const __m128 vz = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(2, 2, 2, 2));
+        const __m128 vw = _mm_shuffle_ps(v.v, v.v, _MM_SHUFFLE(3, 3, 3, 3));
 
-    //     const __m128 mul0 = _mm_mul_ps(vx, m.rows[0].v);
-    //     const __m128 mul1 = _mm_mul_ps(vy, m.rows[1].v);
-    //     const __m128 mul2 = _mm_mul_ps(vz, m.rows[2].v);
-    //     const __m128 mul3 = _mm_mul_ps(vw, m.rows[3].v);
+        const __m128 mul0 = _mm_mul_ps(vx, m.rows[0].v);
+        const __m128 mul1 = _mm_mul_ps(vy, m.rows[1].v);
+        const __m128 mul2 = _mm_mul_ps(vz, m.rows[2].v);
+        const __m128 mul3 = _mm_mul_ps(vw, m.rows[3].v);
 
-    //     r.v = _mm_add_ps(_mm_add_ps(mul0, mul1),  _mm_add_ps(mul2, mul3));
-    // #else
+        r.v = _mm_add_ps(_mm_add_ps(mul0, mul1),  _mm_add_ps(mul2, mul3));
+    #else
         r.x = v.x * m.m[0][0] + v.y * m.m[1][0] + v.z * m.m[2][0] + v.w * m.m[3][0];
         r.y = v.x * m.m[0][1] + v.y * m.m[1][1] + v.z * m.m[2][1] + v.w * m.m[3][1];
         r.z = v.x * m.m[0][2] + v.y * m.m[1][2] + v.z * m.m[2][2] + v.w * m.m[3][2];
         r.w = v.x * m.m[0][3] + v.y * m.m[1][3] + v.z * m.m[2][3] + v.w * m.m[3][3];
-    // #endif
+    #endif
     return r;
 }
 
@@ -1284,10 +1274,8 @@ SFR_FUNC void sfr_mat_decompose(sfrmat m, sfrvec* pos, sfrvec* rot, sfrvec* scal
         const f32 r00 = m.m[0][0] / sx;
         const f32 r01 = m.m[0][1] / sx;
         const f32 r02 = m.m[0][2] / sx;
-        const f32 r10 = m.m[1][0] / sy;
         const f32 r11 = m.m[1][1] / sy;
         const f32 r12 = m.m[1][2] / sy;
-        const f32 r20 = m.m[2][0] / sz;
         const f32 r21 = m.m[2][1] / sz;
         const f32 r22 = m.m[2][2] / sz;
 
@@ -1369,7 +1357,7 @@ SFR_FUNC sfrvec sfr_quat_slerp(sfrvec a, sfrvec b, f32 t) {
 
 
 //================================================
-//: PRIVATE FUNCTIONS
+//:PRIVATE FUNCTIONS
 //================================================
 
 static void sfr__mesh_swap_tri(SfrMesh* mesh, i32 a, i32 b) {
@@ -1549,9 +1537,7 @@ static i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const S
             .normal = sfr_vec_add(sfr_vec_mul(a.normal, 1.f - tAB), sfr_vec_mul(b.normal, tAB)),
             .worldPos = sfr_vec_add(sfr_vec_mul(a.worldPos, 1.f - tAB), sfr_vec_mul(b.worldPos, tAB)),
             .viewZ = a.viewZ + tAB * (b.viewZ - a.viewZ),
-            #ifndef SFR_USE_PHONG
-                .intensity = a.intensity + tAB * (b.intensity - a.intensity),
-            #endif
+            .intensity = a.intensity + tAB * (b.intensity - a.intensity),
         };
 
         // interpolate vertex c
@@ -1567,9 +1553,7 @@ static i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const S
             .normal = sfr_vec_add(sfr_vec_mul(a.normal, 1.f - tAC), sfr_vec_mul(c.normal, tAC)),
             .worldPos = sfr_vec_add(sfr_vec_mul(a.worldPos, 1.f - tAC), sfr_vec_mul(c.worldPos, tAC)),
             .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ),
-            #ifndef SFR_USE_PHONG
-                .intensity = a.intensity + tAC * (c.intensity - a.intensity),
-            #endif
+            .intensity = a.intensity + tAC * (c.intensity - a.intensity),
         };
 
         out[0][0] = a;
@@ -1604,9 +1588,7 @@ static i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const S
             .normal = sfr_vec_add(sfr_vec_mul(a.normal, 1.f - tAC), sfr_vec_mul(c.normal, tAC)),
             .worldPos = sfr_vec_add(sfr_vec_mul(a.worldPos, 1.f - tAC), sfr_vec_mul(c.worldPos, tAC)),
             .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ),
-            #ifndef SFR_USE_PHONG
-                .intensity = a.intensity + tAC * (c.intensity - a.intensity),
-            #endif
+            .intensity = a.intensity + tAC * (c.intensity - a.intensity),
         };
 
         const SfrTexVert newBC = {
@@ -1621,9 +1603,7 @@ static i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const S
             .normal = sfr_vec_add(sfr_vec_mul(b.normal, 1.f - tBC), sfr_vec_mul(c.normal, tBC)),
             .worldPos = sfr_vec_add(sfr_vec_mul(b.worldPos, 1.f - tBC), sfr_vec_mul(c.worldPos, tBC)),
             .viewZ = b.viewZ + tBC * (c.viewZ - b.viewZ),
-            #ifndef SFR_USE_PHONG
-                .intensity = b.intensity + tBC * (c.intensity - b.intensity),
-            #endif
+            .intensity = b.intensity + tBC * (c.intensity - b.intensity),
         };
 
         out[0][0] = a;
@@ -1640,619 +1620,465 @@ static i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const S
     return 0;
 }
 
-static void sfr__rasterize_bin(const SfrTriangleBin* bin, const SfrTile* tile) {
-    const u32 col = bin->col;
-    const u8 cr = (col >> 16) & 0xFF;
-    const u8 cg = (col >> 8)  & 0xFF;
-    const u8 cb = (col >> 0)  & 0xFF;
+static void sfr__rasterize_bin(const SfrTriangleBin* bin, SfrTile* tile) {
+    f32 x0 = bin->ax, y0 = bin->ay;
+    f32 x1 = bin->bx, y1 = bin->by;
+    f32 x2 = bin->cx, y2 = bin->cy;
 
-    f32 ax = (f32)((i32)bin->ax), ay = (f32)((i32)bin->ay), az = bin->az;
-    f32 bx = (f32)((i32)bin->bx), by = (f32)((i32)bin->by), bz = bin->bz;
-    f32 cx = (f32)((i32)bin->cx), cy = (f32)((i32)bin->cy), cz = bin->cz;
+    f32 z0 = bin->aInvZ, u0 = bin->auoz, v0 = bin->avoz;
+    f32 z1 = bin->bInvZ, u1 = bin->buoz, v1 = bin->bvoz;
+    f32 z2 = bin->cInvZ, u2 = bin->cuoz, v2 = bin->cvoz;
 
-    f32 aInvZ = bin->aInvZ, auoz = bin->auoz, avoz = bin->avoz;
-    f32 bInvZ = bin->bInvZ, buoz = bin->buoz, bvoz = bin->bvoz;
-    f32 cInvZ = bin->cInvZ, cuoz = bin->cuoz, cvoz = bin->cvoz;
+    f32 i0 = bin->aIntensity * z0; 
+    f32 i1 = bin->bIntensity * z1; 
+    f32 i2 = bin->cIntensity * z2;
 
-    #ifdef SFR_USE_PHONG
-        sfrvec aNorm = bin->aNorm, bNorm = bin->bNorm, cNorm = bin->cNorm;
-        sfrvec aPos = bin->aPos, bPos = bin->bPos, cPos = bin->cPos;
-    #else
-        f32 aIntensity = bin->aIntensity, bIntensity = bin->bIntensity, cIntensity = bin->cIntensity;
-    #endif
-
-    const SfrTexture* tex = bin->tex;
-
-    // sort vertices by y coord
-    if (ay > by) {
-        SFR__SWAP(f32, ax, bx); SFR__SWAP(f32, ay, by); SFR__SWAP(f32, az, bz);
-        SFR__SWAP(f32, aInvZ, bInvZ); SFR__SWAP(f32, auoz, buoz); SFR__SWAP(f32, avoz, bvoz);
-        #ifdef SFR_USE_PHONG
-            SFR__SWAP(sfrvec, aNorm, bNorm); SFR__SWAP(sfrvec, aPos, bPos);
-        #else
-            SFR__SWAP(f32, aIntensity, bIntensity);
-        #endif
+    // winding order fix
+    f32 det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if (det <= 0.f) {
+        if (0.f == det) {
+            return;
+        }
+        SFR__SWAP(f32, x1, x2); SFR__SWAP(f32, y1, y2);
+        SFR__SWAP(f32, z1, z2); SFR__SWAP(f32, u1, u2);
+        SFR__SWAP(f32, v1, v2); SFR__SWAP(f32, i1, i2);
+        det = -det;
     }
-    if (ay > cy) {
-        SFR__SWAP(f32, ax, cx); SFR__SWAP(f32, ay, cy); SFR__SWAP(f32, az, cz);
-        SFR__SWAP(f32, aInvZ, cInvZ); SFR__SWAP(f32, auoz, cuoz); SFR__SWAP(f32, avoz, cvoz);
-        #ifdef SFR_USE_PHONG
-            SFR__SWAP(sfrvec, aNorm, cNorm); SFR__SWAP(sfrvec, aPos, cPos);
-        #else
-            SFR__SWAP(f32, aIntensity, cIntensity);
-        #endif
-    }
-    if (by > cy) {
-        SFR__SWAP(f32, bx, cx); SFR__SWAP(f32, by, cy); SFR__SWAP(f32, bz, cz);
-        SFR__SWAP(f32, bInvZ, cInvZ); SFR__SWAP(f32, buoz, cuoz); SFR__SWAP(f32, bvoz, cvoz);
-        #ifdef SFR_USE_PHONG
-            SFR__SWAP(sfrvec, bNorm, cNorm); SFR__SWAP(sfrvec, bPos, cPos);
-        #else
-            SFR__SWAP(f32, bIntensity, cIntensity);
-        #endif
+    const f32 invDet = 1.f / det;
+
+    // TODO make this a macro or function
+    const f32 dzdx = ((z1 - z0) * (y2 - y0) - (z2 - z0) * (y1 - y0)) * invDet;
+    const f32 dzdy = ((z2 - z0) * (x1 - x0) - (z1 - z0) * (x2 - x0)) * invDet;
+    const f32 zBase = z0 - (x0 * dzdx + y0 * dzdy);
+    const f32 dudx = ((u1 - u0) * (y2 - y0) - (u2 - u0) * (y1 - y0)) * invDet;
+    const f32 dudy = ((u2 - u0) * (x1 - x0) - (u1 - u0) * (x2 - x0)) * invDet;
+    const f32 uBase = u0 - (x0 * dudx + y0 * dudy);
+    const f32 dvdx = ((v1 - v0) * (y2 - y0) - (v2 - v0) * (y1 - y0)) * invDet;
+    const f32 dvdy = ((v2 - v0) * (x1 - x0) - (v1 - v0) * (x2 - x0)) * invDet;
+    const f32 vBase = v0 - (x0 * dvdx + y0 * dvdy);
+    const f32 didx = ((i1 - i0) * (y2 - y0) - (i2 - i0) * (y1 - y0)) * invDet;
+    const f32 didy = ((i2 - i0) * (x1 - x0) - (i1 - i0) * (x2 - x0)) * invDet;
+    const f32 iBase = i0 - (x0 * didx + y0 * didy);
+
+    const f32 A0 = y0 - y1, B0 = x1 - x0, C0 = x0 * y1 - y0 * x1;
+    const f32 A1 = y1 - y2, B1 = x2 - x1, C1 = x1 * y2 - y1 * x2;
+    const f32 A2 = y2 - y0, B2 = x0 - x2, C2 = x2 * y0 - y2 * x0;
+
+    { // hi-z
+        const f32 tMinX = (f32)tile->minX, tMinY = (f32)tile->minY;
+        const f32 tMaxX = (f32)tile->maxX, tMaxY = (f32)tile->maxY;
+        
+        // closest z check
+        const f32 xmInvZ = (dzdx > 0.f) ? tMaxX : tMinX;
+        const f32 ymInvZ = (dzdy > 0.f) ? tMaxY : tMinY;
+        const f32 maxInvZ = zBase + xmInvZ * dzdx + ymInvZ * dzdy;
+
+        if (maxInvZ > SFR_EPSILON) {
+            const f32 minDepth = 1.f / maxInvZ; 
+            if (minDepth > tile->maxZ) {
+                return; 
+            }
+
+            // update tile->maxZ
+            const f32 xmE0 = (A0 > 0.f) ? tMinX : tMaxX, ymE0 = (B0 > 0.f) ? tMinY : tMaxY;
+            const f32 minE0 = C0 + A0 * xmE0 + B0 * ymE0;
+            const f32 xmE1 = (A1 > 0.f) ? tMinX : tMaxX, ymE1 = (B1 > 0.f) ? tMinY : tMaxY;
+            const f32 minE1 = C1 + A1 * xmE1 + B1 * ymE1;
+            const f32 xmE2 = (A2 > 0.f) ? tMinX : tMaxX, ymE2 = (B2 > 0.f) ? tMinY : tMaxY;
+            const f32 minE2 = C2 + A2 * xmE2 + B2 * ymE2;
+
+            if (minE0 >= 0.f && minE1 >= 0.f && minE2 >= 0.f) {
+                const f32 x = (dzdx < 0.f) ? tMaxX : tMinX, y = (dzdy < 0.f) ? tMaxY : tMinY;
+                const f32 minInvZInTile = zBase + x * dzdx + y * dzdy;
+                if (minInvZInTile > SFR_EPSILON) {
+                    const f32 maxDepthInTile = 1.f / minInvZInTile;
+                    if (maxDepthInTile < tile->maxZ) {
+                        tile->maxZ = maxDepthInTile;
+                    }
+                }
+            }
+        }
     }
 
+    const i32 minX = (i32)sfr_fmaxf(tile->minX, sfr_floorf(sfr_fminf(x0, sfr_fminf(x1, x2))));
+    const i32 maxX = (i32)sfr_fminf(tile->maxX, sfr_ceilf (sfr_fmaxf(x0, sfr_fmaxf(x1, x2))));
+    const i32 minY = (i32)sfr_fmaxf(tile->minY, sfr_floorf(sfr_fminf(y0, sfr_fminf(y1, y2))));
+    const i32 maxY = (i32)sfr_fminf(tile->maxY, sfr_ceilf (sfr_fmaxf(y0, sfr_fmaxf(y1, y2))));
+
+    const SfrTexture* const tex = bin->tex;
     const i32 texW = tex->w, texH = tex->h;
-    const i32 texW1 = tex->w - 1, texH1 = tex->h - 1;
+    const f32 rBase = (f32)((bin->col >> 16) & 0xFF) / 255.f;
+    const f32 gBase = (f32)((bin->col >> 8)  & 0xFF) / 255.f;
+    const f32 bBase = (f32)((bin->col >> 0)  & 0xFF) / 255.f;
 
-    #ifdef SFR_USE_PHONG
-        // perspective correct attributes
-        aNorm = sfr_vec_mul(aNorm, aInvZ); bNorm = sfr_vec_mul(bNorm, bInvZ); cNorm = sfr_vec_mul(cNorm, cInvZ);
-        aPos = sfr_vec_mul(aPos, aInvZ); bPos = sfr_vec_mul(bPos, bInvZ); cPos = sfr_vec_mul(cPos, cInvZ);
-    #else
-        aIntensity *= aInvZ; bIntensity *= bInvZ; cIntensity *= cInvZ;
-    #endif
+    // is power of two
+    const u8 isPot = (0 == (texW & (texW - 1))) && (0 == (texH & (texH - 1)));
 
-    // edge deltas for triangle
-    const f32 deltaACX = cx - ax;
-    const f32 deltaACZ = cz - az;
-    const f32 deltaACinvZ = cInvZ - aInvZ;
-    const f32 deltaACuoz = cuoz - auoz;
-    const f32 deltaACvoz = cvoz - avoz;
-    #ifdef SFR_USE_PHONG
-        const sfrvec deltaACNorm = sfr_vec_sub(cNorm, aNorm);
-        const sfrvec deltaACPos = sfr_vec_sub(cPos, aPos);
-    #else
-        const f32 deltaACIntensity = cIntensity - aIntensity;
-    #endif
-    const f32 invHeightAC = (cy != ay) ? 1.f / (cy - ay) : 0.f;
+#ifndef SFR_NO_SIMD
+    // align minX to 8 for SIMD
+    const i32 minX_aligned = minX & ~7;
+    
+    // vv setup vectors vv
+    const __m256 vA0 = _mm256_set1_ps(A0), vB0 = _mm256_set1_ps(B0), vC0 = _mm256_set1_ps(C0);
+    const __m256 vA1 = _mm256_set1_ps(A1), vB1 = _mm256_set1_ps(B1), vC1 = _mm256_set1_ps(C1);
+    const __m256 vA2 = _mm256_set1_ps(A2), vB2 = _mm256_set1_ps(B2), vC2 = _mm256_set1_ps(C2);
+    
+    const __m256 vZBase = _mm256_set1_ps(zBase), vdzdx = _mm256_set1_ps(dzdx), vdzdy = _mm256_set1_ps(dzdy);
+    const __m256 vUBase = _mm256_set1_ps(uBase), vdudx = _mm256_set1_ps(dudx), vdudy = _mm256_set1_ps(dudy);
+    const __m256 vVBase = _mm256_set1_ps(vBase), vdvdx = _mm256_set1_ps(dvdx), vdvdy = _mm256_set1_ps(dvdy);
+    const __m256 vIBase = _mm256_set1_ps(iBase), vdidx = _mm256_set1_ps(didx), vdidy = _mm256_set1_ps(didy);
+    
+    const __m256 vXOffsets = _mm256_setr_ps(0.f, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f);
+    const __m256i vIndex = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+    
+    const __m256 eight = _mm256_set1_ps(8.f);
+    const __m256 vA0Step = _mm256_mul_ps(vA0, eight);
+    const __m256 vA1Step = _mm256_mul_ps(vA1, eight);
+    const __m256 vA2Step = _mm256_mul_ps(vA2, eight);
+    const __m256 vdZdxStep = _mm256_mul_ps(vdzdx, eight);
+    const __m256 vdUdxStep = _mm256_mul_ps(vdudx, eight);
+    const __m256 vdVdxStep = _mm256_mul_ps(vdvdx, eight);
+    const __m256 vdIdxStep = _mm256_mul_ps(vdidx, eight);
 
-    { // lower triangle (A to B)
-        const f32 deltaABX = bx - ax;
-        const f32 deltaABZ = bz - az;
-        const f32 deltaABinvZ = bInvZ - aInvZ;
-        const f32 deltaABuoz = buoz - auoz;
-        const f32 deltaABvoz = bvoz - avoz;
-        #ifdef SFR_USE_PHONG
-            const sfrvec deltaABNorm = sfr_vec_sub(bNorm, aNorm);
-            const sfrvec deltaABPos = sfr_vec_sub(bPos, aPos);
-        #else
-            const f32 deltaABIntensity = bIntensity - aIntensity;
-        #endif
-        const f32 invHeightAB = (by != ay) ? 1.f / (by - ay) : 0.f;
+    const __m256 vRBase = _mm256_set1_ps(rBase), vGBase = _mm256_set1_ps(gBase), vBBase = _mm256_set1_ps(bBase);
+    const __m256i vTexW = _mm256_set1_epi32(texW), vTexH = _mm256_set1_epi32(texH);
+    const __m256 vFTexW = _mm256_cvtepi32_ps(vTexW), vFTexH = _mm256_cvtepi32_ps(vTexH);
+    const __m256 v255 = _mm256_set1_ps(255.0f);
+    const __m256i v0xFF = _mm256_set1_epi32(0xFF);
+    
+    const __m256i vMaskW = _mm256_set1_epi32(texW - 1);
+    const __m256i vMaskH = _mm256_set1_epi32(texH - 1);
 
-        const i32 yStart = SFR_MAX(tile->minY, ay);
-        const i32 yEnd   = SFR_MIN(tile->maxY, by);
-        for (i32 y = yStart; y < yEnd; y += 1) {
-            const f32 dy = y - ay;
-            const f32 alpha = dy * invHeightAC;
-            const f32 beta = dy * invHeightAB;
+    for (i32 yBase = minY; yBase < maxY; yBase += 8) {
+        const f32 fy = (f32)yBase;
+        const __m256 vy = _mm256_set1_ps(fy);
 
-            f32 sx = ax + deltaACX * alpha;
-            f32 sz = az + deltaACZ * alpha;
-            f32 sInvZ = aInvZ + deltaACinvZ * alpha;
-            f32 su = auoz + deltaACuoz * alpha;
-            f32 sv = avoz + deltaACvoz * alpha;
-            #ifdef SFR_USE_PHONG
-                sfrvec sNorm = sfr_vec_add(aNorm, sfr_vec_mul(deltaACNorm, alpha));
-                sfrvec sPos = sfr_vec_add(aPos, sfr_vec_mul(deltaACPos, alpha));
-            #else
-                f32 sIntensity = aIntensity + deltaACIntensity * alpha;
-            #endif
-
-            f32 ex = ax + deltaABX * beta;
-            f32 ez = az + deltaABZ * beta;
-            f32 eInvZ = aInvZ + deltaABinvZ * beta;
-            f32 eu = auoz + deltaABuoz * beta;
-            f32 ev = avoz + deltaABvoz * beta;
-            #ifdef SFR_USE_PHONG
-                sfrvec eNorm = sfr_vec_add(aNorm, sfr_vec_mul(deltaABNorm, beta));
-                sfrvec ePos = sfr_vec_add(aPos, sfr_vec_mul(deltaABPos, beta));
-            #else
-                f32 eIntensity = aIntensity + deltaABIntensity * beta;
-            #endif
-
-            if (sx > ex) {
-                SFR__SWAP(f32, sx, ex); SFR__SWAP(f32, sz, ez);
-                SFR__SWAP(f32, sInvZ, eInvZ); SFR__SWAP(f32, su, eu); SFR__SWAP(f32, sv, ev);
-                #ifdef SFR_USE_PHONG
-                    SFR__SWAP(sfrvec, sNorm, eNorm);
-                    SFR__SWAP(sfrvec, sPos, ePos);
-                #else
-                    SFR__SWAP(f32, sIntensity, eIntensity);
-                #endif
-            }
-
-            i32 xStart = SFR_MAX(tile->minX, sx);
-            i32 xEnd = SFR_MIN(tile->maxX, (i32)ex + 1);
-            if (xStart >= xEnd) {
+        // trivial rejection test
+        for (i32 xBase = minX_aligned; xBase < maxX; xBase += 8) {
+            // a plane E(x, y) is linear, E < 0 at all 4 corners => its < 0 everywhere inside
+            
+            const f32 fx = (f32)xBase;
+            const f32 e0tl = C0 + A0 * fx + B0 * fy;
+            const f32 e0tr = e0tl + A0 * 8.f;
+            const f32 e0bl = e0tl + B0 * 8.f;
+            const f32 e0br = e0tl + A0 * 8.f + B0 * 8.f;
+            if (sfr_fmaxf(sfr_fmaxf(e0tl, e0tr), sfr_fmaxf(e0bl, e0br)) < 0.f) {
+                // if the max value at any corner is < 0, the whole block is outside edge 0
                 continue;
             }
 
-            const f32 dx = ex - sx;
-            const f32 tStep = (0.f != dx) ? 1.f / dx : 0.f;
-            const f32 depthStep = (ez - sz) * tStep;
-            const f32 invZStep = (eInvZ - sInvZ) * tStep;
-            const f32 uStep = (eu - su) * tStep;
-            const f32 vStep = (ev - sv) * tStep;
-            #ifdef SFR_USE_PHONG
-                const sfrvec normStep = sfr_vec_mul(sfr_vec_sub(eNorm, sNorm), tStep);
-                const sfrvec posStep = sfr_vec_mul(sfr_vec_sub(ePos, sPos), tStep);
-            #else
-                const f32 intensityStep = (eIntensity - sIntensity) * tStep;
-            #endif
-
-            f32 depth = sz + (xStart - sx) * depthStep;
-            f32 invZ = sInvZ + (xStart - sx) * invZStep;
-            f32 uoz = su + (xStart - sx) * uStep;
-            f32 voz = sv + (xStart - sx) * vStep;
-            #ifdef SFR_USE_PHONG
-                sfrvec norm = sfr_vec_add(sNorm, sfr_vec_mul(normStep, xStart - sx));
-                sfrvec pos = sfr_vec_add(sPos, sfr_vec_mul(posStep, xStart - sx));
-            #else
-                f32 intensity = sIntensity + (xStart - sx) * intensityStep;
-            #endif
-
-            for (i32 x = xStart; x < xEnd; x += 1,
-                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep,
-                #ifdef SFR_USE_PHONG
-                    norm = sfr_vec_add(norm, normStep), pos = sfr_vec_add(pos, posStep)
-                #else
-                    intensity += intensityStep
-                #endif
-            ) {
-                const i32 pixelInd = y * sfrWidth + x;
-                if (depth > sfrDepthBuf[pixelInd]) {
-                    continue;
-                }
-                sfrDepthBuf[pixelInd] = depth;
-
-                const f32 zView = 1.f / invZ;
-                const f32 u = uoz * zView;
-                const f32 v = voz * zView;
-
-                i32 tx, ty;
-                switch (tex->sampleMode) {
-                    case SFR_TEX_SAMPLE_CLAMP: {
-                        tx = SFR_CLAMP((i32)(u * texW), 0, texW1);
-                        ty = SFR_CLAMP((i32)(v * texH), 0, texH1);
-                    } break;
-                    case SFR_TEX_SAMPLE_REPEAT:
-                    default: {
-                        tx = sfr__wrap_coord((i32)(u * texW), texW);
-                        ty = sfr__wrap_coord((i32)(v * texH), texH);
-                    } break;
-                }
-
-                const u32 texCol = tex->pixels[ty * texW + tx];
-
-                const u8 tr = (texCol >> 16) & 0xFF;
-                const u8 tg = (texCol >> 8)  & 0xFF;
-                const u8 tb = (texCol >> 0)  & 0xFF;
-                SFR__DIV255(fr, tr, cr);
-                SFR__DIV255(fg, tg, cg);
-                SFR__DIV255(fb, tb, cb);
-
-                f32 finalIntensity;
-                #ifdef SFR_USE_PHONG
-                    finalIntensity = 0.f;
-                    if (sfrState.lightingEnabled) {
-                        const sfrvec pixelNorm = sfr_vec_norm(sfr_vec_mul(norm, zView));
-                        const sfrvec pixelPos = sfr_vec_mul(pos, zView);
-
-                        f32 maxAmbient = 0.f;
-                        for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
-                            if (SFR_LIGHT_NONE != sfrLights[i].type && sfrLights[i].ambient > maxAmbient) {
-                                maxAmbient = sfrLights[i].ambient;
-                            }
-                        }
-                        finalIntensity = maxAmbient;
-
-                        for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
-                            const SfrLight* light = &sfrLights[i];
-
-                            sfrvec lightDir;
-                            f32 attenuation = 1.f;
-
-                            switch (light->type) {
-                                case SFR_LIGHT_NONE: {
-                                    continue;
-                                }
-                                case SFR_LIGHT_DIRECTIONAL: {
-                                    lightDir = (sfrvec){light->dirX, light->dirY, light->dirZ, 0.f};
-                                    const f32 diff = sfr_fmaxf(0.f, sfr_vec_dot(pixelNorm, lightDir));
-                                    finalIntensity += diff * light->intensity * attenuation;
-                                } break;
-                                case SFR_LIGHT_SPHERE: {
-                                    lightDir = sfr_vec_sub((sfrvec){light->posX, light->posY, light->posZ}, pixelPos);
-                                    const f32 dist2 = sfr_vec_length2(lightDir);
-                                    if (dist2 > light->radius * light->radius) {
-                                        continue;
-                                    }
-
-                                    attenuation = 1.f - (dist2 / (light->radius * light->radius));
-                                    lightDir = sfr_vec_norm(lightDir);
-
-                                    const f32 diff = sfr_fmaxf(0.f, sfr_vec_dot(pixelNorm, lightDir));
-                                    finalIntensity += diff * light->intensity * attenuation;
-
-                                    const sfrvec viewDir = sfr_vec_norm(sfr_vec_sub(sfrCamPos, pixelPos));
-                                    const sfrvec reflectDir = sfr_vec_sub(sfr_vec_mul(pixelNorm, 2.f * diff), lightDir);
-                                    const f32 spec = sfr_powf(sfr_fmaxf(0.f, sfr_vec_dot(viewDir, reflectDir)), 32.f);
-                                    finalIntensity += spec * light->intensity * attenuation;
-                                } break;
-                            }
-                        }
-                    } else {
-                        finalIntensity = 1.f;
-                    }
-                #else
-                    if (sfrState.lightingEnabled) {
-                        // perspective correct the interpolated intensity
-                        finalIntensity = intensity * zView;
-                    } else {
-                        finalIntensity = 1.f;
-                    }
-                #endif
-                finalIntensity = SFR_CLAMP(finalIntensity, 0.f, 1.f);
-
-                const u8 lr = (u8)(fr * finalIntensity);
-                const u8 lg = (u8)(fg * finalIntensity);
-                const u8 lb = (u8)(fb * finalIntensity);
-
-                sfrPixelBuf[pixelInd] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
-            }
-        }
-    }
-
-    { // upper triangle (B to C)
-        const f32 deltaBCX = cx - bx;
-        const f32 deltaBCZ = cz - bz;
-        const f32 deltaBCinvZ = cInvZ - bInvZ;
-        const f32 deltaBCuoz = cuoz - buoz;
-        const f32 deltaBCvoz = cvoz - bvoz;
-        #ifdef SFR_USE_PHONG
-            const sfrvec deltaBCNorm = sfr_vec_sub(cNorm, bNorm);
-            const sfrvec deltaBCPos = sfr_vec_sub(cPos, bPos);
-        #else
-            const f32 deltaBCIntensity = cIntensity - bIntensity;
-        #endif
-        const f32 invHeightBC = (cy != by) ? 1.f / (cy - by) : 0.f;
-
-        const i32 yStart = SFR_MAX(tile->minY, by);
-        const i32 yEnd   = SFR_MIN(tile->maxY, cy);
-        for (i32 y = yStart; y < yEnd; y += 1) {
-            const f32 alpha = (f32)(y - ay) * invHeightAC;
-            const f32 beta = (f32)(y - by) * invHeightBC;
-
-            f32 sx = bx + deltaBCX * beta;
-            f32 sz = bz + deltaBCZ * beta;
-            f32 sInvZ = bInvZ + deltaBCinvZ * beta;
-            f32 suoz = buoz + deltaBCuoz * beta;
-            f32 svoz = bvoz + deltaBCvoz * beta;
-            #ifdef SFR_USE_PHONG
-                sfrvec sNorm = sfr_vec_add(bNorm, sfr_vec_mul(deltaBCNorm, beta));
-                sfrvec sPos = sfr_vec_add(bPos, sfr_vec_mul(deltaBCPos, beta));
-            #else
-                f32 sIntensity = bIntensity + deltaBCIntensity * beta;
-            #endif
-
-            f32 ex = ax + deltaACX * alpha;
-            f32 ez = az + deltaACZ * alpha;
-            f32 eInvZ = aInvZ + deltaACinvZ * alpha;
-            f32 euoz = auoz + deltaACuoz * alpha;
-            f32 evoz = avoz + deltaACvoz * alpha;
-            #ifdef SFR_USE_PHONG
-                sfrvec eNorm = sfr_vec_add(aNorm, sfr_vec_mul(deltaACNorm, alpha));
-                sfrvec ePos = sfr_vec_add(aPos, sfr_vec_mul(deltaACPos, alpha));
-            #else
-                f32 eIntensity = aIntensity + deltaACIntensity * alpha;
-            #endif
-
-            if (sx > ex) {
-                SFR__SWAP(f32, sx, ex); SFR__SWAP(f32, sz, ez);
-                SFR__SWAP(f32, sInvZ, eInvZ); SFR__SWAP(f32, suoz, euoz); SFR__SWAP(f32, svoz, evoz);
-                #ifdef SFR_USE_PHONG
-                    SFR__SWAP(sfrvec, sNorm, eNorm);
-                    SFR__SWAP(sfrvec, sPos, ePos);
-                #else
-                    SFR__SWAP(f32, sIntensity, eIntensity);
-                #endif
-            }
-
-            i32 xStart = SFR_MAX(tile->minX, sx);
-            i32 xEnd = SFR_MIN(tile->maxX, (i32)ex + 1);
-            if (xStart >= xEnd) {
+            const f32 e1tl = C1 + A1 * fx + B1 * fy;
+            const f32 e1tr = e1tl + A1 * 8.f;
+            const f32 e1bl = e1tl + B1 * 8.f;
+            const f32 e1br = e1tl + A1 * 8.f + B1 * 8.f;
+            if (sfr_fmaxf(sfr_fmaxf(e1tl, e1tr), sfr_fmaxf(e1bl, e1br)) < 0.f) {
                 continue;
             }
 
-            const f32 dx = ex - sx;
-            const f32 tStep = (0.f != dx) ? 1.f / dx : 0.f;
-            const f32 depthStep = (ez - sz) * tStep;
-            const f32 invZStep = (eInvZ - sInvZ) * tStep;
-            const f32 uStep = (euoz - suoz) * tStep;
-            const f32 vStep = (evoz - svoz) * tStep;
-            #ifdef SFR_USE_PHONG
-                const sfrvec normStep = sfr_vec_mul(sfr_vec_sub(eNorm, sNorm), tStep);
-                const sfrvec posStep = sfr_vec_mul(sfr_vec_sub(ePos, sPos), tStep);
-            #else
-                const f32 intensityStep = (eIntensity - sIntensity) * tStep;
-            #endif
+            const f32 e2tl = C2 + A2 * fx + B2 * fy;
+            const f32 e2tr = e2tl + A2 * 8.f;
+            const f32 e2bl = e2tl + B2 * 8.f;
+            const f32 e2br = e2tl + A2 * 8.f + B2 * 8.f;
+            if (sfr_fmaxf(sfr_fmaxf(e2tl, e2tr), sfr_fmaxf(e2bl, e2br)) < 0.f) {
+                continue;
+            }
 
-            f32 depth = sz + (xStart - sx) * depthStep;
-            f32 invZ = sInvZ + (xStart - sx) * invZStep;
-            f32 uoz = suoz + (xStart - sx) * uStep;
-            f32 voz = svoz + (xStart - sx) * vStep;
-            #ifdef SFR_USE_PHONG
-                sfrvec norm = sfr_vec_add(sNorm, sfr_vec_mul(normStep, xStart - sx));
-                sfrvec pos = sfr_vec_add(sPos, sfr_vec_mul(posStep, xStart - sx));
-            #else
-                f32 intensity = sIntensity + (xStart - sx) * intensityStep;
-            #endif
+            const __m256 vXBlock = _mm256_add_ps(_mm256_set1_ps(fx), vXOffsets);
+            
+            // start values at (xBase, yBase)
+            __m256 vE0 = _mm256_add_ps(vC0, _mm256_add_ps(_mm256_mul_ps(vA0, vXBlock), _mm256_mul_ps(vB0, vy)));
+            __m256 vE1 = _mm256_add_ps(vC1, _mm256_add_ps(_mm256_mul_ps(vA1, vXBlock), _mm256_mul_ps(vB1, vy)));
+            __m256 vE2 = _mm256_add_ps(vC2, _mm256_add_ps(_mm256_mul_ps(vA2, vXBlock), _mm256_mul_ps(vB2, vy)));
+            __m256 vz  = _mm256_add_ps(vZBase, _mm256_add_ps(_mm256_mul_ps(vdzdx, vXBlock), _mm256_mul_ps(vdzdy, vy)));
+            __m256 vu  = _mm256_add_ps(vUBase, _mm256_add_ps(_mm256_mul_ps(vdudx, vXBlock), _mm256_mul_ps(vdudy, vy)));
+            __m256 vv  = _mm256_add_ps(vVBase, _mm256_add_ps(_mm256_mul_ps(vdvdx, vXBlock), _mm256_mul_ps(vdvdy, vy)));
+            __m256 vi  = _mm256_add_ps(vIBase, _mm256_add_ps(_mm256_mul_ps(vdidx, vXBlock), _mm256_mul_ps(vdidy, vy)));
 
-            for (i32 x = xStart; x < xEnd; x += 1,
-                invZ += invZStep, uoz += uStep, voz += vStep, depth += depthStep,
-                #ifdef SFR_USE_PHONG
-                    norm = sfr_vec_add(norm, normStep), pos = sfr_vec_add(pos, posStep)
-                #else
-                    intensity += intensityStep
-                #endif
-            ) {
-                const i32 pixelInd = y * sfrWidth + x;
-                if (depth > sfrDepthBuf[pixelInd]) {
-                    continue;
-                }
-                sfrDepthBuf[pixelInd] = depth;
+            // constants to step y by 1 for the inner 8 lines
+            const __m256 vB0Step = vB0, vB1Step = vB1, vB2Step = vB2;
+            const __m256 vdZdyStep = vdzdy, vdUdyStep = vdudy, vdVdyStep = vdvdy, vdIdyStep = vdidy;
 
-                const f32 zView = 1.f / invZ;
-                const f32 u = uoz * zView;
-                const f32 v = voz * zView;
+            // limit y to tile bounds
+            const i32 yLimit = SFR_MIN(yBase + 8, maxY);
 
-                i32 tx, ty;
-                switch (tex->sampleMode) {
-                    case SFR_TEX_SAMPLE_CLAMP: {
-                        tx = SFR_CLAMP((i32)(u * texW), 0, texW1);
-                        ty = SFR_CLAMP((i32)(v * texH), 0, texH1);
-                    } break;
-                    case SFR_TEX_SAMPLE_REPEAT:
-                    default: {
-                        tx = sfr__wrap_coord((i32)(u * texW), texW);
-                        ty = sfr__wrap_coord((i32)(v * texH), texH);
-                    } break;
+            for (i32 y = yBase; y < yLimit; y += 1) {
+                // determine Coverage
+                __m256 mask = _mm256_and_ps(
+                    _mm256_cmp_ps(vE0, _mm256_setzero_ps(), _CMP_GE_OQ),
+                    _mm256_and_ps(
+                        _mm256_cmp_ps(vE1, _mm256_setzero_ps(), _CMP_GE_OQ),
+                        _mm256_cmp_ps(vE2, _mm256_setzero_ps(), _CMP_GE_OQ)
+                    )
+                );
+
+                // alignment check
+                if (xBase < minX || xBase + 8 > maxX) {
+                    const __m256i vGlobalX = _mm256_add_epi32(_mm256_set1_epi32(xBase), vIndex);
+                    const __m256 vBoundMask = _mm256_and_ps(
+                        _mm256_cmp_ps(_mm256_cvtepi32_ps(vGlobalX), _mm256_set1_ps((float)minX), _CMP_GE_OQ),
+                        _mm256_cmp_ps(_mm256_cvtepi32_ps(vGlobalX), _mm256_set1_ps((float)maxX), _CMP_LT_OQ)
+                    );
+                    mask = _mm256_and_ps(mask, vBoundMask);
                 }
 
-                const u32 texCol = tex->pixels[ty * texW + tx];
+                i32 maskInt = _mm256_movemask_ps(mask);
+                if (maskInt) {
+                    const i32 pixelInd = y * sfrWidth + xBase;
+                    const __m256 vOldDepth = _mm256_loadu_ps(&sfrDepthBuf[pixelInd]);
+                    
+                    __m256 vRecipZ = _mm256_rcp_ps(vz);
+                    vRecipZ = _mm256_mul_ps(vRecipZ, _mm256_sub_ps(_mm256_set1_ps(2.0f), _mm256_mul_ps(vz, vRecipZ)));
+                    
+                    const __m256 depthMask = _mm256_cmp_ps(vRecipZ, vOldDepth, _CMP_LT_OQ);
+                    mask = _mm256_and_ps(mask, depthMask);
+                    maskInt = _mm256_movemask_ps(mask);
 
-                const u8 tr = (texCol >> 16) & 0xFF;
-                const u8 tg = (texCol >> 8)  & 0xFF;
-                const u8 tb = (texCol >> 0)  & 0xFF;
-                SFR__DIV255(fr, tr, cr);
-                SFR__DIV255(fg, tg, cg);
-                SFR__DIV255(fb, tb, cb);
+                    if (maskInt) {
+                        _mm256_maskstore_ps(&sfrDepthBuf[pixelInd], _mm256_castps_si256(mask), vRecipZ);
+                        __m256 vCorrectU = _mm256_mul_ps(vu, vRecipZ);
+                        __m256 vCorrectV = _mm256_mul_ps(vv, vRecipZ);
+                        const __m256 vCorrectI = _mm256_mul_ps(vi, vRecipZ);
 
-                f32 finalIntensity;
-                #ifdef SFR_USE_PHONG
-                    finalIntensity = 0.f;
-                    if (sfrState.lightingEnabled) {
-                        const sfrvec pixelNorm = sfr_vec_norm(sfr_vec_mul(norm, zView));
-                        const sfrvec pixelPos = sfr_vec_mul(pos, zView);
-
-                        f32 maxAmbient = 0.f;
-                        for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
-                            if (SFR_LIGHT_NONE != sfrLights[i].type && sfrLights[i].ambient > maxAmbient) {
-                                maxAmbient = sfrLights[i].ambient;
-                            }
+                        __m256i vTexX, vTexY;
+                        if (isPot) {
+                            // scale u/v
+                            vCorrectU = _mm256_mul_ps(vCorrectU, vFTexW);
+                            vCorrectV = _mm256_mul_ps(vCorrectV, vFTexH);
+                            
+                            // convert to i32
+                            vTexX = _mm256_cvttps_epi32(vCorrectU);
+                            vTexY = _mm256_cvttps_epi32(vCorrectV);
+                            
+                            // bitwise and
+                            vTexX = _mm256_and_si256(vTexX, vMaskW);
+                            vTexY = _mm256_and_si256(vTexY, vMaskH);
+                        } else {
+                            // slow path
+                            vCorrectU = _mm256_sub_ps(vCorrectU, _mm256_floor_ps(vCorrectU));
+                            vCorrectV = _mm256_sub_ps(vCorrectV, _mm256_floor_ps(vCorrectV));
+                            vCorrectU = _mm256_mul_ps(vCorrectU, vFTexW);
+                            vCorrectV = _mm256_mul_ps(vCorrectV, vFTexH);
+                            vTexX = _mm256_cvttps_epi32(vCorrectU);
+                            vTexY = _mm256_cvttps_epi32(vCorrectV);
                         }
-                        finalIntensity = maxAmbient;
 
-                        for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
-                            const SfrLight* light = &sfrLights[i];
+                        const __m256i vTexInds = _mm256_add_epi32(_mm256_mullo_epi32(vTexY, vTexW), vTexX);
+                        const __m256i vTexPixels = _mm256_i32gather_epi32((const i32*)tex->pixels, vTexInds, 4);
 
-                            sfrvec lightDir;
-                            f32 attenuation = 1.f;
+                        const __m256 vtr = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(vTexPixels, 16), v0xFF));
+                        const __m256 vtg = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(vTexPixels, 8),  v0xFF));
+                        const __m256 vtb = _mm256_cvtepi32_ps(_mm256_and_si256(vTexPixels, v0xFF));
 
-                            switch (light->type) {
-                                case SFR_LIGHT_NONE: {
-                                    continue;
-                                }
-                                case SFR_LIGHT_DIRECTIONAL: {
-                                    lightDir = (sfrvec){light->dirX, light->dirY, light->dirZ, 0.f};
-                                    const f32 diff = sfr_fmaxf(0.f, sfr_vec_dot(pixelNorm, lightDir));
-                                    finalIntensity += diff * light->intensity * attenuation;
-                                } break;
-                                case SFR_LIGHT_SPHERE: {
-                                    lightDir = sfr_vec_sub((sfrvec){light->posX, light->posY, light->posZ}, pixelPos);
-                                    const f32 dist2 = sfr_vec_length2(lightDir);
-                                    if (dist2 > light->radius * light->radius) {
-                                        continue;
-                                    }
+                        const __m256 vfr = _mm256_min_ps(_mm256_mul_ps(vtr, _mm256_mul_ps(vCorrectI, vRBase)), v255);
+                        const __m256 vfg = _mm256_min_ps(_mm256_mul_ps(vtg, _mm256_mul_ps(vCorrectI, vGBase)), v255);
+                        const __m256 vfb = _mm256_min_ps(_mm256_mul_ps(vtb, _mm256_mul_ps(vCorrectI, vBBase)), v255);
 
-                                    attenuation = 1.f - (dist2 / (light->radius * light->radius));
-                                    lightDir = sfr_vec_norm(lightDir);
-
-                                    const f32 diff = sfr_fmaxf(0.f, sfr_vec_dot(pixelNorm, lightDir));
-                                    finalIntensity += diff * light->intensity * attenuation;
-
-                                    const sfrvec viewDir = sfr_vec_norm(sfr_vec_sub(sfrCamPos, pixelPos));
-                                    const sfrvec reflectDir = sfr_vec_sub(sfr_vec_mul(pixelNorm, 2.f * diff), lightDir);
-                                    const f32 spec = sfr_powf(sfr_fmaxf(0.f, sfr_vec_dot(viewDir, reflectDir)), 32.f);
-                                    finalIntensity += spec * light->intensity * attenuation;
-                                } break;
-                            }
-                        }
-                    } else {
-                        finalIntensity = 1.f;
+                        const __m256i vResR = _mm256_cvtps_epi32(vfr);
+                        const __m256i vResG = _mm256_cvtps_epi32(vfg);
+                        const __m256i vResB = _mm256_cvtps_epi32(vfb);
+                        const __m256i vFinalPixel = _mm256_or_si256(
+                            _mm256_set1_epi32(0xFF000000),
+                            _mm256_or_si256(
+                                _mm256_slli_epi32(vResR, 16), _mm256_or_si256(
+                                    _mm256_slli_epi32(vResG, 8), vResB))
+                            );
+                        _mm256_maskstore_epi32((i32*)&sfrPixelBuf[pixelInd], _mm256_castps_si256(mask), vFinalPixel);
                     }
-                #else
-                    if (sfrState.lightingEnabled) {
-                        // perspective correct the interpolated intensity
-                        finalIntensity = intensity * zView;
-                    } else {
-                        finalIntensity = 1.f;
-                    }
-                #endif
-                finalIntensity = SFR_CLAMP(finalIntensity, 0.f, 1.f);
-
-                const u8 lr = (u8)(fr * finalIntensity);
-                const u8 lg = (u8)(fg * finalIntensity);
-                const u8 lb = (u8)(fb * finalIntensity);
-
-                sfrPixelBuf[pixelInd] = (0xFF << 24) | (lr << 16) | (lg << 8) | lb;
+                }
+                
+                // step y by 1 for the next row in this block
+                vE0 = _mm256_add_ps(vE0, vB0Step);
+                vE1 = _mm256_add_ps(vE1, vB1Step);
+                vE2 = _mm256_add_ps(vE2, vB2Step);
+                vz = _mm256_add_ps(vz, vdZdyStep);
+                vu = _mm256_add_ps(vu, vdUdyStep);
+                vv = _mm256_add_ps(vv, vdVdyStep);
+                vi = _mm256_add_ps(vi, vdIdyStep);
             }
         }
     }
+#else
+    for (i32 y = minY; y < maxY; y += 1) {
+        f32 E0 = C0 + A0 * minX + B0 * y;
+        f32 E1 = C1 + A1 * minX + B1 * y;
+        f32 E2 = C2 + A2 * minX + B2 * y;
+        
+        f32 z = zBase + dzdx * minX + dzdy * y;
+        f32 u = uBase + dudx * minX + dudy * y;
+        f32 v = vBase + dvdx * minX + dvdy * y;
+        f32 i = iBase + didx * minX + didy * y;
+        
+        i32 pixelInd = y * sfrWidth + minX;
+
+        for (i32 x = minX; x < maxX; x += 1,
+            E0 += A0, E1 += A1, E2 += A2,
+            z += dzdx, u += dudx, v += dvdx, i += didx,
+            pixelInd += 1
+        ) {
+            if (E0 < 0.f || E1 < 0.f || E2 < 0.f) {
+                continue;
+            }
+
+            const f32 invZ = 1.f / z; 
+            if (invZ >= sfrDepthBuf[pixelInd]) {
+                continue;
+            }
+
+            sfrDepthBuf[pixelInd] = invZ;
+            
+            f32 ci = i * invZ;
+            f32 cu = u * invZ;
+            f32 cv = v * invZ;
+            i32 tx, ty;
+
+            if (isPot) {
+                cu *= (f32)texW;
+                cv *= (f32)texH;
+                tx = (i32)cu & (texW - 1);
+                ty = (i32)cv & (texH - 1);
+            } else {
+                cu -= sfr_floorf(cu);
+                cv -= sfr_floorf(cv);
+                tx = (i32)(cu * texW);
+                ty = (i32)(cv * texH);
+                if (tx >= texW) tx = texW - 1;
+                if (ty >= texH) ty = texH - 1;
+            }
+
+            const u32 texCol = tex->pixels[ty * texW + tx];
+            const u8 tr = (texCol >> 16) & 0xFF, tg = (texCol >> 8) & 0xFF, tb = (texCol >> 0) & 0xFF;
+            const u8 fr = (u8)SFR_MIN((tr * ci * rBase), 255.f);
+            const u8 fg = (u8)SFR_MIN((tg * ci * gBase), 255.f);
+            const u8 fb = (u8)SFR_MIN((tb * ci * bBase), 255.f);
+            sfrPixelBuf[pixelInd] = (0xFF << 24) | (fr << 16) | (fg << 8) | fb;
+        }
+    }
+#endif
 }
 
 static void sfr__bin_triangle(
     f32 ax, f32 ay, f32 az, f32 aInvZ, f32 auoz, f32 avoz,
     f32 bx, f32 by, f32 bz, f32 bInvZ, f32 buoz, f32 bvoz,
     f32 cx, f32 cy, f32 cz, f32 cInvZ, f32 cuoz, f32 cvoz,
-    #ifdef SFR_USE_PHONG
-        sfrvec aNorm, sfrvec aPos,
-        sfrvec bNorm, sfrvec bPos,
-        sfrvec cNorm, sfrvec cPos,
-    #else
-        f32 aIntensity, f32 bIntensity, f32 cIntensity,
-    #endif
+    f32 aIntensity, f32 bIntensity, f32 cIntensity,
     u32 col, const SfrTexture* tex
 ) {
-    #ifdef SFR_MULTITHREADED
-        // auto reserve slot
-        const i32 globalInd = sfr_atomic_add(&sfrThreadBuf->triangleBinAllocator, 1) - 1;
+#ifdef SFR_MULTITHREADED
+    // auto reserve slot
+    if (sfrTlsBinStart == sfrTlsBinEnd) {
+        sfrTlsBinStart = sfr_atomic_add(&sfrThreadBuf->triangleBinAllocator, 1024);
+        sfrTlsBinEnd = sfrTlsBinStart + 1024;
+    }
+    const i32 globalInd = sfrTlsBinStart++;
 
-        // calculate page and offset
-        const i32 pageInd = globalInd / SFR_BIN_PAGE_SIZE;
-        const i32 pageOffset = globalInd % SFR_BIN_PAGE_SIZE;
+    // calculate page and offset
+    const i32 pageInd = globalInd / SFR_BIN_PAGE_SIZE;
+    const i32 pageOffset = globalInd % SFR_BIN_PAGE_SIZE;
 
-        // ensure page exists
-        // if crossed into a new page (or beyond cap) need to check
-        if (pageInd >= sfrThreadBuf->binPagesCapacity || !sfrThreadBuf->binPages[pageInd]) {
-            sfr_mutex_lock(&sfrThreadBuf->binPoolMutex);
-            
-            // resize page pointer array
-            if (pageInd >= sfrThreadBuf->binPagesCapacity) {
-                i32 newCap = sfrThreadBuf->binPagesCapacity * 2;
-                while (pageInd >= newCap) newCap *= 2;
-                
-                SfrTriangleBin** newPageArr = (SfrTriangleBin**)sfrRealloc(sfrThreadBuf->binPages, sizeof(SfrTriangleBin*) * newCap);
-                if (newPageArr) {
-                    sfr_memset(newPageArr + sfrThreadBuf->binPagesCapacity, 0, 
-                        (newCap - sfrThreadBuf->binPagesCapacity) * sizeof(SfrTriangleBin*));
-                    sfrThreadBuf->binPages = newPageArr;
-                    sfrThreadBuf->binPagesCapacity = newCap;
-                }
-            }
-
-            // allocate specific page if it's missing
-            if (!sfrThreadBuf->binPages[pageInd]) {
-                sfrThreadBuf->binPages[pageInd] = (SfrTriangleBin*)sfrMalloc(sizeof(SfrTriangleBin) * SFR_BIN_PAGE_SIZE);
-            }
-            
-            sfr_mutex_unlock(&sfrThreadBuf->binPoolMutex);
-        }
-
-        if (!sfrThreadBuf->binPages[pageInd]) {
-            return; // shouldnt happen
-        }
-
-        SfrTriangleBin* bin = &sfrThreadBuf->binPages[pageInd][pageOffset];
+    // ensure page exists (rare lock)
+    if (pageInd >= sfrThreadBuf->binPagesCapacity || !sfrThreadBuf->binPages[pageInd]) {
+        sfr_mutex_lock(&sfrThreadBuf->binPoolMutex);
         
-        #ifdef SFR_USE_PHONG
-            *bin = (SfrTriangleBin){
-                .ax = ax, .ay = ay, .az = az, .aInvZ = aInvZ, .auoz = auoz, .avoz = avoz,
-                .bx = bx, .by = by, .bz = bz, .bInvZ = bInvZ, .buoz = buoz, .bvoz = bvoz,
-                .cx = cx, .cy = cy, .cz = cz, .cInvZ = cInvZ, .cuoz = cuoz, .cvoz = cvoz,
-                .aNorm = aNorm, .bNorm = bNorm, .cNorm = cNorm,
-                .aPos = aPos, .bPos = bPos, .cPos = cPos,
-                .col = col, .tex = tex
-            };
-        #else
-            *bin = (SfrTriangleBin){
-                .ax = ax, .ay = ay, .az = az, .aInvZ = aInvZ, .auoz = auoz, .avoz = avoz,
-                .bx = bx, .by = by, .bz = bz, .bInvZ = bInvZ, .buoz = buoz, .bvoz = bvoz,
-                .cx = cx, .cy = cy, .cz = cz, .cInvZ = cInvZ, .cuoz = cuoz, .cvoz = cvoz,
-                .aIntensity = aIntensity, .bIntensity = bIntensity, .cIntensity = cIntensity,
-                .col = col, .tex = tex
-            };
-        #endif
-        sfr_atomic_add(&sfrRasterCount, 1);
-
-        const f32 minX = sfr_fmaxf(0.f,             sfr_fminf(ax, SFR_MIN(bx, cx)));
-        const f32 maxX = sfr_fminf(sfrWidth - 1.f,  sfr_fmaxf(ax, SFR_MAX(bx, cx)));
-        const f32 minY = sfr_fmaxf(0.f,             sfr_fminf(ay, SFR_MIN(by, cy)));
-        const f32 maxY = sfr_fminf(sfrHeight - 1.f, sfr_fmaxf(ay, SFR_MAX(by, cy)));
-
-        const i32 xStart = (i32)minX / SFR_TILE_WIDTH;
-        const i32 xEnd   = (i32)maxX / SFR_TILE_WIDTH;
-        const i32 yStart = (i32)minY / SFR_TILE_HEIGHT;
-        const i32 yEnd   = (i32)maxY / SFR_TILE_HEIGHT;
-
-        // dynamic tile binning
-        for (i32 ty = yStart; ty <= yEnd; ty += 1) {
-            for (i32 tx = xStart; tx <= xEnd; tx += 1) {
-                const i32 tileInd = ty * sfrThreadBuf->tileCols + tx;
-                SfrTile* tile = &sfrThreadBuf->tiles[tileInd];
-
-                // lock per tile to safely handle resize
-                sfr_mutex_lock(&tile->mutex);
-                
-                if (tile->binCount >= tile->binsCapacity) {
-                    i32 newCap = tile->binsCapacity * 2;
-                    SfrTriangleBin** newBins = (SfrTriangleBin**)sfrRealloc(tile->bins, sizeof(SfrTriangleBin*) * newCap);
-                    if (!newBins) {
-                        sfr_mutex_unlock(&tile->mutex);
-                        continue;
-                    }
-                    tile->bins = newBins;
-                    tile->binsCapacity = newCap;
-                }
-                
-                // add the bin inside the lock
-                const i32 ind = tile->binCount++;
-                if (0 == ind) {
-                    const i32 workInd = sfr_atomic_add(&sfrThreadBuf->rasterWorkQueueCount, 1) - 1;
-                    if (workInd < SFR_ARRLEN(sfrThreadBuf->rasterWorkQueue)) {
-                        sfrThreadBuf->rasterWorkQueue[workInd] = tileInd;
-                    }
-                }
-                tile->bins[ind] = bin;
-                
-                sfr_mutex_unlock(&tile->mutex);
+        // resize page pointer array
+        if (pageInd >= sfrThreadBuf->binPagesCapacity) {
+            i32 newCap = sfrThreadBuf->binPagesCapacity * 2;
+            while (pageInd >= newCap) newCap *= 2;
+            
+            SfrTriangleBin** newPageArr = (SfrTriangleBin**)sfrRealloc(sfrThreadBuf->binPages, sizeof(SfrTriangleBin*) * newCap);
+            if (newPageArr) {
+                sfr_memset(newPageArr + sfrThreadBuf->binPagesCapacity, 0, 
+                    (newCap - sfrThreadBuf->binPagesCapacity) * sizeof(SfrTriangleBin*));
+                sfrThreadBuf->binPages = newPageArr;
+                sfrThreadBuf->binPagesCapacity = newCap;
             }
         }
-    #else
-        sfrRasterCount += 1;
-        const SfrTile fullTile = {0, 0, sfrWidth, sfrHeight};
-        #ifdef SFR_USE_PHONG
-            const SfrTriangleBin bin = {
-                ax, ay, az, aInvZ, auoz, avoz,
-                bx, by, bz, bInvZ, buoz, bvoz,
-                cx, cy, cz, cInvZ, cuoz, cvoz,
-                aNorm, bNorm, cNorm,
-                aPos, bPos, cPos,
-                col, tex
-            };
-        #else
-            const SfrTriangleBin bin = {
-                ax, ay, az, aInvZ, auoz, avoz,
-                bx, by, bz, bInvZ, buoz, bvoz,
-                cx, cy, cz, cInvZ, cuoz, cvoz,
-                aIntensity, bIntensity, cIntensity,
-                col, tex
-            };
-        #endif
-        sfr__rasterize_bin(&bin, &fullTile);
-    #endif
+
+        // allocate specific page if it's missing
+        if (!sfrThreadBuf->binPages[pageInd]) {
+            sfrThreadBuf->binPages[pageInd] = (SfrTriangleBin*)sfrMalloc(sizeof(SfrTriangleBin) * SFR_BIN_PAGE_SIZE);
+        }
+        
+        sfr_mutex_unlock(&sfrThreadBuf->binPoolMutex);
+    }
+
+    if (!sfrThreadBuf->binPages[pageInd]) {
+        return;
+    }
+
+    SfrTriangleBin* bin = &sfrThreadBuf->binPages[pageInd][pageOffset];
+    
+    *bin = (SfrTriangleBin){
+        .ax = ax, .ay = ay, .az = az, .aInvZ = aInvZ, .auoz = auoz, .avoz = avoz,
+        .bx = bx, .by = by, .bz = bz, .bInvZ = bInvZ, .buoz = buoz, .bvoz = bvoz,
+        .cx = cx, .cy = cy, .cz = cz, .cInvZ = cInvZ, .cuoz = cuoz, .cvoz = cvoz,
+        .aIntensity = aIntensity, .bIntensity = bIntensity, .cIntensity = cIntensity,
+        .col = col, .tex = tex
+    };
+    sfr_atomic_add(&sfrRasterCount, 1);
+
+    const f32 minX = sfr_fmaxf(0.f,             sfr_fminf(ax, SFR_MIN(bx, cx)));
+    const f32 maxX = sfr_fminf(sfrWidth - 1.f,  sfr_fmaxf(ax, SFR_MAX(bx, cx)));
+    const f32 minY = sfr_fmaxf(0.f,             sfr_fminf(ay, SFR_MIN(by, cy)));
+    const f32 maxY = sfr_fminf(sfrHeight - 1.f, sfr_fmaxf(ay, SFR_MAX(by, cy)));
+
+    const i32 xStart = (i32)minX / SFR_TILE_WIDTH;
+    const i32 xEnd   = (i32)maxX / SFR_TILE_WIDTH;
+    const i32 yStart = (i32)minY / SFR_TILE_HEIGHT;
+    const i32 yEnd   = (i32)maxY / SFR_TILE_HEIGHT;
+
+    // dynamic tile binning
+    for (i32 ty = yStart; ty <= yEnd; ty += 1) {
+        for (i32 tx = xStart; tx <= xEnd; tx += 1) {
+            const i32 tileInd = ty * sfrThreadBuf->tileCols + tx;
+            SfrTile* tile = &sfrThreadBuf->tiles[tileInd];
+
+            // lock per tile to safely handle resize
+            sfr_mutex_lock(&tile->mutex);
+            
+            if (tile->binCount >= tile->binsCapacity) {
+                i32 newCap = tile->binsCapacity * 2;
+                SfrTriangleBin** newBins = (SfrTriangleBin**)sfrRealloc(tile->bins, sizeof(SfrTriangleBin*) * newCap);
+                if (!newBins) {
+                    sfr_mutex_unlock(&tile->mutex);
+                    continue;
+                }
+                tile->bins = newBins;
+                tile->binsCapacity = newCap;
+            }
+            
+            // add the bin inside the lock
+            const i32 ind = tile->binCount++;
+            if (0 == ind) {
+                const i32 workInd = sfr_atomic_add(&sfrThreadBuf->rasterWorkQueueCount, 1) - 1;
+                if (workInd < (i32)SFR_ARRLEN(sfrThreadBuf->rasterWorkQueue)) {
+                    sfrThreadBuf->rasterWorkQueue[workInd] = tileInd;
+                }
+            }
+            tile->bins[ind] = bin;
+            
+            sfr_mutex_unlock(&tile->mutex);
+        }
+    }
+
+#else // !SFR_MULTITHREADED
+        
+    sfrRasterCount += 1;
+    SfrTile fullTile = {
+        .minX = 0, .minY = 0, .maxX = sfrWidth, .maxY = sfrHeight,
+        .maxZ = sfrFarDist
+    };
+
+    const SfrTriangleBin bin = {
+        ax, ay, az, aInvZ, auoz, avoz,
+        bx, by, bz, bInvZ, buoz, bvoz,
+        cx, cy, cz, cInvZ, cuoz, cvoz,
+        aIntensity, bIntensity, cIntensity,
+        col, tex
+    };
+
+    sfr__rasterize_bin(&bin, &fullTile);
+
+#endif // SFR_MULTITHREADED
 }
 
 // core geometry pipeline for a single triangle
@@ -2284,32 +2110,16 @@ static void sfr__process_and_bin_triangle(
     const sfrvec nb = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){ .x = bnx, .y = bny, .z = bnz, .w = 0.f }));
     const sfrvec nc = sfr_vec_norm(sfr_mat_mul_vec(*normalMat, (sfrvec){ .x = cnx, .y = cny, .z = cnz, .w = 0.f }));
 
-    #ifndef SFR_USE_PHONG
-        f32 aIntensity = 0.f, bIntensity = 0.f, cIntensity = 0.f;
-        if (sfrState.lightingEnabled) {
-            // only use first light for goraud, assuming its direcitonal
-            const SfrLight* light = &sfrLights[0];
-
-            // find max ambient from all lights still
-            f32 maxAmbient = 0.f;
-            for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
-                if (SFR_LIGHT_NONE != sfrLights[i].type && sfrLights[i].ambient > maxAmbient) {
-                    maxAmbient = sfrLights[i].ambient;
-                }
-            }
-            aIntensity = bIntensity = cIntensity = maxAmbient;
-
-            // only consider directional light for diffuse component in gouraud
-            if (SFR_LIGHT_DIRECTIONAL == light->type) {
-                const sfrvec lightDir = {light->dirX, light->dirY, light->dirZ, 0.f};
-                aIntensity += sfr_fmaxf(0.f, sfr_vec_dot(na, lightDir)) * light->intensity;
-                bIntensity += sfr_fmaxf(0.f, sfr_vec_dot(nb, lightDir)) * light->intensity;
-                cIntensity += sfr_fmaxf(0.f, sfr_vec_dot(nc, lightDir)) * light->intensity;
-            }
-        } else {
-            aIntensity = bIntensity = cIntensity = 1.f;
-        }
-    #endif
+    // get goraud shading intensities
+    f32 aIntensity = 0.f, bIntensity = 0.f, cIntensity = 0.f;
+    if (sfrState.lightingEnabled) {
+        const sfrvec lightDir = {sfrLight.dirX, sfrLight.dirY, sfrLight.dirZ, 0.f};
+        aIntensity = sfrLight.ambient + sfr_fmaxf(0.f, sfr_vec_dot(na, lightDir)) * sfrLight.intensity;
+        bIntensity = sfrLight.ambient + sfr_fmaxf(0.f, sfr_vec_dot(nb, lightDir)) * sfrLight.intensity;
+        cIntensity = sfrLight.ambient + sfr_fmaxf(0.f, sfr_vec_dot(nc, lightDir)) * sfrLight.intensity;
+    } else {
+        aIntensity = bIntensity = cIntensity = 1.f;
+    }
 
     // to view space
     SfrTexVert viewTri[3] = { // this looks so bad but unfortunately works "well"
@@ -2624,7 +2434,7 @@ static u32 sfr__lerp_col(u32 c1, u32 c2, f32 t) {
 
 
 //================================================
-//:         PUBLIC API FUNCTION DEFINITIONS
+//: PUBLIC API FUNCTION DEFINITIONS
 //================================================
 
 SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void (*freeFunc)(void*), void* (*reallocFunc)(void*, u64)) {
@@ -2652,15 +2462,6 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
         SFR__ERR_EXIT("sfr_init: failed to allocate sfrPixelBuf (%ld bytes)\n",
             sizeof(u32) * SFR_MAX_WIDTH * SFR_MAX_HEIGHT);
     }
-
-    #if SFR_MAX_LIGHTS > 0
-        sfrLights = (SfrLight*)mallocFunc(sizeof(SfrLight) * SFR_MAX_LIGHTS);
-        if (!sfrLights) {
-            freeFunc(sfrPixelBuf);
-            freeFunc(sfrDepthBuf);
-            SFR__ERR_EXIT("sfr_init: failed to allocate sfrLights (%ld bytes)\n", sizeof(SfrLight) * SFR_MAX_LIGHTS);
-        }
-    #endif
 
     #ifdef SFR_MULTITHREADED
         sfrThreadBuf = (SfrThreadBuf*)mallocFunc(sizeof(SfrThreadBuf));
@@ -2725,10 +2526,6 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
 
     sfrState.baseTexPixels[0] = 0xFFFFFFFF;
     sfrState.baseTex = (SfrTexture){ .w = 1, .h = 1, .pixels = sfrState.baseTexPixels };
-
-    for (i32 i = 0; i < SFR_MAX_LIGHTS; i += 1) {
-        sfrLights[i].type = SFR_LIGHT_NONE;
-    }
 }
 
 SFR_FUNC void sfr__shutdown(void); // I dont wanna move sfr__shutdown to here
@@ -2741,12 +2538,6 @@ SFR_FUNC void sfr_release(void) {
         sfrFree(sfrDepthBuf);
         sfrDepthBuf = (void*)0;
     }
-    #if SFR_MAX_LIGHTS > 0
-        if (sfrLights) {
-            sfrFree(sfrLights);
-            sfrLights = (void*)0;
-        }
-    #endif
     #ifdef SFR_MULTITHREADED
         sfr__shutdown();
         if (sfrThreadBuf) {
@@ -2866,6 +2657,7 @@ SFR_FUNC void sfr_resize(i32 width, i32 height) {
                 tile->minY = y * SFR_TILE_HEIGHT;
                 tile->maxX = SFR_MIN((x + 1) * SFR_TILE_WIDTH, width);
                 tile->maxY = SFR_MIN((y + 1) * SFR_TILE_HEIGHT, height);
+                tile->maxZ = sfrFarDist;
                 
                 sfr_mutex_init(&tile->mutex);
                 tile->binsCapacity = 1024 * 8;
@@ -2922,18 +2714,42 @@ SFR_FUNC void sfr_clear(u32 clearCol) {
         sfr_flush_and_wait();
     #endif
 
-    for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
-        sfrPixelBuf[i] = clearCol;
-        sfrDepthBuf[i] = sfrFarDist;
-    }
+    i32 count = sfrWidth * sfrHeight;
+
+    #if !defined(SFR_NO_SIMD) && !defined(SFR_NO_STRING)
+        const __m256i vCol = _mm256_set1_epi32(clearCol);
+
+        u32 depthBits;
+        memcpy(&depthBits, &sfrFarDist, sizeof(u32));
+        const __m256i vDepth = _mm256_set1_epi32(depthBits);
+
+        i32 i = 0;
+        for (; i <= count - 8; i += 8) {
+            _mm256_storeu_si256((__m256i*)&sfrPixelBuf[i], vCol);
+            _mm256_storeu_si256((__m256i*)&sfrDepthBuf[i], vDepth);
+        }
+
+        for (i32 j = i; j < i; i += 1) {
+            sfrPixelBuf[i] = clearCol;
+            sfrDepthBuf[i] = sfrFarDist;
+        }
+    #else
+        for (i32 i = count - 1; i >= 0; i -= 1) {
+            sfrPixelBuf[i] = clearCol;
+            sfrDepthBuf[i] = sfrFarDist;
+        }
+    #endif
 
     #ifdef SFR_MULTITHREADED
-        // reset tile bin counts
         for (i32 i = 0; i < sfrThreadBuf->tileCount; i += 1) {
             sfr_atomic_set(&sfrThreadBuf->tiles[i].binCount, 0);
+            sfrThreadBuf->tiles[i].maxZ = sfrFarDist;
         }
 
         sfr_atomic_set(&sfrRasterCount, 0);
+        
+        sfrTlsBinStart = 0;
+        sfrTlsBinEnd = 0;
     #else
         sfrRasterCount = 0;
     #endif
@@ -2944,9 +2760,109 @@ SFR_FUNC void sfr_clear_depth(void) {
         sfr_flush_and_wait();
     #endif
 
-    for (i32 i = sfrWidth * sfrHeight - 1; i >= 0; i -= 1) {
-        sfrDepthBuf[i] = sfrFarDist;
+    const i32 count = sfrWidth * sfrHeight;
+
+    #if !defined(SFR_NO_SIMD) && !defined(SFR_NO_STRING)
+        u32 depthBits;
+        memcpy(&depthBits, &sfrFarDist, sizeof(u32));
+        const __m256i vDepth = _mm256_set1_epi32(depthBits);
+
+        i32 i = 0;
+        for (; i <= count - 8; i += 8) {
+            _mm256_storeu_si256((__m256i*)&sfrDepthBuf[i], vDepth);
+        }
+
+        for (i32 j = i; j < count; j += 1) {
+            sfrDepthBuf[j] = sfrFarDist;
+        }
+    #else
+        for (i32 i = count - 1; i >= 0; i -= 1) {
+            sfrDepthBuf[i] = sfrFarDist;
+        }
+    #endif // !SFR_NO_SIMD && !SFR_NO_STRING
+
+    #ifdef SFR_MULTITHREADED
+        for (i32 i = 0; i < sfrThreadBuf->tileCount; i += 1) {
+            sfrThreadBuf->tiles[i].maxZ = sfrFarDist;
+        }    
+    #endif
+}
+
+// front, right, back, left, top, bottom
+SFR_FUNC void sfr_skybox(const SfrTexture* faces[6]) {
+    if (!faces) {
+        return;
     }
+
+    const sfrmat savedModel = sfrMatModel;
+    const u8 savedLighting = sfrState.lightingEnabled;
+    const u8 savedDirty = sfrState.normalMatDirty;
+
+    sfrState.lightingEnabled = 0;
+
+    sfrMatModel = SFR__MAT_IDENTITY;
+    const f32 scale = sfrFarDist * 0.5f;
+    sfr_scale(scale, scale, scale);
+    sfr_translate(sfrCamPos.x, sfrCamPos.y, sfrCamPos.z);
+
+    // front face
+    sfr__triangle_tex_norm(
+         0.5f, 0.5f,-0.5f, 0.f,0.f, 0,0,1,
+        -0.5f, 0.5f,-0.5f, 1.f,0.f, 0,0,1,
+        -0.5f,-0.5f,-0.5f, 1.f,1.f, 0,0,1, 0xFFFFFFFF, faces[0]);
+    sfr__triangle_tex_norm(
+         0.5f,-0.5f,-0.5f, 0.f,1.f, 0,0,1,
+         0.5f, 0.5f,-0.5f, 0.f,0.f, 0,0,1,
+        -0.5f,-0.5f,-0.5f, 1.f,1.f, 0,0,1, 0xFFFFFFFF, faces[0]);
+    // right face
+    sfr__triangle_tex_norm(
+         0.5f, 0.5f, 0.5f, 0.f,0.f, -1,0,0,
+         0.5f, 0.5f,-0.5f, 1.f,0.f, -1,0,0,
+         0.5f,-0.5f,-0.5f, 1.f,1.f, -1,0,0, 0xFFFFFFFF, faces[1]);
+    sfr__triangle_tex_norm(
+         0.5f,-0.5f, 0.5f, 0.f,1.f, -1,0,0,
+         0.5f, 0.5f, 0.5f, 0.f,0.f, -1,0,0,
+         0.5f,-0.5f,-0.5f, 1.f,1.f, -1,0,0, 0xFFFFFFFF, faces[1]);
+    // back face
+    sfr__triangle_tex_norm(
+        -0.5f, 0.5f, 0.5f, 0.f,0.f, 0,0,-1,
+         0.5f, 0.5f, 0.5f, 1.f,0.f, 0,0,-1,
+         0.5f,-0.5f, 0.5f, 1.f,1.f, 0,0,-1, 0xFFFFFFFF, faces[2]);
+    sfr__triangle_tex_norm(
+        -0.5f,-0.5f, 0.5f, 0.f,1.f, 0,0,-1,
+        -0.5f, 0.5f, 0.5f, 0.f,0.f, 0,0,-1,
+         0.5f,-0.5f, 0.5f, 1.f,1.f, 0,0,-1, 0xFFFFFFFF, faces[2]);
+    // left face
+    sfr__triangle_tex_norm(
+        -0.5f, 0.5f,-0.5f, 0.f,0.f, 1,0,0,
+        -0.5f, 0.5f, 0.5f, 1.f,0.f, 1,0,0,
+        -0.5f,-0.5f, 0.5f, 1.f,1.f, 1,0,0, 0xFFFFFFFF, faces[3]);
+    sfr__triangle_tex_norm(
+        -0.5f,-0.5f,-0.5f, 0.f,1.f, 1,0,0,
+        -0.5f, 0.5f,-0.5f, 0.f,0.f, 1,0,0,
+        -0.5f,-0.5f, 0.5f, 1.f,1.f, 1,0,0, 0xFFFFFFFF, faces[3]);
+    // top face
+    sfr__triangle_tex_norm(
+         0.5f, 0.5f, 0.5f, 0.f,1.f, 0,-1,0,
+        -0.5f, 0.5f, 0.5f, 0.f,0.f, 0,-1,0,
+        -0.5f, 0.5f,-0.5f, 1.f,0.f, 0,-1,0, 0xFFFFFFFF, faces[4]);
+    sfr__triangle_tex_norm(
+        0.5f, 0.5f,-0.5f, 1.f,1.f, 0,-1,0,
+        0.5f, 0.5f, 0.5f, 0.f,1.f, 0,-1,0,
+        -0.5f, 0.5f,-0.5f, 1.f,0.f, 0,-1,0, 0xFFFFFFFF, faces[4]);
+    // bottom face
+    sfr__triangle_tex_norm(
+        -0.5f,-0.5f,-0.5f, 0.f,1.f, 0,1,0,
+        -0.5f,-0.5f, 0.5f, 1.f,1.f, 0,1,0,
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,1,0, 0xFFFFFFFF, faces[5]);
+    sfr__triangle_tex_norm(
+         0.5f,-0.5f,-0.5f, 0.f,0.f, 0,1,0,
+        -0.5f,-0.5f,-0.5f, 0.f,1.f, 0,1,0,
+         0.5f,-0.5f, 0.5f, 1.f,0.f, 0,1,0, 0xFFFFFFFF, faces[5]);
+
+    sfrMatModel = savedModel;
+    sfrState.lightingEnabled = savedLighting;
+    sfrState.normalMatDirty = savedDirty;
 }
 
 SFR_FUNC void sfr_triangle(
@@ -3460,9 +3376,7 @@ SFR_FUNC SfrRayHit sfr_scene_raycast(const SfrScene* scene, f32 ox, f32 oy, f32 
             const i32 nodeInd = stack[--stackPtr];
             SfrBvhNode* node = &obj->_bvhNodes[nodeInd];
 
-            // vv check bounds intersection (in local space) vv
-            f32 tMinBox = 0.f, tMaxBox = 1e30f;
-            
+            // vv check bounds intersection (in local space) vv            
             const f32 tx1 = (node->minX - localOrigin.x) * localDirInv.x;
             const f32 tx2 = (node->maxX - localOrigin.x) * localDirInv.x;
             f32 tmin = sfr_fminf(tx1, tx2);
@@ -3562,13 +3476,6 @@ SFR_FUNC void sfr_set_fov(f32 fovDeg) {
     sfrCamFov = fovDeg;
 }
 
-SFR_FUNC void sfr_set_light(i32 id, SfrLight light) {
-    if (id < 0 || id >= SFR_MAX_LIGHTS) {
-        SFR__ERR_RET(, "sfr_set_light: invalid id (%d < 0 or %d >= %d)\n", id, id, SFR_MAX_LIGHTS);
-    }
-    sfrLights[id] = light;
-}
-
 SFR_FUNC void sfr_set_lighting(u8 enabled) {
     sfrState.lightingEnabled = enabled;
 }
@@ -3664,7 +3571,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
     rewind(file);
 
     u8* const fileContent = (u8*)sfrMalloc(fileSize);
-    if (fread(fileContent, 1, fileSize, file) != fileSize) {
+    if (fread(fileContent, 1, fileSize, file) != (u64)fileSize) {
         fclose(file);
         sfrFree(fileContent);
         SFR__ERR_RET(NULL, "sfr_load_gltf: failed to read '%s'\n", filename);
@@ -3732,7 +3639,6 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
                 SfrTexture* const tex = (SfrTexture*)sfrMalloc(sizeof(SfrTexture));
                 tex->w = w;
                 tex->h = h;
-                tex->sampleMode = SFR_TEX_SAMPLE_REPEAT; // default
                 tex->pixels = (u32*)sfrMalloc(w * h * 4);
                 if (!tex->pixels) {
                     // TODO memory leak
@@ -4296,7 +4202,6 @@ SFR_FUNC SfrTexture* sfr_load_texture(const char* filename) {
     SfrTexture* tex = (SfrTexture*)sfrMalloc(sizeof(SfrTexture));
     tex->w = w;
     tex->h = h;
-    tex->sampleMode = SFR_TEX_SAMPLE_REPEAT;
     tex->pixels = (u32*)sfrMalloc(sizeof(u32) * w * h);
     
     sfr_memcpy(tex->pixels, data, w * h * 4);
@@ -4638,6 +4543,7 @@ static unsigned __stdcall sfr__worker_thread_func(void* arg) {
 #else
 static void* sfr__worker_thread_func(void* arg) {
 #endif
+    (void)arg;
     // const SfrThreadData* self = (SfrThreadData*)arg;
     // const i32 selfInd = self->threadInd;
 
@@ -4647,6 +4553,9 @@ static void* sfr__worker_thread_func(void* arg) {
         if (sfrState.shutdown) {
             break;
         }
+
+        sfrTlsBinStart = 0;
+        sfrTlsBinEnd = 0;
 
         while (1) {
             // get the next geometry job from the queue
