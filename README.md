@@ -25,6 +25,7 @@ Sponza at 720p 60fps on an older laptop while recording
   after which an SfrScene was created to allow for raycasting.
 
   In newer versions, this model would've been loaded with the built in function that uses cgltf.
+  Also currently phong shading used in this video is removed because of the SIMD additions, but I might add it back.
 
   Additionally, textures were resized down to 128x128 from 1024x1024 (from profiling, like 40% of the
   program's time was just from cache misses so this was the "fix", mipmapping is on the TODO list).
@@ -61,7 +62,6 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Primitive drawing (triangles, cubes, billboards)
 - Skyboxes (cubemaps not spheremaps)
 - ARGB8888 color format support (alpha currently unused)
-- Repeated or clamped textures
 - Backface culling, depth buffering, and clipping
 - Simplistic design, quick to learn and use
 
@@ -176,6 +176,9 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A current
 ``` 
 
 ## TODO / Upcoming Features / Known Bugs
+- Fix overdraw (greenish pixels) on areas with many small / overlapping triangles
+<img width="1273" height="714" alt="overdraw visual" src="https://github.com/user-attachments/assets/bfd0f9f1-b8d7-44d3-86e7-f33601f37e3d" />
+
 - Skeletal animation / some improved animation system
 - Mipmapping / memory optimizations, complex scenes are currently memory bound
 - Shadowmapping for static scenes
