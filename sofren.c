@@ -1,3 +1,9 @@
+#define SFR_IMPL
+#define SFR_THREAD_COUNT 8
+// #define SFR_NO_SIMD
+#define SFR_USE_CGLTF
+#define SFR_USE_STB_IMAGE
+
 #ifndef SFR_H
 #define SFR_H
 
@@ -143,18 +149,10 @@ typedef struct sfrSceneObject SfrSceneObject;
 
 typedef struct sfrRayHit SfrRayHit;
 
-typedef struct sfrparticle  SfrParticle;
-typedef struct sfrparticles SfrParticleSystem;
+typedef struct sfrParticle  SfrParticle;
+typedef struct sfrParticles SfrParticleSystem;
 
 typedef struct sfrlight SfrLight;
-
-typedef struct sfrTriangleBin SfrTriangleBin;
-typedef struct sfrTile SfrTile;
-#ifdef SFR_MULTITHREADED
-    typedef struct sfrThreadBuf SfrThreadBuf;
-    typedef struct sfrThreadData SfrThreadData;
-    typedef struct sfrMeshChunkJob SfrMeshChunkJob;
-#endif
 
 #ifdef SFR_USE_CGLTF
     typedef struct sfrModel SfrModel;
@@ -418,17 +416,17 @@ typedef struct sfrfont {
     f32 verts[SFR_FONT_GLYPH_MAX][SFR_FONT_VERT_MAX];
 } SfrFont;
 
-typedef struct sfrBounds {
+struct sfrBounds {
     f32 minX, minY, minZ;
     f32 maxX, maxY, maxZ;
-} SfrBounds;
+};
 
 typedef struct sfrScene {
     SfrSceneObject* objects;
     i32 count;
 } SfrScene;
 
-typedef struct sfrBvhNode {
+struct sfrBvhNode {
     f32 minX, minY, minZ;
     f32 maxX, maxY, maxZ;
     
@@ -437,7 +435,7 @@ typedef struct sfrBvhNode {
     // if count > 0 this is a leaf node and 'leftFirst' is the index of the first triangle
     i32 leftFirst; 
     i32 count;
-} SfrBvhNode;
+};
 
 typedef struct sfrSceneObject {
     // all provided when creating the list of objects
@@ -468,36 +466,36 @@ typedef struct sfrRayHit {
 
 #ifdef SFR_USE_CGLTF
 
-typedef enum SfrAnimPathType {
+enum sfrAnimPathType {
     SFR_ANIM_PATH_TRANSLATION,
     SFR_ANIM_PATH_ROTATION,
     SFR_ANIM_PATH_SCALE
-} SfrAnimPathType;
+};
 
-typedef struct SfrAnimSampler {
+struct sfrAnimSampler {
     f32* inputs;  // times
     f32* outputs; // values
     i32 count;
-} SfrAnimSampler;
+};
 
-typedef struct SfrAnimChannel {
+struct sfrAnimChannel {
     i32 transformNodeInd; // into model->transforms
     i32 samplerInd;
-    SfrAnimPathType path;
-} SfrAnimChannel;
+    enum sfrAnimPathType path;
+};
 
-typedef struct SfrAnimation {
+struct sfrAnimation {
     char* name;
     f32 duration;
     
-    SfrAnimSampler* samplers;
+    struct sfrAnimSampler* samplers;
     i32 samplerCount;
     
-    SfrAnimChannel* channels;
+    struct sfrAnimChannel* channels;
     i32 channelCount;
-} SfrAnimation;
+};
 
-typedef struct SfrTransformNode {
+struct sfrTransformNode {
     // local transform components
     sfrvec localPos;
     sfrvec localRot; // quaternion
@@ -508,22 +506,22 @@ typedef struct SfrTransformNode {
     // cached matrices
     sfrmat localMatrix;
     sfrmat worldMatrix;
-} SfrTransformNode;
+};
 
-typedef struct sfrModelNode {
+struct sfrModelNode {
     SfrMesh* mesh;
     SfrTexture* tex;
     i32 transformInd; // link to the scene graph hierarchy
-} SfrModelNode;
+};
 
 typedef struct sfrModel {
-    SfrModelNode* nodes; // renderable parts
+    struct sfrModelNode* nodes; // renderable parts
     i32 nodeCount;
 
-    SfrTransformNode* transforms; // hierarchy logic (1:1 with gltf nodes)
+    struct sfrTransformNode* transforms; // hierarchy logic (1:1 with gltf nodes)
     i32 transformCount;
 
-    SfrAnimation* animations;
+    struct sfrAnimation* animations;
     i32 animCount;
 
     // resource tracking for cleanup
@@ -535,7 +533,7 @@ typedef struct sfrModel {
 
 #endif // SFR_USE_CGLTF
 
-typedef struct sfrparticle {
+typedef struct sfrParticle {
     f32 px, py, pz; // position
     f32 vx, vy, vz; // velocity
     f32 ax, ay, az; // acceleration
@@ -544,7 +542,7 @@ typedef struct sfrparticle {
     f32 lifetime, age;
 } SfrParticle;
 
-typedef struct sfrparticles {
+typedef struct sfrParticles {
     SfrParticle* particles;
     i32 total, active;
     const SfrTexture* tex;
@@ -556,33 +554,33 @@ typedef struct sfrlight {
     f32 r, g, b; // [0.0, 1.0]
 } SfrLight;
 
-typedef struct sfrTriangleBin {
+struct sfrTriangleBin {
     f32 ax, ay, az, aInvZ, auoz, avoz;
     f32 bx, by, bz, bInvZ, buoz, bvoz;
     f32 cx, cy, cz, cInvZ, cuoz, cvoz;
     f32 aIntensity, bIntensity, cIntensity;
     u32 col;
     const SfrTexture* tex;
-} SfrTriangleBin;
+};
 
-typedef struct sfrTile {
+struct sfrTile {
     i32 minX, minY, maxX, maxY;
     f32 maxZ; // furthest visible depth in the tile
     #ifdef SFR_MULTITHREADED
-        SfrTriangleBin** bins; 
+        struct sfrTriangleBin** bins; 
         i32 binsCapacity;
         SfrAtomic32 binCount;
         SfrMutex mutex;
     #endif
-} SfrTile;
+};
 
 #ifdef SFR_MULTITHREADED
-    typedef struct sfrThreadData {
+    struct sfrThreadData {
         SfrThread handle;
         i32 threadInd;
-    } SfrThreadData;
+    };
 
-    typedef struct sfrMeshChunkJob {
+    struct sfrMeshChunkJob {
         const f32* tris;
         const f32* uvs;
         const f32* normals;
@@ -592,16 +590,16 @@ typedef struct sfrTile {
         const SfrTexture* tex;
         i32 startTriangle;
         i32 triangleCount;
-    } SfrMeshChunkJob;
+    };
 
-    typedef struct sfrThreadBuf {
+    struct sfrThreadBuf {
         // tiling system data
-        SfrTile tiles[
+        struct sfrTile tiles[
             ((SFR_MAX_HEIGHT + SFR_TILE_WIDTH - 1) / SFR_TILE_WIDTH) *
             ((SFR_MAX_WIDTH + SFR_TILE_WIDTH - 1) / SFR_TILE_WIDTH)];
         i32 tileCols, tileRows, tileCount;
         
-        SfrTriangleBin** binPages; // dynamic array of pointers to fixed size pages
+        struct sfrTriangleBin** binPages; // dynamic array of pointers to fixed size pages
         i32 binPagesCapacity; // how many pages pointers have been allocated for
         SfrAtomic32 triangleBinAllocator; // total bins allocated across all pages
         SfrMutex binPoolMutex; // protects the binPages array resizing
@@ -612,7 +610,7 @@ typedef struct sfrTile {
         SfrAtomic32 rasterWorkQueueHead;
 
         // dynamic pool for mesh jobs
-        SfrMeshChunkJob* meshJobPool;
+        struct sfrMeshChunkJob* meshJobPool;
         i32 meshJobPoolCapacity;
         SfrAtomic32 meshJobAllocator;
         
@@ -630,10 +628,10 @@ typedef struct sfrTile {
         SfrSemaphore geometryDoneSem;
         SfrSemaphore rasterStartSem;
         SfrSemaphore rasterDoneSem;
-    } SfrThreadBuf;
+    };
 #endif
 
-typedef struct sfrState {
+struct sfrState {
     u8 lightingEnabled;
     i32 activeLightCount;
 
@@ -652,17 +650,17 @@ typedef struct sfrState {
     #ifdef SFR_MULTITHREADED
         u8 shutdown;
     #endif
-} SfrState;
+};
 
 // helper to track vertex attributes during clipping of textured triangles
-typedef struct sfrTexVert {
+struct sfrTexVert {
     sfrvec pos;      // position in view space
     f32 u, v;        // texture coords
     sfrvec normal;   // world-space normal for lighting
     sfrvec worldPos; // world-space position for lighting
     f32 viewZ;       // z in view space for perspective correction
     f32 intensity;   // intensity for goraud shading
-} SfrTexVert;
+};
 
 
 //================================================
@@ -676,7 +674,7 @@ i32 sfrWidth, sfrHeight;
 u32* sfrPixelBuf;
 f32* sfrDepthBuf;
 #ifdef SFR_MULTITHREADED
-    static SfrThreadBuf* sfrThreadBuf;
+    static struct sfrThreadBuf* sfrThreadBuf;
 #endif
 SfrLight sfrLight;
 
@@ -687,7 +685,7 @@ sfrvec sfrCamPos, sfrCamUp, sfrCamTarget;
 f32 sfrCamFov;
 f32 sfrNearDist = 0.1f, sfrFarDist = 100.f;
 
-static SfrState sfrState = {0};
+static struct sfrState sfrState = {0};
 static void* (*sfrMalloc)(u64);
 static void  (*sfrFree)(void*);
 static void* (*sfrRealloc)(void*, u64);
@@ -1381,8 +1379,8 @@ static void sfr__mesh_swap_tri(SfrMesh* mesh, i32 a, i32 b) {
 }
 
 // recursively build bvh
-static void sfr__bvh_update_bounds(i32 nodeInd, SfrBvhNode* const nodes, const SfrMesh* mesh, i32 count) {
-    SfrBvhNode* const node = &nodes[nodeInd];
+static void sfr__bvh_update_bounds(i32 nodeInd, struct sfrBvhNode* const nodes, const SfrMesh* mesh, i32 count) {
+    struct sfrBvhNode* const node = &nodes[nodeInd];
     node->minX = node->minY = node->minZ = 1e30f;
     node->maxX = node->maxY = node->maxZ = -1e30f;
 
@@ -1405,8 +1403,8 @@ static void sfr__bvh_update_bounds(i32 nodeInd, SfrBvhNode* const nodes, const S
     }
 }
 
-static void sfr__bvh_subdivide(SfrBvhNode* const nodes, i32 nodeInd, i32* nodePtr, SfrMesh* mesh) {
-    SfrBvhNode* const node = &nodes[nodeInd];
+static void sfr__bvh_subdivide(struct sfrBvhNode* const nodes, i32 nodeInd, i32* nodePtr, SfrMesh* mesh) {
+    struct sfrBvhNode* const node = &nodes[nodeInd];
 
     if (node->count <= 4) {
         return; 
@@ -1473,8 +1471,8 @@ static void sfr__bvh_subdivide(SfrBvhNode* const nodes, i32 nodeInd, i32* nodePt
     sfr__bvh_subdivide(nodes, leftChildInd + 1, nodePtr, mesh);
 }
 
-static SfrTexVert sfr__lerp_vert(SfrTexVert a, SfrTexVert b, f32 t) {
-    return (SfrTexVert){
+static struct sfrTexVert sfr__lerp_vert(struct sfrTexVert a, struct sfrTexVert b, f32 t) {
+    return (struct sfrTexVert){
         .pos = sfr_vec_lerp(a.pos, b.pos, t),
         .u = SFR__LERPF(a.u, b.u, t),
         .v = SFR__LERPF(a.v, b.v, t),
@@ -1485,7 +1483,7 @@ static SfrTexVert sfr__lerp_vert(SfrTexVert a, SfrTexVert b, f32 t) {
     };
 }
 
-static i32 sfr__clip_tri_homogeneous(SfrTexVert out[restrict 2][3], sfrvec plane, const SfrTexVert in[3]) {
+static i32 sfr__clip_tri_homogeneous(struct sfrTexVert out[restrict 2][3], sfrvec plane, const struct sfrTexVert in[3]) {
     f32 dists[3];
     i32 clipMask = 0;
     
@@ -1503,7 +1501,7 @@ static i32 sfr__clip_tri_homogeneous(SfrTexVert out[restrict 2][3], sfrvec plane
         }
 
         case 7: { // 111, all inside
-            sfr_memcpy(out[0], in, sizeof(SfrTexVert) * 3);
+            sfr_memcpy(out[0], in, sizeof(struct sfrTexVert) * 3);
             return 1;
         }
         
@@ -1519,17 +1517,17 @@ static i32 sfr__clip_tri_homogeneous(SfrTexVert out[restrict 2][3], sfrvec plane
             const i32 bInd = (2 == inInd) ? 0 : inInd + 1;
             const i32 cInd = (0 == inInd) ? 2 : inInd - 1;
 
-            const SfrTexVert vA = in[inInd];
-            const SfrTexVert vB = in[bInd];
-            const SfrTexVert vC = in[cInd];
+            const struct sfrTexVert vA = in[inInd];
+            const struct sfrTexVert vB = in[bInd];
+            const struct sfrTexVert vC = in[cInd];
             
             // interpolate new verts on the edges leaving vA
             const f32 dA = dists[inInd];
             const f32 tAB = dA / (dA - dists[bInd]);
             const f32 tAC = dA / (dA - dists[cInd]);
             
-            const SfrTexVert newAB = sfr__lerp_vert(vA, vB, tAB);
-            const SfrTexVert newAC = sfr__lerp_vert(vA, vC, tAC);
+            const struct sfrTexVert newAB = sfr__lerp_vert(vA, vB, tAB);
+            const struct sfrTexVert newAC = sfr__lerp_vert(vA, vC, tAC);
 
             out[0][0] = vA;
             out[0][1] = newAB;
@@ -1549,9 +1547,9 @@ static i32 sfr__clip_tri_homogeneous(SfrTexVert out[restrict 2][3], sfrvec plane
             const i32 aInd = (outInd == 0) ? 2 : outInd - 1; // one before
             const i32 cInd = (outInd == 2) ? 0 : outInd + 1; // one after
             
-            const SfrTexVert vA = in[aInd];
-            const SfrTexVert vB = in[outInd];
-            const SfrTexVert vC = in[cInd];
+            const struct sfrTexVert vA = in[aInd];
+            const struct sfrTexVert vB = in[outInd];
+            const struct sfrTexVert vC = in[cInd];
 
             const f32 dA = dists[aInd];
             const f32 dB = dists[outInd];
@@ -1559,8 +1557,8 @@ static i32 sfr__clip_tri_homogeneous(SfrTexVert out[restrict 2][3], sfrvec plane
             const f32 tAB = dA / (dA - dB);
             const f32 tCB = dC / (dC - dB);
 
-            const SfrTexVert newAB = sfr__lerp_vert(vA, vB, tAB);
-            const SfrTexVert newCB = sfr__lerp_vert(vC, vB, tCB);
+            const struct sfrTexVert newAB = sfr__lerp_vert(vA, vB, tAB);
+            const struct sfrTexVert newCB = sfr__lerp_vert(vC, vB, tCB);
 
             // decomposition of (vA, newAB, newCB, vC)
             // vA, newAB, vC
@@ -1579,7 +1577,7 @@ static i32 sfr__clip_tri_homogeneous(SfrTexVert out[restrict 2][3], sfrvec plane
     return 0;
 }
 
-static void sfr__rasterize_bin(const SfrTriangleBin* bin, SfrTile* tile) {
+static void sfr__rasterize_bin(const struct sfrTriangleBin* bin, struct sfrTile* tile) {
     const f32 x0 = bin->ax, y0 = bin->ay;
     const f32 x1 = bin->bx, y1 = bin->by;
     const f32 x2 = bin->cx, y2 = bin->cy;
@@ -1939,10 +1937,10 @@ static void sfr__bin_triangle(
             i32 newCap = sfrThreadBuf->binPagesCapacity * 2;
             while (pageInd >= newCap) newCap *= 2;
             
-            SfrTriangleBin** newPageArr = (SfrTriangleBin**)sfrRealloc(sfrThreadBuf->binPages, sizeof(SfrTriangleBin*) * newCap);
+            struct sfrTriangleBin** newPageArr = (struct sfrTriangleBin**)sfrRealloc(sfrThreadBuf->binPages, sizeof(struct sfrTriangleBin*) * newCap);
             if (newPageArr) {
                 sfr_memset(newPageArr + sfrThreadBuf->binPagesCapacity, 0, 
-                    (newCap - sfrThreadBuf->binPagesCapacity) * sizeof(SfrTriangleBin*));
+                    (newCap - sfrThreadBuf->binPagesCapacity) * sizeof(struct sfrTriangleBin*));
                 sfrThreadBuf->binPages = newPageArr;
                 sfrThreadBuf->binPagesCapacity = newCap;
             }
@@ -1950,7 +1948,7 @@ static void sfr__bin_triangle(
 
         // allocate specific page if it's missing
         if (!sfrThreadBuf->binPages[pageInd]) {
-            sfrThreadBuf->binPages[pageInd] = (SfrTriangleBin*)sfrMalloc(sizeof(SfrTriangleBin) * SFR_BIN_PAGE_SIZE);
+            sfrThreadBuf->binPages[pageInd] = (struct sfrTriangleBin*)sfrMalloc(sizeof(struct sfrTriangleBin) * SFR_BIN_PAGE_SIZE);
         }
         
         sfr_mutex_unlock(&sfrThreadBuf->binPoolMutex);
@@ -1960,9 +1958,9 @@ static void sfr__bin_triangle(
         return;
     }
 
-    SfrTriangleBin* bin = &sfrThreadBuf->binPages[pageInd][pageOffset];
+    struct sfrTriangleBin* bin = &sfrThreadBuf->binPages[pageInd][pageOffset];
     
-    *bin = (SfrTriangleBin){
+    *bin = (struct sfrTriangleBin){
         .ax = ax, .ay = ay, .az = az, .aInvZ = aInvZ, .auoz = auoz, .avoz = avoz,
         .bx = bx, .by = by, .bz = bz, .bInvZ = bInvZ, .buoz = buoz, .bvoz = bvoz,
         .cx = cx, .cy = cy, .cz = cz, .cInvZ = cInvZ, .cuoz = cuoz, .cvoz = cvoz,
@@ -1985,14 +1983,14 @@ static void sfr__bin_triangle(
     for (i32 ty = yStart; ty <= yEnd; ty += 1) {
         for (i32 tx = xStart; tx <= xEnd; tx += 1) {
             const i32 tileInd = ty * sfrThreadBuf->tileCols + tx;
-            SfrTile* tile = &sfrThreadBuf->tiles[tileInd];
+            struct sfrTile* tile = &sfrThreadBuf->tiles[tileInd];
 
             // lock per tile to safely handle resize
             sfr_mutex_lock(&tile->mutex);
             
             if (tile->binCount >= tile->binsCapacity) {
                 i32 newCap = tile->binsCapacity * 2;
-                SfrTriangleBin** newBins = (SfrTriangleBin**)sfrRealloc(tile->bins, sizeof(SfrTriangleBin*) * newCap);
+                struct sfrTriangleBin** newBins = (struct sfrTriangleBin**)sfrRealloc(tile->bins, sizeof(struct sfrTriangleBin*) * newCap);
                 if (!newBins) {
                     sfr_mutex_unlock(&tile->mutex);
                     continue;
@@ -2018,12 +2016,12 @@ static void sfr__bin_triangle(
 #else // !SFR_MULTITHREADED
         
     sfrRasterCount += 1;
-    SfrTile fullTile = {
+    struct sfrTile fullTile = {
         .minX = 0, .minY = 0, .maxX = sfrWidth, .maxY = sfrHeight,
         .maxZ = sfrFarDist
     };
 
-    const SfrTriangleBin bin = {
+    const struct sfrTriangleBin bin = {
         ax, ay, az, aInvZ, auoz, avoz,
         bx, by, bz, bInvZ, buoz, bvoz,
         cx, cy, cz, cInvZ, cuoz, cvoz,
@@ -2077,7 +2075,7 @@ static void sfr__process_and_bin_triangle(
     }
 
     // to view space
-    SfrTexVert viewTri[3] = {
+    struct sfrTexVert viewTri[3] = {
         {
             .pos = sfr_mat_mul_vec(sfrMatView, aModel), .u = au, .v = av,
             .normal = na, .worldPos = aModel, .viewZ = 0, .intensity = aIntensity
@@ -2094,8 +2092,8 @@ static void sfr__process_and_bin_triangle(
     }
 
     // prepare clip space verts and transform to clip space
-    SfrTexVert clipTris[16][3];
-    SfrTexVert (*input)[3] = clipTris; i32 inputCount = 1; // used in rasterization
+    struct sfrTexVert clipTris[16][3];
+    struct sfrTexVert (*input)[3] = clipTris; i32 inputCount = 1; // used in rasterization
     for (i32 i = 0; i < 3; i += 1) {
         clipTris[0][i].pos = sfr_mat_mul_vec(sfrMatProj, viewTri[i].pos);
         clipTris[0][i].u = viewTri[i].u;
@@ -2135,14 +2133,14 @@ static void sfr__process_and_bin_triangle(
     };
 
     // clip against frustum planes
-    SfrTexVert buffer[SFR_ARRLEN(clipTris)][3];
-    SfrTexVert (*output)[3] = buffer;
+    struct sfrTexVert buffer[SFR_ARRLEN(clipTris)][3];
+    struct sfrTexVert (*output)[3] = buffer;
 
     // process each clipping plane
     for (i32 p = 0; p < 6; p += 1) {
         i32 outputCount = 0;
         for (i32 i = 0; i < inputCount; i += 1) {
-            SfrTexVert clipped[2][3];
+            struct sfrTexVert clipped[2][3];
             const i32 count = sfr__clip_tri_homogeneous(
                 clipped,
                 frustumPlanes[p],
@@ -2159,7 +2157,7 @@ static void sfr__process_and_bin_triangle(
         }
 
         // swap buffers
-        SfrTexVert (*temp)[3] = input;
+        struct sfrTexVert (*temp)[3] = input;
         input = output;
         output = temp;
         inputCount = outputCount;
@@ -2169,8 +2167,8 @@ static void sfr__process_and_bin_triangle(
     SFR_TRI_TEX_BIN:;
     const SfrTexture* texToUse = tex ? tex : &sfrState.baseTex;
     for (i32 i = 0; i < inputCount; i += 1) {
-        SfrTexVert* tri = input[i];
-        SfrTexVert screen[3];
+        struct sfrTexVert* tri = input[i];
+        struct sfrTexVert screen[3];
 
         // perspective divide and screen space conversion
         u8 skip = 0;
@@ -2267,7 +2265,7 @@ static void sfr__triangle_tex_norm(
 }
 
 // slab method
-static u8 sfr__intersect_bounds(sfrvec rayOrigin, sfrvec rayDirInv, SfrBounds box, f32 dist) {
+static u8 sfr__intersect_bounds(sfrvec rayOrigin, sfrvec rayDirInv, struct sfrBounds box, f32 dist) {
     const f32 tx1 = (box.minX - rayOrigin.x) * rayDirInv.x;
     const f32 tx2 = (box.maxX - rayOrigin.x) * rayDirInv.x;
     const f32 ty1 = (box.minY - rayOrigin.y) * rayDirInv.y;
@@ -2324,8 +2322,8 @@ static u8 sfr__intersect_triangle(
     return 0;
 }
 
-static SfrBounds sfr__calc_mesh_bounds(const SfrMesh* mesh) {
-    SfrBounds b = {0};
+static struct sfrBounds sfr__calc_mesh_bounds(const SfrMesh* mesh) {
+    struct sfrBounds b = {0};
 
     for (i32 i = 0; i < mesh->vertCount; i += 9) {
         const f32 ax = mesh->tris[i + 0];
@@ -2401,27 +2399,27 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
     }
 
     #ifdef SFR_MULTITHREADED
-        sfrThreadBuf = (SfrThreadBuf*)mallocFunc(sizeof(SfrThreadBuf));
+        sfrThreadBuf = (struct sfrThreadBuf*)mallocFunc(sizeof(struct sfrThreadBuf));
         if (!sfrThreadBuf) {
             freeFunc(sfrPixelBuf);
             freeFunc(sfrDepthBuf);
             #if SFR_MAX_LIGHTS > 0
                 freeFunc(sfrLights);
             #endif
-            SFR__ERR_EXIT("sfr_init: failed to allocate sfrThreadBuf (%ld bytes)\n", sizeof(SfrThreadBuf));
+            SFR__ERR_EXIT("sfr_init: failed to allocate sfrThreadBuf (%ld bytes)\n", sizeof(struct sfrThreadBuf));
         }
 
         sfr_mutex_init(&sfrThreadBuf->binPoolMutex);
         sfr_mutex_init(&sfrThreadBuf->geometryMutex);
 
         sfrThreadBuf->binPagesCapacity = 64; 
-        sfrThreadBuf->binPages = (SfrTriangleBin**)mallocFunc(sizeof(SfrTriangleBin*) * sfrThreadBuf->binPagesCapacity);
-        sfr_memset(sfrThreadBuf->binPages, 0, sizeof(SfrTriangleBin*) * sfrThreadBuf->binPagesCapacity);
+        sfrThreadBuf->binPages = (struct sfrTriangleBin**)mallocFunc(sizeof(struct sfrTriangleBin*) * sfrThreadBuf->binPagesCapacity);
+        sfr_memset(sfrThreadBuf->binPages, 0, sizeof(struct sfrTriangleBin*) * sfrThreadBuf->binPagesCapacity);
         
         // pre allocate first page
-        sfrThreadBuf->binPages[0] = (SfrTriangleBin*)mallocFunc(sizeof(SfrTriangleBin) * SFR_BIN_PAGE_SIZE);
+        sfrThreadBuf->binPages[0] = (struct sfrTriangleBin*)mallocFunc(sizeof(struct sfrTriangleBin) * SFR_BIN_PAGE_SIZE);
         sfrThreadBuf->meshJobPoolCapacity = 1024 * 8;
-        sfrThreadBuf->meshJobPool = (SfrMeshChunkJob*)mallocFunc(sizeof(SfrMeshChunkJob) * sfrThreadBuf->meshJobPoolCapacity);
+        sfrThreadBuf->meshJobPool = (struct sfrMeshChunkJob*)mallocFunc(sizeof(struct sfrMeshChunkJob) * sfrThreadBuf->meshJobPoolCapacity);
 
         sfrThreadBuf->geometryWorkQueueCapacity = 1024 * 8;
         sfrThreadBuf->geometryWorkQueue = (i32*)mallocFunc(sizeof(i32) * sfrThreadBuf->geometryWorkQueueCapacity);
@@ -2593,7 +2591,7 @@ SFR_FUNC void sfr_resize(i32 width, i32 height) {
 
         for (i32 y = 0, i = 0; y < sfrThreadBuf->tileRows; y += 1) {
             for (i32 x = 0; x < sfrThreadBuf->tileCols; x += 1, i += 1) {
-                SfrTile* tile = &sfrThreadBuf->tiles[i];
+                struct sfrTile* tile = &sfrThreadBuf->tiles[i];
                 tile->minX = x * SFR_TILE_WIDTH;
                 tile->minY = y * SFR_TILE_HEIGHT;
                 tile->maxX = SFR_MIN((x + 1) * SFR_TILE_WIDTH, width);
@@ -2602,7 +2600,7 @@ SFR_FUNC void sfr_resize(i32 width, i32 height) {
                 
                 sfr_mutex_init(&tile->mutex);
                 tile->binsCapacity = 1024 * 8;
-                tile->bins = (SfrTriangleBin**)sfrMalloc(sizeof(SfrTriangleBin*) * tile->binsCapacity);
+                tile->bins = (struct sfrTriangleBin**)sfrMalloc(sizeof(struct sfrTriangleBin*) * tile->binsCapacity);
                 sfr_atomic_set(&tile->binCount, 0);
             }
         }
@@ -3091,7 +3089,7 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
                         newCap *= 2;
                     }
                     
-                    SfrMeshChunkJob* const newPool = (SfrMeshChunkJob*)sfrRealloc(sfrThreadBuf->meshJobPool, sizeof(SfrMeshChunkJob) * newCap);
+                    struct sfrMeshChunkJob* const newPool = (struct sfrMeshChunkJob*)sfrRealloc(sfrThreadBuf->meshJobPool, sizeof(struct sfrMeshChunkJob) * newCap);
                     if (newPool) {
                         sfrThreadBuf->meshJobPool = newPool;
                         sfrThreadBuf->meshJobPoolCapacity = newCap;
@@ -3101,7 +3099,7 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrTexture* tex) {
             }
 
             // create and populate the job
-            SfrMeshChunkJob* job = &sfrThreadBuf->meshJobPool[jobInd];
+            struct sfrMeshChunkJob* job = &sfrThreadBuf->meshJobPool[jobInd];
             job->tris = &mesh->tris[i * 9];
             job->uvs = mesh->uvs ? &mesh->uvs[i * 6] : NULL;
             job->normals = &mesh->normals[i * 9];
@@ -3216,7 +3214,7 @@ SFR_FUNC SfrScene* sfr_scene_create(SfrSceneObject* objects, i32 count) {
         const i32 triCount = mesh->vertCount / 9;
         if (triCount > 0) {
             // a binary tree has at most 2 * n - 1
-            obj->_bvhNodes = (SfrBvhNode*)sfrMalloc(sizeof(SfrBvhNode) * (2 * triCount - 1));
+            obj->_bvhNodes = (struct sfrBvhNode*)sfrMalloc(sizeof(struct sfrBvhNode) * (2 * triCount - 1));
             obj->_bvhRoot = 0;
             
             // setup root
@@ -3315,7 +3313,7 @@ SFR_FUNC SfrRayHit sfr_scene_raycast(const SfrScene* scene, f32 ox, f32 oy, f32 
 
         while (stackPtr > 0) {
             const i32 nodeInd = stack[--stackPtr];
-            SfrBvhNode* node = &obj->_bvhNodes[nodeInd];
+            struct sfrBvhNode* node = &obj->_bvhNodes[nodeInd];
 
             // vv check bounds intersection (in local space) vv            
             const f32 tx1 = (node->minX - localOrigin.x) * localDirInv.x;
@@ -3431,7 +3429,7 @@ SFR_FUNC void sfr_model_animate(SfrModel* model, i32 animInd, f32 time) {
         SFR__ERR_RET(, "sfr_model_animate: animInd (%d) out of bounds [%d, %d)\n", animInd, 0, model->animCount);
     }
 
-    const SfrAnimation* const anim = &model->animations[animInd];
+    const struct sfrAnimation* const anim = &model->animations[animInd];
     
     // loop
     if (anim->duration > SFR_EPSILON) {
@@ -3440,9 +3438,9 @@ SFR_FUNC void sfr_model_animate(SfrModel* model, i32 animInd, f32 time) {
 
     // vv update local transforms from channels vv
     for (i32 i = 0; i < anim->channelCount; i += 1) {
-        const SfrAnimChannel* const channel = &anim->channels[i];
-        const SfrAnimSampler* const sampler = &anim->samplers[channel->samplerInd];
-        SfrTransformNode* const node = &model->transforms[channel->transformNodeInd];
+        const struct sfrAnimChannel* const channel = &anim->channels[i];
+        const struct sfrAnimSampler* const sampler = &anim->samplers[channel->samplerInd];
+        struct sfrTransformNode* const node = &model->transforms[channel->transformNodeInd];
 
         // find frame
         i32 f0 = 0, f1 = 0;
@@ -3482,7 +3480,7 @@ SFR_FUNC void sfr_model_animate(SfrModel* model, i32 animInd, f32 time) {
 
     // vv recompute hierarchy vv
     for (i32 i = 0; i < model->transformCount; i += 1) {
-        SfrTransformNode* node = &model->transforms[i];
+        struct sfrTransformNode* node = &model->transforms[i];
 
         // reconstruct local matrix
         const sfrmat scale = sfr_mat_scale(node->localScale.x, node->localScale.y, node->localScale.z);
@@ -3600,12 +3598,12 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
     #endif
 
     // vv build transform hierarchy (1:1 with gltf nodes) vv
-    model->transforms = (SfrTransformNode*)sfrMalloc(sizeof(SfrTransformNode) * data->nodes_count);
+    model->transforms = (struct sfrTransformNode*)sfrMalloc(sizeof(struct sfrTransformNode) * data->nodes_count);
     model->transformCount = (i32)data->nodes_count;
 
     for (i32 i = 0; i < model->transformCount; i += 1) {
         const cgltf_node* const cnode = &data->nodes[i];
-        SfrTransformNode* const tnode = &model->transforms[i];
+        struct sfrTransformNode* const tnode = &model->transforms[i];
 
         // init transforms
         if (cnode->has_translation) {
@@ -3646,7 +3644,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
         }
     }
 
-    // vv count primitives with each becoming an SfrModelNode vv
+    // vv count primitives with each becoming an struct sfrModelNode vv
     i32 totalPrimitives = 0;
     for (cgltf_size i = 0; i < data->nodes_count; i += 1) {
         if (data->nodes[i].mesh) {
@@ -3654,7 +3652,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
         }
     }
 
-    model->nodes = (SfrModelNode*)sfrMalloc(sizeof(SfrModelNode) * totalPrimitives);
+    model->nodes = (struct sfrModelNode*)sfrMalloc(sizeof(struct sfrModelNode) * totalPrimitives);
     model->nodeCount = totalPrimitives;
     // allocate pointers for all meshes even though they map 1:1 with nodes now
     model->_allMeshes = (SfrMesh**)sfrMalloc(sizeof(SfrMesh*) * totalPrimitives);
@@ -3772,21 +3770,21 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
     // vv load animations vv
     model->animCount = (i32)data->animations_count;
     if (model->animCount > 0) {
-        model->animations = (SfrAnimation*)sfrMalloc(sizeof(SfrAnimation) * model->animCount);
+        model->animations = (struct sfrAnimation*)sfrMalloc(sizeof(struct sfrAnimation) * model->animCount);
         
         for (i32 i = 0; i < model->animCount; i += 1) {
             const cgltf_animation* const ca = &data->animations[i];
-            SfrAnimation* const sa = &model->animations[i];
+            struct sfrAnimation* const sa = &model->animations[i];
             
             sa->duration = 0.f;
             sa->samplerCount = (i32)ca->samplers_count;
             sa->channelCount = (i32)ca->channels_count;
-            sa->samplers = (SfrAnimSampler*)sfrMalloc(sizeof(SfrAnimSampler) * sa->samplerCount);
-            sa->channels = (SfrAnimChannel*)sfrMalloc(sizeof(SfrAnimChannel) * sa->channelCount);
+            sa->samplers = (struct sfrAnimSampler*)sfrMalloc(sizeof(struct sfrAnimSampler) * sa->samplerCount);
+            sa->channels = (struct sfrAnimChannel*)sfrMalloc(sizeof(struct sfrAnimChannel) * sa->channelCount);
 
             for (i32 j = 0; j < sa->samplerCount; j += 1) {
                 const cgltf_animation_sampler* const cs = &ca->samplers[j];
-                SfrAnimSampler* const ss = &sa->samplers[j];
+                struct sfrAnimSampler* const ss = &sa->samplers[j];
                 
                 ss->count = (i32)cs->input->count;
                 ss->inputs = (f32*)sfrMalloc(sizeof(f32) * ss->count);
@@ -3804,7 +3802,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
 
             for (i32 j = 0; j < sa->channelCount; j += 1) {
                 const cgltf_animation_channel* const cc = &ca->channels[j];
-                SfrAnimChannel* const sc = &sa->channels[j];
+                struct sfrAnimChannel* const sc = &sa->channels[j];
                 
                 sc->transformNodeInd = (i32)(cc->target_node - data->nodes);
                 sc->samplerInd = (i32)(cc->sampler - ca->samplers);
@@ -4485,7 +4483,7 @@ static unsigned __stdcall sfr__worker_thread_func(void* arg) {
 static void* sfr__worker_thread_func(void* arg) {
 #endif
     (void)arg;
-    // const SfrThreadData* self = (SfrThreadData*)arg;
+    // const struct sfrThreadData* self = (struct sfrThreadData*)arg;
     // const i32 selfInd = self->threadInd;
 
     while (1) {
@@ -4506,7 +4504,7 @@ static void* sfr__worker_thread_func(void* arg) {
             }
 
             const i32 jobInd = sfrThreadBuf->geometryWorkQueue[head];
-            const SfrMeshChunkJob* job = &sfrThreadBuf->meshJobPool[jobInd];
+            const struct sfrMeshChunkJob* job = &sfrThreadBuf->meshJobPool[jobInd];
 
             // process all triangles in this job
             for (i32 i = 0; i < job->triangleCount; i += 1) {
@@ -4548,7 +4546,7 @@ static void* sfr__worker_thread_func(void* arg) {
             }
 
             // get the tile and rasterize its contents
-            SfrTile* tile = &sfrThreadBuf->tiles[sfrThreadBuf->rasterWorkQueue[head]];
+            struct sfrTile* tile = &sfrThreadBuf->tiles[sfrThreadBuf->rasterWorkQueue[head]];
             i32 binCount = sfr_atomic_get(&tile->binCount);
             for (i32 i = 0; i < binCount; i += 1) {
                 sfr__rasterize_bin(tile->bins[i], tile);
