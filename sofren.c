@@ -1,9 +1,3 @@
-#define SFR_IMPL
-#define SFR_THREAD_COUNT 8
-// #define SFR_NO_SIMD
-#define SFR_USE_CGLTF
-#define SFR_USE_STB_IMAGE
-
 #ifndef SFR_H
 #define SFR_H
 
@@ -135,9 +129,6 @@ extern "C" {
 typedef float  f32;
 typedef double f64;
 
-#ifndef SFR_NO_SIMD
-    #include <immintrin.h>
-#endif
 typedef union sfrvec sfrvec;
 typedef union sfrmat sfrmat;
 
@@ -389,18 +380,18 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
 //:TYPES
 //================================================
 
+#ifdef _MSC_VER
+    #define SFR_ALIGNED(n) __declspec(align(n))
+#else
+    #define SFR_ALIGNED(n) __attribute__((aligned(n)))
+#endif
+
 #ifndef SFR_NO_SIMD
-    #ifdef _MSC_VER
-        typedef union __declspec(align(16)) sfrvec {
-            struct { f32 x, y, z, w; };
-            __m128 v;
-        } sfrvec;
-    #else
-        typedef union __attribute__((aligned(16))) sfrvec {
-            struct { f32 x, y, z, w; };
-            __m128 v;
-        } sfrvec;
-    #endif
+    #include <immintrin.h>
+    typedef union SFR_ALIGNED(16) sfrvec {
+        __m128 v;
+        struct { f32 x, y, z, w; };
+    } sfrvec;
 #else
     typedef union sfrvec { struct { f32 x, y, z, w; }; } sfrvec;
 #endif
@@ -562,6 +553,7 @@ typedef struct sfrparticles {
 typedef struct sfrlight {
     f32 dirX, dirY, dirZ;
     f32 ambient, intensity;
+    f32 r, g, b; // [0.0, 1.0]
 } SfrLight;
 
 typedef struct sfrTriangleBin {
@@ -669,7 +661,7 @@ typedef struct sfrTexVert {
     sfrvec normal;   // world-space normal for lighting
     sfrvec worldPos; // world-space position for lighting
     f32 viewZ;       // z in view space for perspective correction
-    f32 intensity; // intensity for goraud shading
+    f32 intensity;   // intensity for goraud shading
 } SfrTexVert;
 
 
@@ -700,9 +692,12 @@ static void* (*sfrMalloc)(u64);
 static void  (*sfrFree)(void*);
 static void* (*sfrRealloc)(void*, u64);
 
-// for bin batching to avoid atomic operation each time
-static SFR_THREAD_LOCAL i32 sfrTlsBinStart = 0;
-static SFR_THREAD_LOCAL i32 sfrTlsBinEnd = 0;
+#ifdef SFR_MULTITHREADED
+    // for bin batching to avoid atomic operation each time
+    static SFR_THREAD_LOCAL i32 sfrTlsBinStart = 0;
+    static SFR_THREAD_LOCAL i32 sfrTlsBinEnd = 0;
+#endif
+
 
 //================================================
 //:OPTIONAL LIBS SETUP
@@ -804,7 +799,7 @@ static SFR_THREAD_LOCAL i32 sfrTlsBinEnd = 0;
 
 
 //================================================
-//:MISC HELPER MACROS
+//: MISC HELPER MACROS
 //================================================
 
 #define SFR__SWAP(type, _a, _b) { const type _swapTemp = (_a); (_a) = (_b); (_b) = _swapTemp; }
@@ -1478,171 +1473,128 @@ static void sfr__bvh_subdivide(SfrBvhNode* const nodes, i32 nodeInd, i32* nodePt
     sfr__bvh_subdivide(nodes, leftChildInd + 1, nodePtr, mesh);
 }
 
-// used in rasterizing to wrap texture coords
-static i32 sfr__wrap_coord(i32 x, i32 max) {
-    const i32 r = x % max;
-    return r < 0 ? r + max : r;
+static SfrTexVert sfr__lerp_vert(SfrTexVert a, SfrTexVert b, f32 t) {
+    return (SfrTexVert){
+        .pos = sfr_vec_lerp(a.pos, b.pos, t),
+        .u = SFR__LERPF(a.u, b.u, t),
+        .v = SFR__LERPF(a.v, b.v, t),
+        .viewZ = SFR__LERPF(a.viewZ, b.viewZ, t),
+        .intensity = SFR__LERPF(a.intensity, b.intensity, t),
+        .normal = sfr_vec_lerp(a.normal, b.normal, t),
+        .worldPos = sfr_vec_lerp(a.worldPos, b.worldPos, t)
+    };
 }
 
-static i32 sfr__clip_tri_homogeneous(SfrTexVert out[2][3], sfrvec plane, const SfrTexVert in[3]) {
-    SfrTexVert inside[3], outside[3];
-    f32 insideDists[3], outsideDists[3];
-    i32 insideCount = 0, outsideCount = 0;
-
-    // precompute distances during classification
+static i32 sfr__clip_tri_homogeneous(SfrTexVert out[restrict 2][3], sfrvec plane, const SfrTexVert in[3]) {
+    f32 dists[3];
+    i32 clipMask = 0;
+    
+    // calculate distances and build a bitmask of which verts are inside
     for (i32 i = 0; i < 3; i += 1) {
         const sfrvec v = in[i].pos;
-        const f32 dist = plane.x * v.x + plane.y * v.y + plane.z * v.z + plane.w * v.w;
-        if (dist >= 0.f) {
-            inside[insideCount] = in[i];
-            insideDists[insideCount] = dist;
-            insideCount += 1;
-        } else {
-            outside[outsideCount] = in[i];
-            outsideDists[outsideCount] = dist;
-            outsideCount += 1;
+        dists[i] = plane.x * v.x + plane.y * v.y + plane.z * v.z + plane.w * v.w;
+        clipMask |= (dists[i] >= 0.f) << i;
+    }
+
+    // switch based on the mask topology
+    switch (clipMask) {
+        case 0: { // 000, all outside
+            return 0;
         }
-    }
 
-    if (3 == insideCount) {
-        out[0][0] = in[0];
-        out[0][1] = in[1];
-        out[0][2] = in[2];
-        return 1;
-    }
+        case 7: { // 111, all inside
+            sfr_memcpy(out[0], in, sizeof(SfrTexVert) * 3);
+            return 1;
+        }
+        
+        // vv 1 in, 2 out (triangle shrinks) vv
+        case 1: // 001, only v0 inside
+        case 2: // 010, only v1 inside
+        case 4: // 100, only v2 inside
+        {
+            // which index is the one inside (the tip)
+            const i32 inInd = clipMask >> 1;
 
-    if (1 == insideCount && 2 == outsideCount) {
-        const SfrTexVert a = inside[0];
-        const SfrTexVert b = outside[0];
-        const SfrTexVert c = outside[1];
+            // the next two vertices in winding order
+            const i32 bInd = (2 == inInd) ? 0 : inInd + 1;
+            const i32 cInd = (0 == inInd) ? 2 : inInd - 1;
 
-        // use precomputed distances
-        const f32 dA = insideDists[0];
-        const f32 dB = outsideDists[0];
-        const f32 dC = outsideDists[1];
+            const SfrTexVert vA = in[inInd];
+            const SfrTexVert vB = in[bInd];
+            const SfrTexVert vC = in[cInd];
+            
+            // interpolate new verts on the edges leaving vA
+            const f32 dA = dists[inInd];
+            const f32 tAB = dA / (dA - dists[bInd]);
+            const f32 tAC = dA / (dA - dists[cInd]);
+            
+            const SfrTexVert newAB = sfr__lerp_vert(vA, vB, tAB);
+            const SfrTexVert newAC = sfr__lerp_vert(vA, vC, tAC);
 
-        const f32 tAB = dA / (dA - dB);
-        const f32 tAC = dA / (dA - dC);
+            out[0][0] = vA;
+            out[0][1] = newAB;
+            out[0][2] = newAC;
 
-        // interpolate vertex b
-        const SfrTexVert newB = {
-            .pos = {
-                .x = a.pos.x + tAB * (b.pos.x - a.pos.x),
-                .y = a.pos.y + tAB * (b.pos.y - a.pos.y),
-                .z = a.pos.z + tAB * (b.pos.z - a.pos.z),
-                .w = a.pos.w + tAB * (b.pos.w - a.pos.w)
-            },
-            .u = a.u + tAB * (b.u - a.u),
-            .v = a.v + tAB * (b.v - a.v),
-            .normal = sfr_vec_add(sfr_vec_mul(a.normal, 1.f - tAB), sfr_vec_mul(b.normal, tAB)),
-            .worldPos = sfr_vec_add(sfr_vec_mul(a.worldPos, 1.f - tAB), sfr_vec_mul(b.worldPos, tAB)),
-            .viewZ = a.viewZ + tAB * (b.viewZ - a.viewZ),
-            .intensity = a.intensity + tAB * (b.intensity - a.intensity),
-        };
+            return 1;
+        }
 
-        // interpolate vertex c
-        const SfrTexVert newC = {
-            .pos = {
-                .x = a.pos.x + tAC * (c.pos.x - a.pos.x),
-                .y = a.pos.y + tAC * (c.pos.y - a.pos.y),
-                .z = a.pos.z + tAC * (c.pos.z - a.pos.z),
-                .w = a.pos.w + tAC * (c.pos.w - a.pos.w)
-            },
-            .u = a.u + tAC * (c.u - a.u),
-            .v = a.v + tAC * (c.v - a.v),
-            .normal = sfr_vec_add(sfr_vec_mul(a.normal, 1.f - tAC), sfr_vec_mul(c.normal, tAC)),
-            .worldPos = sfr_vec_add(sfr_vec_mul(a.worldPos, 1.f - tAC), sfr_vec_mul(c.worldPos, tAC)),
-            .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ),
-            .intensity = a.intensity + tAC * (c.intensity - a.intensity),
-        };
+        // vv 2 in, 1 out (quad split into 2 tris) vv
+        case 3: // 011, v2 is out
+        case 5: // 101, v1 is out
+        case 6: // 110, v0 is out
+        {
+            // which index is the one outside
+            const i32 outInd = (~clipMask & 7) >> 1;
 
-        out[0][0] = a;
-        out[0][1] = newB;
-        out[0][2] = newC;
-        return 1;
-    }
+            const i32 aInd = (outInd == 0) ? 2 : outInd - 1; // one before
+            const i32 cInd = (outInd == 2) ? 0 : outInd + 1; // one after
+            
+            const SfrTexVert vA = in[aInd];
+            const SfrTexVert vB = in[outInd];
+            const SfrTexVert vC = in[cInd];
 
-    if (2 == insideCount && 1 == outsideCount) {
-        const SfrTexVert a = inside[0];
-        const SfrTexVert b = inside[1];
-        const SfrTexVert c = outside[0];
+            const f32 dA = dists[aInd];
+            const f32 dB = dists[outInd];
+            const f32 dC = dists[cInd];
+            const f32 tAB = dA / (dA - dB);
+            const f32 tCB = dC / (dC - dB);
 
-        // use precomputed distances
-        const f32 dA = insideDists[0];
-        const f32 dB = insideDists[1];
-        const f32 dC = outsideDists[0];
+            const SfrTexVert newAB = sfr__lerp_vert(vA, vB, tAB);
+            const SfrTexVert newCB = sfr__lerp_vert(vC, vB, tCB);
 
-        const f32 tAC = dA / (dA - dC);
-        const f32 tBC = dB / (dB - dC);
+            // decomposition of (vA, newAB, newCB, vC)
+            // vA, newAB, vC
+            // newAB, newCB, vC
 
-        // interpolate vertices
-        const SfrTexVert newAC = {
-            .pos = {
-                .x = a.pos.x + tAC * (c.pos.x - a.pos.x),
-                .y = a.pos.y + tAC * (c.pos.y - a.pos.y),
-                .z = a.pos.z + tAC * (c.pos.z - a.pos.z),
-                .w = a.pos.w + tAC * (c.pos.w - a.pos.w)
-            },
-            .u = a.u + tAC * (c.u - a.u),
-            .v = a.v + tAC * (c.v - a.v),
-            .normal = sfr_vec_add(sfr_vec_mul(a.normal, 1.f - tAC), sfr_vec_mul(c.normal, tAC)),
-            .worldPos = sfr_vec_add(sfr_vec_mul(a.worldPos, 1.f - tAC), sfr_vec_mul(c.worldPos, tAC)),
-            .viewZ = a.viewZ + tAC * (c.viewZ - a.viewZ),
-            .intensity = a.intensity + tAC * (c.intensity - a.intensity),
-        };
-
-        const SfrTexVert newBC = {
-            .pos = {
-                .x = b.pos.x + tBC * (c.pos.x - b.pos.x),
-                .y = b.pos.y + tBC * (c.pos.y - b.pos.y),
-                .z = b.pos.z + tBC * (c.pos.z - b.pos.z),
-                .w = b.pos.w + tBC * (c.pos.w - b.pos.w)
-            },
-            .u = b.u + tBC * (c.u - b.u),
-            .v = b.v + tBC * (c.v - b.v),
-            .normal = sfr_vec_add(sfr_vec_mul(b.normal, 1.f - tBC), sfr_vec_mul(c.normal, tBC)),
-            .worldPos = sfr_vec_add(sfr_vec_mul(b.worldPos, 1.f - tBC), sfr_vec_mul(c.worldPos, tBC)),
-            .viewZ = b.viewZ + tBC * (c.viewZ - b.viewZ),
-            .intensity = b.intensity + tBC * (c.intensity - b.intensity),
-        };
-
-        out[0][0] = a;
-        out[0][1] = b;
-        out[0][2] = newAC;
-
-        out[1][0] = b;
-        out[1][1] = newAC;
-        out[1][2] = newBC;
-
-        return 2;
+            out[0][0] = vA;
+            out[0][1] = newAB;
+            out[0][2] = vC;
+            out[1][0] = newAB;
+            out[1][1] = newCB;
+            out[1][2] = vC;
+            return 2;
+        }
     }
 
     return 0;
 }
 
 static void sfr__rasterize_bin(const SfrTriangleBin* bin, SfrTile* tile) {
-    f32 x0 = bin->ax, y0 = bin->ay;
-    f32 x1 = bin->bx, y1 = bin->by;
-    f32 x2 = bin->cx, y2 = bin->cy;
+    const f32 x0 = bin->ax, y0 = bin->ay;
+    const f32 x1 = bin->bx, y1 = bin->by;
+    const f32 x2 = bin->cx, y2 = bin->cy;
 
-    f32 z0 = bin->aInvZ, u0 = bin->auoz, v0 = bin->avoz;
-    f32 z1 = bin->bInvZ, u1 = bin->buoz, v1 = bin->bvoz;
-    f32 z2 = bin->cInvZ, u2 = bin->cuoz, v2 = bin->cvoz;
+    const f32 z0 = bin->aInvZ, u0 = bin->auoz, v0 = bin->avoz;
+    const f32 z1 = bin->bInvZ, u1 = bin->buoz, v1 = bin->bvoz;
+    const f32 z2 = bin->cInvZ, u2 = bin->cuoz, v2 = bin->cvoz;
 
-    f32 i0 = bin->aIntensity * z0; 
-    f32 i1 = bin->bIntensity * z1; 
-    f32 i2 = bin->cIntensity * z2;
+    const f32 i0 = bin->aIntensity * z0; 
+    const f32 i1 = bin->bIntensity * z1; 
+    const f32 i2 = bin->cIntensity * z2;
 
-    // winding order fix
-    f32 det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
-    if (det <= 0.f) {
-        if (0.f == det) {
-            return;
-        }
-        SFR__SWAP(f32, x1, x2); SFR__SWAP(f32, y1, y2);
-        SFR__SWAP(f32, z1, z2); SFR__SWAP(f32, u1, u2);
-        SFR__SWAP(f32, v1, v2); SFR__SWAP(f32, i1, i2);
-        det = -det;
+    const f32 det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if (0.f == det) {
+        return;
     }
     const f32 invDet = 1.f / det;
 
@@ -1707,16 +1659,16 @@ static void sfr__rasterize_bin(const SfrTriangleBin* bin, SfrTile* tile) {
 
     const SfrTexture* const tex = bin->tex;
     const i32 texW = tex->w, texH = tex->h;
-    const f32 rBase = (f32)((bin->col >> 16) & 0xFF) / 255.f;
-    const f32 gBase = (f32)((bin->col >> 8)  & 0xFF) / 255.f;
-    const f32 bBase = (f32)((bin->col >> 0)  & 0xFF) / 255.f;
+    const f32 rBase = ((f32)((bin->col >> 16) & 0xFF) / 255.f) * sfrLight.r;
+    const f32 gBase = ((f32)((bin->col >> 8)  & 0xFF) / 255.f) * sfrLight.g;
+    const f32 bBase = ((f32)((bin->col >> 0)  & 0xFF) / 255.f) * sfrLight.b;
 
     // is power of two
     const u8 isPot = (0 == (texW & (texW - 1))) && (0 == (texH & (texH - 1)));
 
 #ifndef SFR_NO_SIMD
     // align minX to 8 for SIMD
-    const i32 minX_aligned = minX & ~7;
+    const i32 alignedMinX = minX & ~7;
     
     // vv setup vectors vv
     const __m256 vA0 = _mm256_set1_ps(A0), vB0 = _mm256_set1_ps(B0), vC0 = _mm256_set1_ps(C0);
@@ -1743,7 +1695,7 @@ static void sfr__rasterize_bin(const SfrTriangleBin* bin, SfrTile* tile) {
     const __m256 vRBase = _mm256_set1_ps(rBase), vGBase = _mm256_set1_ps(gBase), vBBase = _mm256_set1_ps(bBase);
     const __m256i vTexW = _mm256_set1_epi32(texW), vTexH = _mm256_set1_epi32(texH);
     const __m256 vFTexW = _mm256_cvtepi32_ps(vTexW), vFTexH = _mm256_cvtepi32_ps(vTexH);
-    const __m256 v255 = _mm256_set1_ps(255.0f);
+    const __m256 v255 = _mm256_set1_ps(255.f);
     const __m256i v0xFF = _mm256_set1_epi32(0xFF);
     
     const __m256i vMaskW = _mm256_set1_epi32(texW - 1);
@@ -1754,7 +1706,7 @@ static void sfr__rasterize_bin(const SfrTriangleBin* bin, SfrTile* tile) {
         const __m256 vy = _mm256_set1_ps(fy);
 
         // trivial rejection test
-        for (i32 xBase = minX_aligned; xBase < maxX; xBase += 8) {
+        for (i32 xBase = alignedMinX; xBase < maxX; xBase += 8) {
             // a plane E(x, y) is linear, E < 0 at all 4 corners => its < 0 everywhere inside
             
             const f32 fx = (f32)xBase;
@@ -1815,8 +1767,8 @@ static void sfr__rasterize_bin(const SfrTriangleBin* bin, SfrTile* tile) {
                 if (xBase < minX || xBase + 8 > maxX) {
                     const __m256i vGlobalX = _mm256_add_epi32(_mm256_set1_epi32(xBase), vIndex);
                     const __m256 vBoundMask = _mm256_and_ps(
-                        _mm256_cmp_ps(_mm256_cvtepi32_ps(vGlobalX), _mm256_set1_ps((float)minX), _CMP_GE_OQ),
-                        _mm256_cmp_ps(_mm256_cvtepi32_ps(vGlobalX), _mm256_set1_ps((float)maxX), _CMP_LT_OQ)
+                        _mm256_cmp_ps(_mm256_cvtepi32_ps(vGlobalX), _mm256_set1_ps((f32)minX), _CMP_GE_OQ),
+                        _mm256_cmp_ps(_mm256_cvtepi32_ps(vGlobalX), _mm256_set1_ps((f32)maxX), _CMP_LT_OQ)
                     );
                     mask = _mm256_and_ps(mask, vBoundMask);
                 }
@@ -1827,7 +1779,7 @@ static void sfr__rasterize_bin(const SfrTriangleBin* bin, SfrTile* tile) {
                     const __m256 vOldDepth = _mm256_loadu_ps(&sfrDepthBuf[pixelInd]);
                     
                     __m256 vRecipZ = _mm256_rcp_ps(vz);
-                    vRecipZ = _mm256_mul_ps(vRecipZ, _mm256_sub_ps(_mm256_set1_ps(2.0f), _mm256_mul_ps(vz, vRecipZ)));
+                    vRecipZ = _mm256_mul_ps(vRecipZ, _mm256_sub_ps(_mm256_set1_ps(2.f), _mm256_mul_ps(vz, vRecipZ)));
                     
                     const __m256 depthMask = _mm256_cmp_ps(vRecipZ, vOldDepth, _CMP_LT_OQ);
                     mask = _mm256_and_ps(mask, depthMask);
@@ -1882,6 +1834,9 @@ static void sfr__rasterize_bin(const SfrTriangleBin* bin, SfrTile* tile) {
                                 _mm256_slli_epi32(vResR, 16), _mm256_or_si256(
                                     _mm256_slli_epi32(vResG, 8), vResB))
                             );
+
+                        // const __m256i current = _mm256_maskload_epi32((const int*)&sfrPixelBuf[pixelInd], _mm256_castps_si256(mask));
+                        // const __m256i cost = _mm256_add_epi8(current, _mm256_set1_epi32(0x00150000)); 
                         _mm256_maskstore_epi32((i32*)&sfrPixelBuf[pixelInd], _mm256_castps_si256(mask), vFinalPixel);
                     }
                 }
@@ -2122,22 +2077,16 @@ static void sfr__process_and_bin_triangle(
     }
 
     // to view space
-    SfrTexVert viewTri[3] = { // this looks so bad but unfortunately works "well"
+    SfrTexVert viewTri[3] = {
         {
-            sfr_mat_mul_vec(sfrMatView, aModel), au, av, na, aModel, 0
-            #ifndef SFR_USE_PHONG
-                , aIntensity
-            #endif
+            .pos = sfr_mat_mul_vec(sfrMatView, aModel), .u = au, .v = av,
+            .normal = na, .worldPos = aModel, .viewZ = 0, .intensity = aIntensity
         }, {
-            sfr_mat_mul_vec(sfrMatView, bModel), bu, bv, nb, bModel, 0
-            #ifndef SFR_USE_PHONG
-                , bIntensity
-            #endif
+            .pos = sfr_mat_mul_vec(sfrMatView, bModel), .u = bu, .v = bv,
+            .normal = nb, .worldPos = bModel, .viewZ = 0, .intensity = bIntensity
         }, {
-            sfr_mat_mul_vec(sfrMatView, cModel), cu, cv, nc, cModel, 0
-            #ifndef SFR_USE_PHONG
-                , cIntensity
-            #endif
+            .pos = sfr_mat_mul_vec(sfrMatView, cModel), .u = cu, .v = cv,
+            .normal = nc, .worldPos = cModel, .viewZ = 0, .intensity = cIntensity
         }
     };
     for (i32 i = 0; i < 3; i += 1) {
@@ -2154,9 +2103,7 @@ static void sfr__process_and_bin_triangle(
         clipTris[0][i].normal = viewTri[i].normal;
         clipTris[0][i].worldPos = viewTri[i].worldPos;
         clipTris[0][i].viewZ = viewTri[i].viewZ;
-        #ifndef SFR_USE_PHONG
-            clipTris[0][i].intensity = viewTri[i].intensity;
-        #endif
+        clipTris[0][i].intensity = viewTri[i].intensity;
     }
 
     // check if clipping is needed at all
@@ -2241,9 +2188,7 @@ static void sfr__process_and_bin_triangle(
             screen[j].normal = tri[j].normal;
             screen[j].worldPos = tri[j].worldPos;
             screen[j].viewZ = tri[j].viewZ;
-        #ifndef SFR_USE_PHONG
             screen[j].intensity = tri[j].intensity;
-        #endif
         }
 
         if (skip ||
@@ -2269,15 +2214,7 @@ static void sfr__process_and_bin_triangle(
             screen[0].pos.x, screen[0].pos.y, screen[0].pos.z, aInvZ, auoz, avoz,
             screen[1].pos.x, screen[1].pos.y, screen[1].pos.z, bInvZ, buoz, bvoz,
             screen[2].pos.x, screen[2].pos.y, screen[2].pos.z, cInvZ, cuoz, cvoz,
-            #ifdef SFR_USE_PHONG
-                screen[0].normal, screen[0].worldPos,
-                screen[1].normal, screen[1].worldPos,
-                screen[2].normal, screen[2].worldPos,
-            #else
-                screen[0].intensity,
-                screen[1].intensity,
-                screen[2].intensity,
-            #endif
+            screen[0].intensity, screen[1].intensity, screen[2].intensity,
             col, texToUse
         );
     }
@@ -2526,6 +2463,10 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
 
     sfrState.baseTexPixels[0] = 0xFFFFFFFF;
     sfrState.baseTex = (SfrTexture){ .w = 1, .h = 1, .pixels = sfrState.baseTexPixels };
+
+    if (0 == sfrLight.r && 0 == sfrLight.g && 0 == sfrLight.b) {
+        sfrLight.r = sfrLight.g = sfrLight.b = 1.f;
+    }
 }
 
 SFR_FUNC void sfr__shutdown(void); // I dont wanna move sfr__shutdown to here
