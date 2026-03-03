@@ -6,35 +6,14 @@
 
 <details>
   <summary>About...</summary>
-  Lighting baked in Blender, exported to .glb, and loaded using sofren's cgltf wrapper (sfr_load_model).
-  
-  This is meant to show that lightmaps work in sofren, allowing for much better lighting than would otherwise be possible when rasterizing at high resolutions.
-  
-  Background skybox from [here](https://bumbadida.itch.io/skybox-textures-sdr).
-
-  The scene is being rendered at 1280x720 235fps.
+  This is (for now) faked / hacked animation. I made a python script to export each frame of an animated
+  .fbx model to many individual .glb models, where I then load each frame in an array of
+  SfrModel* and render them sequentially (like a spritesheet but with full models).
 </details>
-<img width="1274" height="714" alt="cornellbox" src="https://github.com/user-attachments/assets/137517ac-d80d-4d9d-bb74-eccc85dca6a8" />
+
+https://github.com/user-attachments/assets/8ad46e35-616c-48bd-bc51-4779224e59b1
 
 ---
-
-Sponza at 720p 60fps on an older laptop while recording
-<details>
-  <summary>About...</summary>
-  The model was loading using raylib's LoadModel function and then converted to sofren's structs,
-  after which an SfrScene was created to allow for raycasting.
-
-  In newer versions, this model would've been loaded with the built in function that uses cgltf.
-  Also currently phong shading used in this video is removed because of the SIMD additions, but I might add it back.
-
-  Additionally, textures were resized down to 128x128 from 1024x1024 (from profiling, like 40% of the
-  program's time was just from cache misses so this was the "fix", mipmapping is on the TODO list).
-  If you're wondering why the triangle count is changing when nothing is moving, it changes because
-  the text showing FPS and the triangle count is comprised of triangles (.srft font format), and
-  these triangles are still taken into account when counting triangles rendered.
-</details>
-
-https://github.com/user-attachments/assets/c11733d0-74b1-42f1-ad72-7a49711e4004
 
 [*examples/font-starter-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/font-starter-sdl2.c)
 
@@ -55,6 +34,7 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Efficient static scene rendering with fast raycasting (BVH)
 - SIMD rasterizing loop (or scalar fallback if SIMD is unavailable)
 - Gouraud shading with a directional light
+- Baked lighting support when loading gltf models
 - Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
 - OBJ mesh loading (requires `stdio.h`)
 - GLB / GLTF model loading (requires `optional/cgltf.h` (with `optional/stb_image.h` for textures))
@@ -185,6 +165,41 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A current
 - Further optimized rendering/rasterizing
 - Change to fixed point math, maybe
 - Dynamic shadows, maybe maybe
+
+## Gallery
+
+Pretty Cornell box
+<details>
+  <summary>About...</summary>
+  Lighting baked in Blender, exported to .glb, and loaded using sofren's cgltf wrapper (sfr_load_model).
+  
+  This is meant to show that lightmaps work in sofren, allowing for much better lighting than would otherwise be possible when rasterizing at high resolutions.
+  
+  Background skybox from [here](https://bumbadida.itch.io/skybox-textures-sdr).
+
+  The scene is being rendered at 1280x720 235fps.
+</details>
+<img width="1274" height="714" alt="cornellbox" src="https://github.com/user-attachments/assets/137517ac-d80d-4d9d-bb74-eccc85dca6a8" />
+
+---
+
+Sponza at 720p 60fps on an older laptop while recording
+<details>
+  <summary>About...</summary>
+  The model was loading using raylib's LoadModel function and then converted to sofren's structs,
+  after which an SfrScene was created to allow for raycasting.
+
+  **In newer versions, this model would've been loaded with the built in function that uses cgltf.**
+  Also currently phong shading used in this video is removed because of the SIMD additions, but I might add it back.
+
+  Additionally, textures were resized down to 128x128 from 1024x1024 (from profiling, like 40% of the
+  program's time was just from cache misses so this was the "fix", mipmapping is on the TODO list).
+  If you're wondering why the triangle count is changing when nothing is moving, it changes because
+  the text showing FPS and the triangle count is comprised of triangles (.srft font format), and
+  these triangles are still taken into account when counting triangles rendered.
+</details>
+
+https://github.com/user-attachments/assets/c11733d0-74b1-42f1-ad72-7a49711e4004
 
 # License
 This project is under the MIT license, do with that what you will
