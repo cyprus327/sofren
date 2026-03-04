@@ -567,10 +567,10 @@ struct sfrTile {
     i32 minX, minY, maxX, maxY;
     f32 maxZ; // furthest visible depth in the tile
     #ifdef SFR_MULTITHREADED
-        struct sfrTriangleBin** bins; 
-        i32 binsCapacity;
-        SfrAtomic32 binCount;
-        SfrMutex mutex;
+        struct sfrTriangleBin** bins[SFR_THREAD_COUNT + 1]; 
+        i32 binsCapacity[SFR_THREAD_COUNT + 1];
+        i32 binCount[SFR_THREAD_COUNT + 1];
+        SfrAtomic32 hasWork;
     #endif
 };
 
@@ -694,6 +694,9 @@ static void* (*sfrRealloc)(void*, u64);
     // for bin batching to avoid atomic operation each time
     static SFR_THREAD_LOCAL i32 sfrTlsBinStart = 0;
     static SFR_THREAD_LOCAL i32 sfrTlsBinEnd = 0;
+
+    // track thread inds including main thread
+    static SFR_THREAD_LOCAL i32 sfrTlsThreadInd = SFR_THREAD_COUNT;
 #endif
 
 
@@ -1980,36 +1983,36 @@ static void sfr__bin_triangle(
     const i32 yEnd   = (i32)maxY / SFR_TILE_HEIGHT;
 
     // dynamic tile binning
+    const i32 tInd = sfrTlsThreadInd; // current thread's index
     for (i32 ty = yStart; ty <= yEnd; ty += 1) {
         for (i32 tx = xStart; tx <= xEnd; tx += 1) {
             const i32 tileInd = ty * sfrThreadBuf->tileCols + tx;
             struct sfrTile* tile = &sfrThreadBuf->tiles[tileInd];
 
-            // lock per tile to safely handle resize
-            sfr_mutex_lock(&tile->mutex);
-            
-            if (tile->binCount >= tile->binsCapacity) {
-                i32 newCap = tile->binsCapacity * 2;
-                struct sfrTriangleBin** newBins = (struct sfrTriangleBin**)sfrRealloc(tile->bins, sizeof(struct sfrTriangleBin*) * newCap);
-                if (!newBins) {
-                    sfr_mutex_unlock(&tile->mutex);
-                    continue;
+            // thread local resize
+            if (tile->binCount[tInd] >= tile->binsCapacity[tInd]) {
+                const i32 newCap = tile->binsCapacity[tInd] * 2;
+                struct sfrTriangleBin** const newBins = (struct sfrTriangleBin**)sfrRealloc(
+                    tile->bins[tInd], sizeof(struct sfrTriangleBin*) * newCap);
+                if (newBins) {
+                    tile->bins[tInd] = newBins;
+                    tile->binsCapacity[tInd] = newCap;
                 }
-                tile->bins = newBins;
-                tile->binsCapacity = newCap;
             }
-            
-            // add the bin inside the lock
-            const i32 ind = tile->binCount++;
-            if (0 == ind) {
+
+            // add bin to thread local array
+            if (tile->bins[tInd]) {
+                tile->bins[tInd][tile->binCount[tInd]++] = bin;
+            }
+
+            // atomically add to work queue once per frame
+            // cas: if !hasWork, set to 1, returns 0 if success
+            if (0 == sfr_atomic_cas(&tile->hasWork, 0, 1)) {
                 const i32 workInd = sfr_atomic_add(&sfrThreadBuf->rasterWorkQueueCount, 1) - 1;
                 if (workInd < (i32)SFR_ARRLEN(sfrThreadBuf->rasterWorkQueue)) {
                     sfrThreadBuf->rasterWorkQueue[workInd] = tileInd;
                 }
             }
-            tile->bins[ind] = bin;
-            
-            sfr_mutex_unlock(&tile->mutex);
         }
     }
 
@@ -2105,7 +2108,7 @@ static void sfr__process_and_bin_triangle(
     }
 
     // check if clipping is needed at all
-    const f32 guardBand = 1.2f; // 20 percent
+    const f32 guardBand = 5.f; // huge band is better ? (TODO more testing)
     u8 needsClipping = 0;
     for (i32 i = 0; i < 3; i += 1) {
         const sfrvec p = clipTris[0][i].pos;
@@ -2549,6 +2552,10 @@ SFR_FUNC void sfr_flush_and_wait(void) {
     sfr_atomic_set(&sfrThreadBuf->triangleBinAllocator, 0);
     sfr_atomic_set(&sfrThreadBuf->rasterWorkQueueCount, 0);
     sfr_atomic_set(&sfrThreadBuf->rasterWorkQueueHead, 0);
+
+    // reset so it doesn't get stomped
+    sfrTlsBinStart = 0;
+    sfrTlsBinEnd = 0;
 }
 
 #endif // SFR_MULTITHREADED
@@ -2598,10 +2605,14 @@ SFR_FUNC void sfr_resize(i32 width, i32 height) {
                 tile->maxY = SFR_MIN((y + 1) * SFR_TILE_HEIGHT, height);
                 tile->maxZ = sfrFarDist;
                 
-                sfr_mutex_init(&tile->mutex);
-                tile->binsCapacity = 1024 * 8;
-                tile->bins = (struct sfrTriangleBin**)sfrMalloc(sizeof(struct sfrTriangleBin*) * tile->binsCapacity);
-                sfr_atomic_set(&tile->binCount, 0);
+                for (i32 t = 0; t <= SFR_THREAD_COUNT; t += 1) {
+                    tile->binsCapacity[t] = 512;
+                    tile->bins[t] = (struct sfrTriangleBin**)sfrMalloc(
+                        sizeof(struct sfrTriangleBin) * tile->binsCapacity[t]);
+                    tile->binCount[t] = 0;
+                }
+
+                sfr_atomic_set(&tile->hasWork, 0);
             }
         }
     #endif
@@ -2681,14 +2692,14 @@ SFR_FUNC void sfr_clear(u32 clearCol) {
 
     #ifdef SFR_MULTITHREADED
         for (i32 i = 0; i < sfrThreadBuf->tileCount; i += 1) {
-            sfr_atomic_set(&sfrThreadBuf->tiles[i].binCount, 0);
+            for (i32 t = 0; t <= SFR_THREAD_COUNT; t += 1) {
+                sfrThreadBuf->tiles[i].binCount[t] = 0;
+            }
+            sfr_atomic_set(&sfrThreadBuf->tiles[i].hasWork, 0);
             sfrThreadBuf->tiles[i].maxZ = sfrFarDist;
         }
 
         sfr_atomic_set(&sfrRasterCount, 0);
-        
-        sfrTlsBinStart = 0;
-        sfrTlsBinEnd = 0;
     #else
         sfrRasterCount = 0;
     #endif
@@ -2734,6 +2745,7 @@ SFR_FUNC void sfr_skybox(const SfrTexture* faces[6]) {
     }
 
     const sfrmat savedModel = sfrMatModel;
+    const sfrmat savedNormal = sfrState.matNormal;
     const u8 savedLighting = sfrState.lightingEnabled;
     const u8 savedDirty = sfrState.normalMatDirty;
 
@@ -2800,6 +2812,7 @@ SFR_FUNC void sfr_skybox(const SfrTexture* faces[6]) {
          0.5f,-0.5f, 0.5f, 1.f,0.f, 0,1,0, 0xFFFFFFFF, faces[5]);
 
     sfrMatModel = savedModel;
+    sfrState.matNormal = savedNormal;
     sfrState.lightingEnabled = savedLighting;
     sfrState.normalMatDirty = savedDirty;
 }
@@ -2859,6 +2872,7 @@ SFR_FUNC void sfr_point(f32 worldX, f32 worldY, f32 worldZ, i32 radius, u32 col)
 
 SFR_FUNC void sfr_billboard(u32 col, const SfrTexture* tex) {
     const sfrmat savedModel = sfrMatModel;
+    const sfrmat savedNormal = sfrState.matNormal;
     sfrMatModel = sfr_mat_identity();
 
     const sfrvec center = { savedModel.m[3][0], savedModel.m[3][1], savedModel.m[3][2], 1.f };
@@ -2894,6 +2908,7 @@ SFR_FUNC void sfr_billboard(u32 col, const SfrTexture* tex) {
         col, tex);
 
     sfrMatModel = savedModel;
+    sfrState.matNormal = savedNormal;
 }
 
 SFR_FUNC void sfr_cube(u32 col, const SfrTexture* tex) {
@@ -3607,12 +3622,12 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
 
         // init transforms
         if (cnode->has_translation) {
-            tnode->localPos = (sfrvec){cnode->translation[0], cnode->translation[1], cnode->translation[2], 1.f};
+            tnode->localPos = (sfrvec){cnode->translation[0], cnode->translation[1], -cnode->translation[2], 1.f};
         } else {
             tnode->localPos = (sfrvec){0.f, 0.f, 0.f, 1.f};
         }
         if (cnode->has_rotation) {
-            tnode->localRot = (sfrvec){cnode->rotation[0], cnode->rotation[1], cnode->rotation[2], cnode->rotation[3]};
+            tnode->localRot = (sfrvec){-cnode->rotation[0], -cnode->rotation[1], cnode->rotation[2], cnode->rotation[3]};
         } else {
             tnode->localRot = (sfrvec){0.f, 0.f, 0.f, 1.f};
         }
@@ -3710,13 +3725,15 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
             }
 
             for (i32 k = 0; k < count; k += 1) {
-                const i32 ind = prim->indices ? (i32)cgltf_accessor_read_index(prim->indices, k) : k;
+                // flip winding order and negate z and xy rotation
+                const i32 kr = k - (k % 3) + (i32[3]){0, 2, 1}[k % 3];
+                const i32 ind = prim->indices ? (i32)cgltf_accessor_read_index(prim->indices, kr) : kr;
                 
                 f32 buf[3];
                 cgltf_accessor_read_float(posA, ind, buf, 3);
                 sm->tris[k * 3 + 0] = buf[0];
                 sm->tris[k * 3 + 1] = buf[1];
-                sm->tris[k * 3 + 2] = buf[2];
+                sm->tris[k * 3 + 2] = -buf[2];
 
                 if (normA) {
                     cgltf_accessor_read_float(normA, ind, buf, 3);
@@ -3727,7 +3744,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
                 }
                 sm->normals[k * 3 + 0] = buf[0];
                 sm->normals[k * 3 + 1] = buf[1];
-                sm->normals[k * 3 + 2] = buf[2];
+                sm->normals[k * 3 + 2] = -buf[2];
 
                 if (uvA) {
                     cgltf_accessor_read_float(uvA, ind, buf, 2);
@@ -3736,7 +3753,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
                     buf[1] = 0;
                 }
                 sm->uvs[k * 2 + 0] = buf[0];
-                sm->uvs[k * 2 + 1] = buf[1]; // no flip needed usually if texture is standard
+                sm->uvs[k * 2 + 1] = buf[1];
             }
 
             // vv assign to model node vv
@@ -3747,9 +3764,9 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
             // vv assign texture for this specific primitive vv
             #ifdef SFR_USE_STB_IMAGE
                 if (prim->material &&
-                        prim->material->has_pbr_metallic_roughness &&
-                        prim->material->pbr_metallic_roughness.base_color_texture.texture &&
-                        model->_allTextures
+                    prim->material->has_pbr_metallic_roughness &&
+                    prim->material->pbr_metallic_roughness.base_color_texture.texture &&
+                    model->_allTextures
                 ) { 
                     const cgltf_texture* const texPtr = prim->material->pbr_metallic_roughness.base_color_texture.texture;
                     const ptrdiff_t texInd = texPtr - data->textures;
@@ -3819,6 +3836,32 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
                     } break;
                     default: break;
                 }
+            }
+
+            { // vv fix animations vv
+                u8* patchedSamplers = (u8*)sfrMalloc(sa->samplerCount);
+                sfr_memset(patchedSamplers, 0, sa->samplerCount);
+    
+                for (i32 j = 0; j < sa->channelCount; j += 1) {
+                    struct sfrAnimChannel* const sc = &sa->channels[j];
+                    if (patchedSamplers[sc->samplerInd]) continue;
+                    patchedSamplers[sc->samplerInd] = 1;
+    
+                    struct sfrAnimSampler* const ss = &sa->samplers[sc->samplerInd];
+                    
+                    if (SFR_ANIM_PATH_TRANSLATION == sc->path) {
+                        for (i32 k = 0; k < ss->count; k += 1) {
+                            ss->outputs[k * 4 + 2] = -ss->outputs[k * 4 + 2]; // negate z translation
+                        }
+                    } else if (SFR_ANIM_PATH_ROTATION == sc->path) {
+                        for (i32 k = 0; k < ss->count; k += 1) {
+                            ss->outputs[k * 4 + 0] = -ss->outputs[k * 4 + 0]; // negate x rotation
+                            ss->outputs[k * 4 + 1] = -ss->outputs[k * 4 + 1]; // negate y rotation
+                        }
+                    }
+                }
+
+                sfrFree(patchedSamplers);
             }
         }
     } else {
@@ -4483,8 +4526,8 @@ static unsigned __stdcall sfr__worker_thread_func(void* arg) {
 static void* sfr__worker_thread_func(void* arg) {
 #endif
     (void)arg;
-    // const struct sfrThreadData* self = (struct sfrThreadData*)arg;
-    // const i32 selfInd = self->threadInd;
+    const struct sfrThreadData* self = (struct sfrThreadData*)arg;
+    sfrTlsThreadInd = self->threadInd;
 
     while (1) {
         // vv geometry phase vv
@@ -4547,12 +4590,18 @@ static void* sfr__worker_thread_func(void* arg) {
 
             // get the tile and rasterize its contents
             struct sfrTile* tile = &sfrThreadBuf->tiles[sfrThreadBuf->rasterWorkQueue[head]];
-            i32 binCount = sfr_atomic_get(&tile->binCount);
-            for (i32 i = 0; i < binCount; i += 1) {
-                sfr__rasterize_bin(tile->bins[i], tile);
+
+            // loop through all thread bins for this tile
+            for (i32 t = 0; t <= SFR_THREAD_COUNT; t += 1) {
+                const i32 count = tile->binCount[t];
+                for (i32 i = 0; i < count; i += 1) {
+                    sfr__rasterize_bin(tile->bins[t][i], tile);
+                }
+
+                tile->binCount[t] = 0;
             }
 
-            sfr_atomic_set(&tile->binCount, 0);
+            sfr_atomic_set(&tile->hasWork, 0);
         }
         sfr_semaphore_post(&sfrThreadBuf->rasterDoneSem, 1);
     }
