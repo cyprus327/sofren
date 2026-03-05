@@ -3791,43 +3791,108 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
         const cgltf_node* const cnode = &data->nodes[i];
         struct sfrTransformNode* const tnode = &model->transforms[i];
 
-        // init transforms
-        if (cnode->has_translation) {
-            tnode->localPos = (sfrvec){cnode->translation[0], cnode->translation[1], -cnode->translation[2], 1.f};
-        } else {
-            tnode->localPos = (sfrvec){0.f, 0.f, 0.f, 1.f};
-        }
-        if (cnode->has_rotation) {
-            tnode->localRot = (sfrvec){-cnode->rotation[0], -cnode->rotation[1], cnode->rotation[2], cnode->rotation[3]};
-        } else {
-            tnode->localRot = (sfrvec){0.f, 0.f, 0.f, 1.f};
-        }
-        if (cnode->has_scale) {
-            tnode->localScale = (sfrvec){cnode->scale[0], cnode->scale[1], cnode->scale[2], 1.f};
-        } else {
-            tnode->localScale = (sfrvec){1.f, 1.f, 1.f, 1.f};
-        }
-
-        // parent ind
         tnode->parentInd = -1;
         if (cnode->parent) {
             tnode->parentInd = (i32)(cnode->parent - data->nodes);
         }
 
-        // calculate initial local matrix
-        const sfrmat scale = sfr_mat_scale(tnode->localScale.x, tnode->localScale.y, tnode->localScale.z);
-        const sfrmat rot   = sfr_mat_from_quat(tnode->localRot);
-        const sfrmat trans = sfr_mat_translate(tnode->localPos.x, tnode->localPos.y, tnode->localPos.z);
-        
-        // multiply order S * R * T
-        tnode->localMatrix = sfr_mat_mul(scale, sfr_mat_mul(rot, trans));
-        
-        // initial world matrix
-        if (tnode->parentInd >= 0) {
-            tnode->worldMatrix = sfr_mat_mul(tnode->localMatrix, model->transforms[tnode->parentInd].worldMatrix);
+        if (cnode->has_matrix) {
+            sfrmat m;
+            const f32* cm = cnode->matrix;
+            
+            // gltf is col major sofren is row major so transpose
+            m.m[0][0] = cm[0];
+            m.m[0][1] = cm[4];
+            m.m[0][2] = cm[8]; 
+            m.m[0][3] = cm[12];
+            m.m[1][0] = cm[1];
+            m.m[1][1] = cm[5];
+            m.m[1][2] = cm[9]; 
+            m.m[1][3] = cm[13];
+            m.m[2][0] = cm[2];
+            m.m[2][1] = cm[6];
+            m.m[2][2] = cm[10];
+            m.m[2][3] = cm[14];
+            m.m[3][0] = cm[3];
+            m.m[3][1] = cm[7];
+            m.m[3][2] = cm[11];
+            m.m[3][3] = cm[15];
+
+            // convert right handed y up matrix to sofren's left handed flipped z space
+            const sfrmat flipZ = sfr_mat_scale(1.f, 1.f, -1.f);
+            tnode->localMatrix = sfr_mat_mul(flipZ, sfr_mat_mul(m, flipZ));
+            
+            // extract approximate TRS to satisfy struct
+            tnode->localPos = (sfrvec){tnode->localMatrix.m[3][0], tnode->localMatrix.m[3][1], tnode->localMatrix.m[3][2], 1.f};
+            tnode->localRot = (sfrvec){0.f, 0.f, 0.f, 1.f}; 
+            tnode->localScale = (sfrvec){
+                sfr_sqrtf(tnode->localMatrix.m[0][0] * tnode->localMatrix.m[0][0] +
+                          tnode->localMatrix.m[0][1] * tnode->localMatrix.m[0][1] +
+                          tnode->localMatrix.m[0][2] * tnode->localMatrix.m[0][2]),
+                sfr_sqrtf(tnode->localMatrix.m[1][0] * tnode->localMatrix.m[1][0] +
+                          tnode->localMatrix.m[1][1] * tnode->localMatrix.m[1][1] +
+                          tnode->localMatrix.m[1][2] * tnode->localMatrix.m[1][2]),
+                sfr_sqrtf(tnode->localMatrix.m[2][0] * tnode->localMatrix.m[2][0] +
+                          tnode->localMatrix.m[2][1] * tnode->localMatrix.m[2][1] +
+                          tnode->localMatrix.m[2][2] * tnode->localMatrix.m[2][2]),
+                1.f
+            };
         } else {
-            tnode->worldMatrix = tnode->localMatrix;
+            // init transforms from TRS
+            if (cnode->has_translation) {
+                tnode->localPos = (sfrvec){cnode->translation[0], cnode->translation[1], -cnode->translation[2], 1.f};
+            } else {
+                tnode->localPos = (sfrvec){0.f, 0.f, 0.f, 1.f};
+            }
+            if (cnode->has_rotation) {
+                tnode->localRot = (sfrvec){-cnode->rotation[0], -cnode->rotation[1], cnode->rotation[2], cnode->rotation[3]};
+            } else {
+                tnode->localRot = (sfrvec){0.f, 0.f, 0.f, 1.f};
+            }
+            if (cnode->has_scale) {
+                tnode->localScale = (sfrvec){cnode->scale[0], cnode->scale[1], cnode->scale[2], 1.f};
+            } else {
+                tnode->localScale = (sfrvec){1.f, 1.f, 1.f, 1.f};
+            }
+
+            const sfrmat scale = sfr_mat_scale(tnode->localScale.x, tnode->localScale.y, tnode->localScale.z);
+            const sfrmat rot   = sfr_mat_from_quat(tnode->localRot);
+            const sfrmat trans = sfr_mat_translate(tnode->localPos.x, tnode->localPos.y, tnode->localPos.z);
+            
+            tnode->localMatrix = sfr_mat_mul(scale, sfr_mat_mul(rot, trans));
         }
+    }
+
+    { // vv safely resolve world matrices vv
+        u8* computed = (u8*)sfrMalloc(model->transformCount);
+        sfr_memset(computed, 0, model->transformCount);
+        
+        // gltf doesn't guarantee parents appear before children in the array
+        for (i32 computedCount = 0; computedCount < model->transformCount;) {
+            for (i32 i = 0; i < model->transformCount; i += 1) {
+                if (computed[i]) {
+                    continue;
+                }
+                
+                struct sfrTransformNode* const tnode = &model->transforms[i];
+                
+                if (tnode->parentInd < 0) {
+                    // root node
+                    tnode->worldMatrix = tnode->localMatrix;
+                    computed[i] = 1;
+                    computedCount += 1;
+                } else if (computed[tnode->parentInd]) {
+                    // parent is fully calculated, safe to compute child
+                    const sfrmat local = tnode->localMatrix;
+                    const sfrmat parentWorld = model->transforms[tnode->parentInd].worldMatrix;
+                    tnode->worldMatrix = sfr_mat_mul(local, parentWorld);
+
+                    computed[i] = 1;
+                    computedCount += 1;
+                }
+            }
+        }
+        sfrFree(computed);
     }
 
     // vv count primitives with each becoming an struct sfrModelNode vv
