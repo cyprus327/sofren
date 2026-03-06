@@ -375,7 +375,7 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
 
 
 //================================================
-//:TYPES
+//: TYPES
 //================================================
 
 #ifdef _MSC_VER
@@ -414,6 +414,8 @@ typedef struct sfrtex {
     i32 mipW[14];
     i32 mipH[14];
     i32 mipLevels; // total levels including base, i.e. 1 => no extra levels
+
+    u8 isMorton;
 } SfrTexture;
 
 typedef struct sfrfont {
@@ -673,7 +675,7 @@ struct sfrTexVert {
 
 
 //================================================
-//:IMPLEMENTATION
+//: IMPLEMENTATION
 //================================================
 
 #ifdef SFR_IMPL
@@ -710,7 +712,7 @@ static void* (*sfrRealloc)(void*, u64);
 
 
 //================================================
-//:OPTIONAL LIBS SETUP
+//: OPTIONAL LIBS SETUP
 //================================================
 
 #ifndef SFR_CGLTF_PATH
@@ -729,7 +731,7 @@ static void* (*sfrRealloc)(void*, u64);
     #include SFR_STB_IMAGE_PATH
 
     // STB RGBA to sofren ARGB
-    static void sfr__swizzle_pixels(u32* pixels, i32 count) {
+    static void sfr__swizzle_stb(u32* pixels, i32 count) {
         for (i32 i = 0; i < count; i += 1) {
             const u32 c = pixels[i];
             const u32 r = (c >> 0)  & 0xFF;
@@ -846,7 +848,7 @@ static void* (*sfrRealloc)(void*, u64);
 
 
 //================================================
-//:MATH
+//: MATH
 //================================================
 
 #ifndef SFR_NO_MATH
@@ -1362,7 +1364,7 @@ SFR_FUNC sfrvec sfr_quat_slerp(sfrvec a, sfrvec b, f32 t) {
 
 
 //================================================
-//:PRIVATE FUNCTIONS
+//: PRIVATE FUNCTIONS
 //================================================
 
 static void sfr__mesh_swap_tri(SfrMesh* mesh, i32 a, i32 b) {
@@ -1481,6 +1483,71 @@ static void sfr__bvh_subdivide(struct sfrBvhNode* const nodes, i32 nodeInd, i32*
     sfr__bvh_subdivide(nodes, leftChildInd, nodePtr, mesh);
     sfr__bvh_update_bounds(leftChildInd + 1, nodes, mesh, nodes[leftChildInd + 1].count);
     sfr__bvh_subdivide(nodes, leftChildInd + 1, nodePtr, mesh);
+}
+
+static u32 sfr__expand_bits(u32 v) {
+    v = (v ^ (v <<  8)) & 0x00FF00FF;
+    v = (v ^ (v <<  4)) & 0x0F0F0F0F;
+    v = (v ^ (v <<  2)) & 0x33333333;
+    v = (v ^ (v <<  1)) & 0x55555555;
+    return v;
+}
+
+static u32 sfr__morton_encode(u32 x, u32 y) {
+    return sfr__expand_bits(x) | (sfr__expand_bits(y) << 1);
+}
+
+#ifndef SFR_NO_SIMD
+static __m256i sfr__mm256_expand_bits_epi32(__m256i v) {
+    v = _mm256_and_si256(_mm256_xor_si256(v, _mm256_slli_epi32(v, 8)), _mm256_set1_epi32(0x00FF00FF));
+    v = _mm256_and_si256(_mm256_xor_si256(v, _mm256_slli_epi32(v, 4)), _mm256_set1_epi32(0x0F0F0F0F));
+    v = _mm256_and_si256(_mm256_xor_si256(v, _mm256_slli_epi32(v, 2)), _mm256_set1_epi32(0x33333333));
+    v = _mm256_and_si256(_mm256_xor_si256(v, _mm256_slli_epi32(v, 1)), _mm256_set1_epi32(0x55555555));
+    return v;
+}
+#endif
+
+static void sfr__swizzle_morton(SfrTexture* tex) {
+    // only swizzle pot textures
+    const u8 isPot = (0 == (tex->w & (tex->w - 1))) && (0 == (tex->h & (tex->h - 1)));
+    if (!isPot) {
+        tex->isMorton = 0;
+        return; 
+    }
+
+    // maximum dimension to ensure a square memory footprint
+    const i32 maxDim = tex->w > tex->h ? tex->w : tex->h;
+
+    for (i32 mip = 0; mip < tex->mipLevels; mip += 1) {
+        const i32 w = (0 == mip) ? tex->w : tex->mipW[mip - 1];
+        const i32 h = (0 == mip) ? tex->h : tex->mipH[mip - 1];
+        u32* src = (0 == mip) ? tex->pixels : tex->mipPixels[mip - 1];
+
+        // shrink the max dimension for this mip level
+        i32 currMaxDim = maxDim >> mip;
+        if (currMaxDim < 1) {
+            currMaxDim = 1;
+        }
+
+        u32* dest = (u32*)sfrMalloc(currMaxDim * currMaxDim * sizeof(u32));
+        
+        // swizzle
+        for (i32 y = 0; y < h; y += 1) {
+            for (i32 x = 0; x < w; x += 1) {
+                const u32 mortonInd = sfr__morton_encode((u32)x, (u32)y);
+                dest[mortonInd] = src[y * w + x];
+            }
+        }
+
+        sfrFree(src);
+        if (0 == mip) {
+            tex->pixels = dest;
+        } else {
+            tex->mipPixels[mip - 1] = dest;
+        }
+    }
+    
+    tex->isMorton = 1;
 }
 
 // for mipmapping
@@ -1889,7 +1956,11 @@ static void sfr__rasterize_bin(const struct sfrTriangleBin* bin, struct sfrTile*
                             vTexY = _mm256_cvttps_epi32(vCorrectV);
                         }
 
-                        const __m256i vTexInds = _mm256_add_epi32(_mm256_mullo_epi32(vTexY, vTexW), vTexX);
+                        const __m256i vTexInds = tex->isMorton ?
+                            _mm256_or_si256(
+                                sfr__mm256_expand_bits_epi32(vTexX),
+                                _mm256_slli_epi32(sfr__mm256_expand_bits_epi32(vTexY), 1)) :
+                            _mm256_add_epi32(_mm256_mullo_epi32(vTexY, vTexW), vTexX);
                         const __m256i vTexPixels = _mm256_i32gather_epi32((const i32*)currentMipPixels, vTexInds, 4);
 
                         const __m256 vtr = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(vTexPixels, 16), v0xFF));
@@ -1907,8 +1978,7 @@ static void sfr__rasterize_bin(const struct sfrTriangleBin* bin, struct sfrTile*
                             _mm256_set1_epi32(0xFF000000),
                             _mm256_or_si256(
                                 _mm256_slli_epi32(vResR, 16), _mm256_or_si256(
-                                    _mm256_slli_epi32(vResG, 8), vResB))
-                            );
+                                    _mm256_slli_epi32(vResG, 8), vResB)));
 
                         // const __m256i current = _mm256_maskload_epi32((const int*)&sfrPixelBuf[pixelInd], _mm256_castps_si256(mask));
                         // const __m256i cost = _mm256_add_epi8(current, _mm256_set1_epi32(0x00150000)); 
@@ -1984,7 +2054,10 @@ static void sfr__rasterize_bin(const struct sfrTriangleBin* bin, struct sfrTile*
                 if (ty >= texH) ty = texH - 1;
             }
 
-            const u32 texCol = tex->pixels[ty * texW + tx];
+            const u32 texInd = tex->isMorton ?
+                sfr__morton_encode((u32)tx, (u32)ty) :
+                (ty * texW + tx);
+            const u32 texCol = tex->pixels[texInd];
             const u8 tr = (texCol >> 16) & 0xFF, tg = (texCol >> 8) & 0xFF, tb = (texCol >> 0) & 0xFF;
             const u8 fr = (u8)SFR_MIN((tr * ci * rBase), 255.f);
             const u8 fg = (u8)SFR_MIN((tg * ci * gBase), 255.f);
@@ -3774,8 +3847,9 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
 
                 stbi_image_free(rawData);
                 
-                sfr__swizzle_pixels(tex->pixels, w * h);
+                sfr__swizzle_stb(tex->pixels, w * h);
                 sfr__generate_mipmaps(tex);
+                sfr__swizzle_morton(tex);
                 model->_allTextures[i] = tex;
             }
         }
@@ -4425,8 +4499,9 @@ SFR_FUNC SfrTexture* sfr_load_texture(const char* filename) {
     sfr_memcpy(tex->pixels, data, w * h * 4);
     stbi_image_free(data);
 
-    sfr__swizzle_pixels(tex->pixels, w * h);
+    sfr__swizzle_stb(tex->pixels, w * h);
     sfr__generate_mipmaps(tex);
+    sfr__swizzle_morton(tex);
     return tex;
 #else
     FILE* file = fopen(filename, "rb");
@@ -4566,6 +4641,8 @@ SFR_FUNC SfrTexture* sfr_load_texture(const char* filename) {
     sfrFree(pixelData);
 
     sfr__generate_mipmaps(tex);
+    sfr__swizzle_morton(tex);
+
     return tex;
 #endif
 }
