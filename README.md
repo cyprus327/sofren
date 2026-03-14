@@ -1,6 +1,6 @@
 # sofren - Single File Software Renderer
 
-### An efficiently multithreaded, single file, cross platform software renderer
+### An efficiently multithreaded, vectorized, single file, cross platform, deferred renderer
 
 ---
 
@@ -9,6 +9,7 @@
   This is (for now) faked / hacked animation. I made a python script to export each frame of an animated
   .fbx model to many individual .glb models, where I then load each frame in an array of
   SfrModel* and render them sequentially (like a spritesheet but with full models).
+  This is obviously terrible and won't be done in the future when skinned mesh rendering is supported.
 </details>
 
 https://github.com/user-attachments/assets/8ad46e35-616c-48bd-bc51-4779224e59b1
@@ -31,8 +32,8 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Single file with as few a 0 other headers, can be 100% standalone
 - Cross platform multithreading (Windows or pthreads)
 - Perspective correct texture mapping (currently only .bmp image support unless `optional/stb_image.h` is used)
-- Efficient static scene rendering with fast raycasting (BVH)
-- SIMD rasterizing loop (or scalar fallback if SIMD is unavailable)
+- Deferred rendering with a visibility buffer
+- SIMD rasterizing and geometry pipelines (or scalar fallback if SIMD is unavailable)
 - Gouraud shading with a directional light
 - Baked lighting support when loading gltf models
 - Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
@@ -41,6 +42,7 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Customizable math implementations (system or bundled)
 - Primitive drawing (triangles, cubes, billboards)
 - Skyboxes (cubemaps not spheremaps)
+- Efficient static scene rendering with fast raycasting (BVH)
 - ARGB8888 color format support (alpha currently unused)
 - Backface culling, depth buffering, and clipping
 - Simplistic design, quick to learn and use
@@ -60,6 +62,10 @@ For examples and good starting points rendering to an SDL2 window or console win
 
 // disable culling triangles
 #define SFR_NO_CULLING
+
+// tiny triangles < 0.1 pixels will be culled if this isn't defined
+// on highly detailed models this can make them sort of fade out at distance
+#define SFR_NO_SMALL_CULLING
 
 // whether or not to use SIMD (immintrin.h)
 #define SFR_NO_SIMD
@@ -160,11 +166,11 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A current
 <img width="1273" height="714" alt="overdraw visual" src="https://github.com/user-attachments/assets/bfd0f9f1-b8d7-44d3-86e7-f33601f37e3d" />
 
 - Skeletal animation / some improved animation system
-- Mipmapping / memory optimizations, complex scenes are currently memory bound
+- Add back phong shading / improved lighting
+- Normal maps / more textures than just albedo
 - Shadowmapping for static scenes
-- Further optimized rendering/rasterizing
-- Change to fixed point math, maybe
-- Dynamic shadows, maybe maybe
+- Further optimized rasterizing
+- Dynamic shadows, maybe
 
 ## Gallery
 
