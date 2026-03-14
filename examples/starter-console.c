@@ -9,7 +9,6 @@ the performance of this example is highly determined by the terminal's performan
 #include "../sofren.c"
 
 #include <stdio.h> // for printing rendered output
-#include <math.h>  // for 'sinf', 'cosf'
 #include <time.h>  // for 'clock'
 
 // for 'get_console_size'
@@ -48,11 +47,11 @@ i32 main() {
         sfr_init(w, h, 80.f, malloc, free, realloc);
     
         const sfrvec l = sfr_vec_normf(-0.5f, 0.1f, -1.f);
-        sfr_set_light(0, (SfrLight){
+        sfrLight = (SfrLight){
             .dirX = l.x, .dirY = l.y, .dirZ = l.z,
             .ambient = 0.4f, .intensity = 1.f,
-            .type = SFR_LIGHT_DIRECTIONAL
-        });
+            .r = 1.f, .g = 1.f, .b = 1.f
+        };
         sfr_set_lighting(1);
     }
 
@@ -93,15 +92,17 @@ i32 main() {
                 const f32 rt = sfr_rand_flt(0.f, 500.f) + time;
                 sfr_reset();
                 sfr_scale(
-                    (1.4f + sinf(rt * 0.6f)) / 2.f,
-                    (1.2f + sinf(rt * 0.8f)) / 2.f,
-                    (1.8f + sinf(rt * 0.3f)) / 2.f);
+                    (1.4f + sfr_sinf(rt * 0.6f)) / 2.f,
+                    (1.2f + sfr_sinf(rt * 0.8f)) / 2.f,
+                    (1.8f + sfr_sinf(rt * 0.3f)) / 2.f);
                 sfr_rotate_x(rt * SFR_PI * 0.2f);
                 sfr_rotate_y(rt * SFR_PI * 0.3f);
                 sfr_rotate_z(rt * SFR_PI * 0.6f);
-                sfr_translate(sfr_rand_flt(-12.f, 12.f), sfr_rand_flt(-3, 3) + sinf(rt), sfr_rand_flt(4.f, 12.f));
+                sfr_translate(sfr_rand_flt(-12.f, 12.f), sfr_rand_flt(-3, 3) + sfr_sinf(rt), sfr_rand_flt(4.f, 12.f));
                 sfr_cube(sfr_rand_int(0, 0xFFFFFF), NULL);
             }
+
+            sfr_flush_and_wait();
         }
 
         { // draw scene

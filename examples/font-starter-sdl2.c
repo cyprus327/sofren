@@ -20,7 +20,7 @@ small example showing usage of a SfrFont struct and .srft file
 
 #include <SDL2/SDL.h>
 
-#define RES_SCALE 1.0
+#define RES_SCALE 1.f
 
 i32 main() {
     { // initialize sofren
@@ -95,6 +95,8 @@ i32 main() {
                 sfr_glyph(font, text3[i], 0x606060);
                 sfr_translate(0.3f, 0.f, 0.f);
             }
+
+            sfr_flush_and_wait();
         }
 
         { // update SDL window

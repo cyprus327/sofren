@@ -13,20 +13,15 @@ demonstrates:
 */
 
 #define SFR_IMPL
-#define SFR_USE_SIMD
 #define SFR_THREAD_COUNT 8
-#define SFR_TILE_WIDTH 32
-#define SFR_TILE_HEIGHT 32
-#define SFR_MAX_WIDTH 1280
-#define SFR_MAX_HEIGHT 720
-#define SFR_MAX_LIGHTS 1
-#include "../sofren.c"
+#include "../sofren3.c"
 
+#define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
 
-// rasterizing on a big window is expensize,
-// easiest solution is to just have less pixels
-#define RES_SCALE 0.8f
+// rasterizing on a big window is expensize and the easiest
+// solution is to just have less pixels (RES_SCALE < 1.0)
+#define RES_SCALE 1.f
 
 // draw the scene
 static void draw(f32 time, f32 frameTime);
@@ -68,23 +63,23 @@ i32 main() {
     // load the scene with just one object
     SfrSceneObject objects[1] = {
         (SfrSceneObject){ // mesh and tex below don't get released in this example
-            .mesh = sfr_load_mesh("examples/res/hawk.obj"),
-            .tex = sfr_load_texture("examples/res/hawk.bmp"),
+            .mesh = sfr_load_mesh("examples/res/dragon.obj"),
+            .tex = NULL,
             .col = 0xFFFFFFFF,
-            .rot   = (sfrvec){ .x = SFR_PI * 1.5f, .y = SFR_PI * 0.5f, .z = 0.f },
+            .rot   = (sfrvec){ .x = 0.f, .y = SFR_PI, .z = 0.f },
             .pos   = (sfrvec){ .x = 0.f, .y = -5.f, .z = 9.f },
-            .scale = (sfrvec){ .x = 0.25f, .y = 0.25f, .z = 0.25f },
+            .scale = (sfrvec){ .x = 0.125f, .y = 0.125f, .z = 0.125f },
         }
     };
     scene = sfr_scene_create(objects, 1);
 
     // add directional light
     const sfrvec lightDir = sfr_vec_normf(0.2f, 0.3f, -0.6f);
-    sfr_set_light(0, (SfrLight){
+    sfrLight = (SfrLight){
         .dirX = lightDir.x, .dirY = lightDir.y, .dirZ = lightDir.z,
         .ambient = 0.3f, .intensity = 0.6f,
-        .type = SFR_LIGHT_DIRECTIONAL
-    });
+        .r = 1.f, .g = 1.f, .b = 1.f
+    };
 
     // initialize SDL
     SDL_Init(SDL_INIT_VIDEO);
@@ -136,9 +131,7 @@ i32 main() {
         // clear previous frame and draw next one
         sfr_clear(0xFF041411);
         draw(time, frameTime);
-        #ifdef SFR_MULTITHREADED
-            sfr_flush_and_wait();
-        #endif
+        sfr_flush_and_wait();
 
         // update SDL window
         SDL_UpdateTexture(sdlTex, NULL, sfrPixelBuf, sfrWidth * 4);
@@ -185,7 +178,7 @@ static void draw(f32 time, f32 frameTime) {
         sfr_cube_inv(0xFFAABBCC, NULL);
     }
 
-    { // simple raycasting example, will only interact with the scene (hawk)
+    { // simple raycasting example, will only interact with the scene
         const sfrvec f = sfr_vec_normf(
             -sinf(camYaw) * cosf(camPitch),
             -sinf(camPitch),
@@ -200,6 +193,9 @@ static void draw(f32 time, f32 frameTime) {
 
             const SfrSceneObject* const obj = &scene->objects[hit.objectInd];
             
+            // NOTE this is a hack just for the visualization,
+            // normally sfrState shouldn't be modified
+            // maybe I'll just make a sfr_set_mat_model function or something
             sfrMatModel = obj->_model;
             sfrState.normalMatDirty = 1; 
 
@@ -305,7 +301,6 @@ static void handle_resize(SDL_Window* window, SDL_Renderer* renderer, SDL_Textur
 }
 
 static void handle_inputs(f32 frameTime) {
-    const f32 camStandHeight = 1.f;
     static f32 camX = 0.f, camZ = 0.f, camY = 1.f;
     static f32 camForwardSpeed = 0.f;
     static f32 camStrafeSpeed = 0.f;
