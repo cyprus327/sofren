@@ -4,6 +4,10 @@
 
 ---
 
+<img width="954" height="954" alt="labeled_spheres" src="https://github.com/user-attachments/assets/692a2758-875d-4657-9dd9-6c13cb042ff3" />
+
+---
+
 <details>
   <summary>About...</summary>
   This is (for now) faked / hacked animation. I made a python script to export each frame of an animated
@@ -34,7 +38,7 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Perspective correct texture mapping (currently only .bmp image support unless `optional/stb_image.h` is used)
 - Deferred rendering with a visibility buffer
 - SIMD rasterizing and geometry pipelines (or scalar fallback if SIMD is unavailable)
-- Gouraud shading with a directional light
+- Blinn-phong shading with point and directional lights
 - Baked lighting support when loading gltf models
 - Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
 - OBJ mesh loading (requires `stdio.h`)
@@ -86,8 +90,8 @@ For examples and good starting points rendering to an SDL2 window or console win
 #define SFR_USE_INLINE
 
 // max width and height of the window to avoid reallocations when resizing
-#define SFR_MAX_WIDTH  // default of 1920
-#define SFR_MAX_HEIGHT // default of 1080
+#define SFR_MAX_WIDTH  // default of 1280
+#define SFR_MAX_HEIGHT // default of 720
 
 // only applicable when SFR_NO_MATH is defined, their values
 // dictate the accuracy of the bundled math functions
@@ -126,9 +130,6 @@ extern i32 sfrWidth, sfrHeight;
 extern u32* sfrPixelBuf;
 extern f32* sfrDepthBuf;
 
-// directional light for gouraud shading
-extern SfrLight sfrLight;
-
 // how many triangles have been rasterized since the last call to clear
 // atomic since it is updated by multiple threads when multithreading is enabled
 // if multithreading isn't enabled, SfrAtomic32 == i32 == int32_t
@@ -162,12 +163,8 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A current
 ``` 
 
 ## TODO / Upcoming Features / Known Bugs
-- Fix overdraw (greenish pixels) on areas with many small / overlapping triangles
-<img width="1273" height="714" alt="overdraw visual" src="https://github.com/user-attachments/assets/bfd0f9f1-b8d7-44d3-86e7-f33601f37e3d" />
-
 - Skeletal animation / some improved animation system
-- Add back phong shading / improved lighting
-- Normal maps / more textures than just albedo
+- Get normal maps working
 - Shadowmapping for static scenes
 - Further optimized rasterizing
 - Dynamic shadows, maybe
@@ -192,14 +189,14 @@ Pretty Cornell box
 Sponza at 720p 60fps on an older laptop while recording
 <details>
   <summary>About...</summary>
-  The model was loading using raylib's LoadModel function and then converted to sofren's structs,
-  after which an SfrScene was created to allow for raycasting.
+  This clip is really old now. The model was loading using raylib's LoadModel function and then converted to sofren's structs.
 
   **In newer versions, this model would've been loaded with the built in function that uses cgltf.**
-  Also currently phong shading used in this video is removed because of the SIMD additions, but I might add it back.
+  Also in newer versions the lighting looks better, and there is mipmapping so there is no need for resizing
+  the textures down to the tiny 128x128 like I did previously.
 
   Additionally, textures were resized down to 128x128 from 1024x1024 (from profiling, like 40% of the
-  program's time was just from cache misses so this was the "fix", mipmapping is on the TODO list).
+  program's time was just from cache misses so this was the "fix", mipmapping is now implemented though).
   If you're wondering why the triangle count is changing when nothing is moving, it changes because
   the text showing FPS and the triangle count is comprised of triangles (.srft font format), and
   these triangles are still taken into account when counting triangles rendered.
