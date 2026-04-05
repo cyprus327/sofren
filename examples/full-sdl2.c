@@ -13,8 +13,10 @@ demonstrates:
 */
 
 #define SFR_IMPL
+#define SFR_USE_CGLTF
+#define SFR_USE_STB_IMAGE
 #define SFR_THREAD_COUNT 8
-#include "../sofren3.c"
+#include "../sofren.c"
 
 #define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
@@ -34,52 +36,43 @@ static void handle_inputs(f32 frameTime);
 
 // input flags
 static struct {
-    u8 forward, backward, left, right, up, down, sprint;
-    u8 turnUp, turnDown, turnLeft, turnRight;
-} inputs = {0};
+    u8 current[SDL_NUM_SCANCODES];  // is down
+    u8 previous[SDL_NUM_SCANCODES]; // was down last frame
+    u8 pressed[SDL_NUM_SCANCODES];  // just pressed this frame
+    u8 released[SDL_NUM_SCANCODES]; // just released this frame
+} input;
 
 static SfrScene* scene;
-static SfrTexture* cubeTex;
+static SfrModel* sceneModel;
+static SfrMaterial* cubeMat;
 static SfrFont* font;
+
+static SfrLight* pointLight;
 
 // made global for raycasting forward direction calculation
 static f32 camYaw = 0.f, camPitch = 0.f;
 
-i32 main() {    
+i32 main() {
     // initial window dimensions
     const i32 startWidth = 1280 * RES_SCALE, startHeight = 720 * RES_SCALE;
-    
+
     // initialize sofren, function pointers needed to allocate / manage buffers
     // to update the window yourself, 'sfrPixelBuf[0] = 0xFFFFFFFF;' sets the first pixel to white
     sfr_init(startWidth, startHeight, 70.f, malloc, free, realloc);
 
     // load assets
-    cubeTex = sfr_load_texture("examples/res/test.bmp");
+    cubeMat = sfr_load_material("examples/res/test.bmp", NULL, NULL);
     font = sfr_load_font("examples/res/basic-font.srft");
-    if (!cubeTex || !font) {
+    if (!cubeMat || !font) {
         return 1;
     }
 
-    // load the scene with just one object
-    SfrSceneObject objects[1] = {
-        (SfrSceneObject){ // mesh and tex below don't get released in this example
-            .mesh = sfr_load_mesh("examples/res/dragon.obj"),
-            .tex = NULL,
-            .col = 0xFFFFFFFF,
-            .rot   = (sfrvec){ .x = 0.f, .y = SFR_PI, .z = 0.f },
-            .pos   = (sfrvec){ .x = 0.f, .y = -5.f, .z = 9.f },
-            .scale = (sfrvec){ .x = 0.125f, .y = 0.125f, .z = 0.125f },
-        }
-    };
-    scene = sfr_scene_create(objects, 1);
+    sceneModel = sfr_load_gltf("examples/res/spheres.glb", 0);
+    scene = sfr_scene_from_model(sceneModel);
 
-    // add directional light
-    const sfrvec lightDir = sfr_vec_normf(0.2f, 0.3f, -0.6f);
-    sfrLight = (SfrLight){
-        .dirX = lightDir.x, .dirY = lightDir.y, .dirZ = lightDir.z,
-        .ambient = 0.3f, .intensity = 0.6f,
-        .r = 1.f, .g = 1.f, .b = 1.f
-    };
+    // add lights
+    sfr_light_add_directional(-0.5f, -1.0f, -0.3f, 0.4f, 0.6f, 1.f, 0.95f, 0.9f);
+    pointLight = sfr_light_add_point(0, 0, 0, 0.f, 2.f, 18.f, 0.1f, 0.1f, 0.9f);
 
     // initialize SDL
     SDL_Init(SDL_INIT_VIDEO);
@@ -101,25 +94,27 @@ i32 main() {
         // handle sdl events
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
-            if (SDL_QUIT == event.type) {
-                shouldQuit = 1;
-            } else if (SDL_KEYDOWN == event.type || SDL_KEYUP == event.type) {
-                switch (event.key.keysym.scancode) {
-                    case SDL_SCANCODE_ESCAPE: shouldQuit = 1; break;
-                    case SDL_SCANCODE_W: inputs.forward = event.key.state; break;
-                    case SDL_SCANCODE_S: inputs.backward = event.key.state; break;
-                    case SDL_SCANCODE_A: inputs.left = event.key.state; break;
-                    case SDL_SCANCODE_D: inputs.right = event.key.state; break;
-                    case SDL_SCANCODE_E: inputs.up = event.key.state; break;
-                    case SDL_SCANCODE_Q: inputs.down = event.key.state; break;
-                    case SDL_SCANCODE_LSHIFT: inputs.sprint = event.key.state; break;
-                    case SDL_SCANCODE_I: inputs.turnUp = event.key.state; break;
-                    case SDL_SCANCODE_K: inputs.turnDown = event.key.state; break;
-                    case SDL_SCANCODE_J: inputs.turnLeft = event.key.state; break;
-                    case SDL_SCANCODE_L: inputs.turnRight = event.key.state; break;
-                    default: break;
-                }
+            switch (event.type) {
+                case SDL_QUIT: {
+                    shouldQuit = 1;
+                } break;
+                case SDL_KEYDOWN: {
+                    if (!event.key.repeat) {
+                        input.current[event.key.keysym.scancode] = 1;
+                    }
+                    if (SDL_SCANCODE_ESCAPE == event.key.keysym.scancode) {
+                        shouldQuit = 1;
+                    }
+                } break;
+                case SDL_KEYUP: {
+                    input.current[event.key.keysym.scancode] = 0;
+                } break;
+                default: break;
             }
+        }
+        for (int i = 0; i < SDL_NUM_SCANCODES; i += 1) {
+            input.pressed[i]  =  input.current[i] && !input.previous[i];
+            input.released[i] = !input.current[i] &&  input.previous[i];
         }
 
         // resize if needed
@@ -128,21 +123,35 @@ i32 main() {
         // move camera from inputs
         handle_inputs(frameTime);
 
+        { // toggle point light
+            if (input.pressed[SDL_SCANCODE_C]) {
+                pointLight->intensity = 2.f - pointLight->intensity;
+            }
+        }
+
         // clear previous frame and draw next one
         sfr_clear(0xFF041411);
         draw(time, frameTime);
         sfr_flush_and_wait();
+
+        static i32 renderMode = 0;
+        if (input.pressed[SDL_SCANCODE_Z]) {
+            renderMode = (renderMode + 1) % SFR_RENDERMODE_COUNT;
+            sfr_set_rendermode(renderMode);
+        }
 
         // update SDL window
         SDL_UpdateTexture(sdlTex, NULL, sfrPixelBuf, sfrWidth * 4);
         SDL_RenderClear(renderer);
         SDL_RenderCopy(renderer, sdlTex, NULL, NULL);
         SDL_RenderPresent(renderer);
+
+        sfr_memcpy(input.previous, input.current, SDL_NUM_SCANCODES);
     }
 
     // cleanup and close SDL window
     sfr_release_font(&font);
-    sfr_release_texture(&cubeTex);
+    sfr_release_material(&cubeMat);
     sfr_scene_release(&scene, 0);
     sfr_release();
 
@@ -161,29 +170,36 @@ static void draw(f32 time, f32 frameTime) {
 
         // draw scene
         sfr_reset();
-        sfr_scene_draw(scene);
-    
-        // textured cube
-        sfr_reset();
-        sfr_rotate_y(sinf(time) * 0.2f + 0.5f);
-        sfr_rotate_x(cosf(time) * 0.125f + 2.5f);
-        sfr_scale(10.f, 10.f, 10.f);
-        sfr_translate(0.f, -2.f, 20.f);
-        sfr_cube(0xFFFFFFFF, cubeTex);
-    
-        // room walls
-        sfr_reset();
-        sfr_scale(40.f, 20.f, 25.f);
-        sfr_translate(0.f, -1.f, 20.f);
-        sfr_cube_inv(0xFFAABBCC, NULL);
+        // sfr_scene_draw(scene);
+        sfr_model_draw(sceneModel, sfr_mat_identity(), NULL);
+
+        static u8 showBasicScene = 1;
+        if (input.pressed[SDL_SCANCODE_X]) {
+            showBasicScene = !showBasicScene;
+        }
+        if (showBasicScene) {
+            // textured cube
+            sfr_reset();
+            sfr_rotate_y(sinf(time) * 0.2f + 0.5f);
+            sfr_rotate_x(cosf(time) * 0.125f + 2.5f);
+            sfr_scale(10.f, 10.f, 10.f);
+            sfr_translate(0.f, -2.f, 20.f);
+            sfr_cube(0xFFFFFFFF, cubeMat);
+
+            // room walls
+            sfr_reset();
+            sfr_scale(40.f, 20.f, 25.f);
+            sfr_translate(0.f, -1.f, 20.f);
+            sfr_cube_inv(0xFFAABBCC, NULL);
+        }
     }
 
-    { // simple raycasting example, will only interact with the scene
+    if (input.current[SDL_SCANCODE_F]) { // simple raycasting example, will only interact with the scene
         const sfrvec f = sfr_vec_normf(
             -sinf(camYaw) * cosf(camPitch),
             -sinf(camPitch),
             cosf(camYaw) * cosf(camPitch));
-    
+
         const SfrRayHit hit = sfr_scene_raycast(scene, sfrCamPos.x, sfrCamPos.y, sfrCamPos.z, f.x, f.y, f.z);
 
         if (hit.hit) {
@@ -192,12 +208,12 @@ static void draw(f32 time, f32 frameTime) {
             #endif
 
             const SfrSceneObject* const obj = &scene->objects[hit.objectInd];
-            
+
             // NOTE this is a hack just for the visualization,
             // normally sfrState shouldn't be modified
             // maybe I'll just make a sfr_set_mat_model function or something
             sfrMatModel = obj->_model;
-            sfrState.normalMatDirty = 1; 
+            sfrState.normalMatDirty = 1;
 
             const f32* t = &obj->mesh->tris[hit.triangleInd * 9];
 
@@ -212,10 +228,11 @@ static void draw(f32 time, f32 frameTime) {
         }
     }
 
-    { // draw ui text
+    if (input.current[SDL_SCANCODE_U]) { // draw ui text
         // reset depth buffer before drawing ui
         sfr_clear_depth();
-        
+        sfr_set_lighting(0);
+
         static f32 fpsTimer = 0.f;
         static i32 fpsCounter = 0;
         fpsTimer += frameTime;
@@ -243,15 +260,15 @@ static void draw(f32 time, f32 frameTime) {
             fpsCounter = 0;
             trisCounter = 0;
         }
-        
+
         sfr_set_camera(0.f, 0.f, 0.f, 0.f, 0.f, 0.f);
-        
+
         sfr_reset();
         sfr_scale(0.01f, 0.01f, 0.01f);
         sfr_translate(-0.87f, 0.43f, 1.f);
         for (i32 i = 0; i < fpsLen; i += 1) {
             sfr_translate(0.07f, 0.f, 0.f);
-            sfr_glyph(font, fpsBuf[i], 0xFF77FF77);    
+            sfr_glyph(font, fpsBuf[i], 0xFF77FF77);
         }
 
         sfr_reset();
@@ -274,7 +291,7 @@ static void draw(f32 time, f32 frameTime) {
 static void handle_resize(SDL_Window* window, SDL_Renderer* renderer, SDL_Texture* texture) {
     i32 width, height;
     SDL_GetWindowSize(window, &width, &height);
-    
+
     width *= RES_SCALE;
     height *= RES_SCALE;
 
@@ -306,17 +323,17 @@ static void handle_inputs(f32 frameTime) {
     static f32 camStrafeSpeed = 0.f;
     static f32 camUpSpeed = 0.f;
 
-    const f32 moveMult = inputs.sprint ? 3.f : 0.5f;
+    const f32 moveMult = input.current[SDL_SCANCODE_LSHIFT] ? 3.f : 0.5f;
     const f32 turnMult = 2.75f;
     const f32 accel = 50.f;
     const f32 decel = 7.f;
 
-    if (inputs.forward)   camForwardSpeed +=  accel * moveMult * frameTime;
-    if (inputs.backward)  camForwardSpeed += -accel * moveMult * frameTime;
-    if (inputs.left)  camStrafeSpeed +=  accel * moveMult * frameTime;
-    if (inputs.right) camStrafeSpeed += -accel * moveMult * frameTime;
-    if (inputs.up)   camUpSpeed +=  accel * moveMult * frameTime;
-    if (inputs.down) camUpSpeed += -accel * moveMult * frameTime;
+    if (input.current[SDL_SCANCODE_W]) camForwardSpeed +=  accel * moveMult * frameTime;
+    if (input.current[SDL_SCANCODE_S]) camForwardSpeed += -accel * moveMult * frameTime;
+    if (input.current[SDL_SCANCODE_A]) camStrafeSpeed +=  accel * moveMult * frameTime;
+    if (input.current[SDL_SCANCODE_D]) camStrafeSpeed += -accel * moveMult * frameTime;
+    if (input.current[SDL_SCANCODE_E]) camUpSpeed +=  accel * moveMult * frameTime;
+    if (input.current[SDL_SCANCODE_Q]) camUpSpeed += -accel * moveMult * frameTime;
 
     camX -= cosf(camYaw - SFR_PI / 2.f) * camForwardSpeed * frameTime;
     camZ -= sinf(camYaw - SFR_PI / 2.f) * camForwardSpeed * frameTime;
@@ -328,13 +345,17 @@ static void handle_inputs(f32 frameTime) {
     camStrafeSpeed  -= camStrafeSpeed  * decel * frameTime;
     camUpSpeed      -= camUpSpeed * decel * frameTime;
 
-    if (inputs.turnUp)    camPitch -= frameTime * turnMult * 0.7f;
-    if (inputs.turnDown)  camPitch += frameTime * turnMult * 0.7f;
-    if (inputs.turnLeft)  camYaw += frameTime * turnMult;
-    if (inputs.turnRight) camYaw -= frameTime * turnMult;
+    if (input.current[SDL_SCANCODE_I]) camPitch -= frameTime * turnMult * 0.7f;
+    if (input.current[SDL_SCANCODE_K]) camPitch += frameTime * turnMult * 0.7f;
+    if (input.current[SDL_SCANCODE_J]) camYaw += frameTime * turnMult;
+    if (input.current[SDL_SCANCODE_L]) camYaw -= frameTime * turnMult;
 
     if (camPitch < -SFR_PI / 2.f) camPitch = -1.57f;
-    if (camPitch >  SFR_PI / 2.f) camPitch = 1.57f;    
+    if (camPitch >  SFR_PI / 2.f) camPitch = 1.57f;
 
     sfr_set_camera(camX, camY, camZ, camYaw, camPitch, 0.f);
+
+    pointLight->x = camX;
+    pointLight->y = camY;
+    pointLight->z = camZ;
 }
