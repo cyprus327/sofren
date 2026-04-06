@@ -1,3 +1,8 @@
+#define SFR_IMPL
+#define SFR_THREAD_COUNT 8
+#define SFR_USE_CGLTF
+#define SFR_USE_STB_IMAGE
+
 #ifndef SFR_H
 #define SFR_H
 
@@ -391,10 +396,6 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
         __m128 v;
         struct { f32 x, y, z, w; };
     } sfrvec;
-
-    typedef struct sfrvec8 {
-        __m256 x, y, z, w;
-    } sfrvec8;
 #else
     typedef union sfrvec { struct { f32 x, y, z, w; }; } sfrvec;
 #endif
@@ -2308,40 +2309,25 @@ static void sfr__process_and_bin_triangle(
 
 #ifndef SFR_NO_SIMD
 
-static sfrvec8 sfr__mat_mul_vec8(const sfrmat* m, const sfrvec8* v) {
-    sfrvec8 r;
-
-    // x, col 0
-    r.x = _mm256_mul_ps(  _mm256_set1_ps(m->m[0][0]), v->x);
-    r.x = _mm256_fmadd_ps(_mm256_set1_ps(m->m[1][0]), v->y, r.x);
-    r.x = _mm256_fmadd_ps(_mm256_set1_ps(m->m[2][0]), v->z, r.x);
-    r.x = _mm256_fmadd_ps(_mm256_set1_ps(m->m[3][0]), v->w, r.x);
-
-    // y, col 1
-    r.y = _mm256_mul_ps(  _mm256_set1_ps(m->m[0][1]), v->x);
-    r.y = _mm256_fmadd_ps(_mm256_set1_ps(m->m[1][1]), v->y, r.y);
-    r.y = _mm256_fmadd_ps(_mm256_set1_ps(m->m[2][1]), v->z, r.y);
-    r.y = _mm256_fmadd_ps(_mm256_set1_ps(m->m[3][1]), v->w, r.y);
-
-    // z, col 2
-    r.z = _mm256_mul_ps(  _mm256_set1_ps(m->m[0][2]), v->x);
-    r.z = _mm256_fmadd_ps(_mm256_set1_ps(m->m[1][2]), v->y, r.z);
-    r.z = _mm256_fmadd_ps(_mm256_set1_ps(m->m[2][2]), v->z, r.z);
-    r.z = _mm256_fmadd_ps(_mm256_set1_ps(m->m[3][2]), v->w, r.z);
-
-    // w, col 3
-    r.w = _mm256_mul_ps(  _mm256_set1_ps(m->m[0][3]), v->x);
-    r.w = _mm256_fmadd_ps(_mm256_set1_ps(m->m[1][3]), v->y, r.w);
-    r.w = _mm256_fmadd_ps(_mm256_set1_ps(m->m[2][3]), v->z, r.w);
-    r.w = _mm256_fmadd_ps(_mm256_set1_ps(m->m[3][3]), v->w, r.w);
-
-    return r;
+static __m256 sfr__mm256_log2_ps(__m256 x) {
+    const __m256i i = _mm256_castps_si256(x);
+    const __m256 e = _mm256_cvtepi32_ps(_mm256_sub_epi32(i, _mm256_set1_epi32(0x3F800000)));
+    return _mm256_mul_ps(e, _mm256_set1_ps(1.1920928955078125e-7f));
 }
 
-static __m256 sfr__vec_dot8(sfrvec8 a, sfrvec8 b) {
-    const __m256 xx = _mm256_mul_ps(a.x, b.x);
-    const __m256 yy = _mm256_fmadd_ps(a.y, b.y, xx);
-    return _mm256_fmadd_ps(a.z, b.z, yy);
+static __m256 sfr__mm256_exp2_ps(__m256 x) {
+    // clamp x to avoid underflowing the IEEE-754 exponent into negative numbers/NaNs
+    x = _mm256_max_ps(x, _mm256_set1_ps(-126.f));
+
+    const __m256i i = _mm256_cvtps_epi32(_mm256_mul_ps(x, _mm256_set1_ps(8388608.f)));
+    return _mm256_castsi256_ps(_mm256_add_epi32(i, _mm256_set1_epi32(0x3F800000)));
+}
+
+// fast pow(x, y)
+static __m256 sfr__mm256_pow_ps(__m256 x, __m256 y) {
+    // clamp x to avoid taking the log of zero or negative numbers (NaN/inf)
+    const __m256 cx = _mm256_max_ps(x, _mm256_set1_ps(0.000001f));
+    return sfr__mm256_exp2_ps(_mm256_mul_ps(y, sfr__mm256_log2_ps(cx)));
 }
 
 static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 globalInd, __m256i writeMask) {
@@ -2397,44 +2383,55 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
     const __m256 vy = _mm256_set1_ps((f32)(globalY - bin->minY) + 0.5f);
     const __m256 vInvDet = _mm256_set1_ps(bin->invDet);
 
-    const __m256 vw0 = _mm256_mul_ps(_mm256_add_ps(_mm256_set1_ps(bin->C1),
-        _mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps(bin->A1), vx), _mm256_mul_ps(_mm256_set1_ps(bin->B1), vy))), vInvDet);
-    const __m256 vw1 = _mm256_mul_ps(_mm256_add_ps(_mm256_set1_ps(bin->C2),
-        _mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps(bin->A2), vx), _mm256_mul_ps(_mm256_set1_ps(bin->B2), vy))), vInvDet);
-    const __m256 vw2 = _mm256_mul_ps(_mm256_add_ps(_mm256_set1_ps(bin->C0),
-        _mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps(bin->A0), vx), _mm256_mul_ps(_mm256_set1_ps(bin->B0), vy))), vInvDet);
+    // constants
+    const __m256 A0 = _mm256_set1_ps(bin->A0);
+    const __m256 B0 = _mm256_set1_ps(bin->B0);
+    const __m256 C0 = _mm256_set1_ps(bin->C0);
 
-    const __m256 vInvZ = _mm256_add_ps(
-        _mm256_mul_ps(vw0, _mm256_set1_ps(bin->v0.invZ)),
-        _mm256_add_ps(_mm256_mul_ps(vw1, _mm256_set1_ps(bin->v1.invZ)), _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.invZ))));
-    const __m256 vZ = _mm256_rcp_ps(vInvZ);
+    const __m256 A1 = _mm256_set1_ps(bin->A1);
+    const __m256 B1 = _mm256_set1_ps(bin->B1);
+    const __m256 C1 = _mm256_set1_ps(bin->C1);
 
-    // vv attribute interpolation vv
-    const __m256 vu = _mm256_mul_ps(_mm256_add_ps(_mm256_mul_ps(vw0, _mm256_set1_ps(bin->v0.u)),
-        _mm256_add_ps(_mm256_mul_ps(vw1, _mm256_set1_ps(bin->v1.u)), _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.u)))), vZ);
-    const __m256 vv = _mm256_mul_ps(_mm256_add_ps(_mm256_mul_ps(vw0, _mm256_set1_ps(bin->v0.v)),
-        _mm256_add_ps(_mm256_mul_ps(vw1, _mm256_set1_ps(bin->v1.v)), _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.v)))), vZ);
+    const __m256 A2 = _mm256_set1_ps(bin->A2);
+    const __m256 B2 = _mm256_set1_ps(bin->B2);
+    const __m256 C2 = _mm256_set1_ps(bin->C2);
 
-    const __m256 vFragX = _mm256_mul_ps(_mm256_add_ps(_mm256_mul_ps(vw0, _mm256_set1_ps(bin->v0.wx)),
-        _mm256_add_ps(_mm256_mul_ps(vw1, _mm256_set1_ps(bin->v1.wx)), _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.wx)))), vZ);
-    const __m256 vFragY = _mm256_mul_ps(_mm256_add_ps(_mm256_mul_ps(vw0, _mm256_set1_ps(bin->v0.wy)),
-        _mm256_add_ps(_mm256_mul_ps(vw1, _mm256_set1_ps(bin->v1.wy)), _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.wy)))), vZ);
-    const __m256 vFragZ = _mm256_mul_ps(_mm256_add_ps(_mm256_mul_ps(vw0, _mm256_set1_ps(bin->v0.wz)),
-        _mm256_add_ps(_mm256_mul_ps(vw1, _mm256_set1_ps(bin->v1.wz)), _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.wz)))), vZ);
+    // w0 = (A1*vx + B1*vy + C1) * invDet
+    const __m256 vw0 = _mm256_mul_ps(
+        _mm256_fmadd_ps(A1, vx, _mm256_fmadd_ps(B1, vy, C1)),
+        vInvDet);
 
-    __m256 vnx = _mm256_mul_ps(_mm256_add_ps(_mm256_mul_ps(vw0, _mm256_set1_ps(bin->v0.nx)),
-        _mm256_add_ps(_mm256_mul_ps(vw1, _mm256_set1_ps(bin->v1.nx)), _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.nx)))), vZ);
-    __m256 vny = _mm256_mul_ps(_mm256_add_ps(_mm256_mul_ps(vw0, _mm256_set1_ps(bin->v0.ny)),
-        _mm256_add_ps(_mm256_mul_ps(vw1, _mm256_set1_ps(bin->v1.ny)), _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.ny)))), vZ);
-    __m256 vnz = _mm256_mul_ps(_mm256_add_ps(_mm256_mul_ps(vw0, _mm256_set1_ps(bin->v0.nz)),
-        _mm256_add_ps(_mm256_mul_ps(vw1, _mm256_set1_ps(bin->v1.nz)), _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.nz)))), vZ);
+    // w1 = (A2*vx + B2*vy + C2) * invDet
+    const __m256 vw1 = _mm256_mul_ps(
+        _mm256_fmadd_ps(A2, vx, _mm256_fmadd_ps(B2, vy, C2)),
+        vInvDet);
 
-    // vv fast vector normalization vv
-    __m256 vnDot = _mm256_add_ps(_mm256_mul_ps(vnx, vnx), _mm256_add_ps(_mm256_mul_ps(vny, vny), _mm256_mul_ps(vnz, vnz)));
-    __m256 vnRsqrt = _mm256_rsqrt_ps(vnDot);
-    vnx = _mm256_mul_ps(vnx, vnRsqrt);
-    vny = _mm256_mul_ps(vny, vnRsqrt);
-    vnz = _mm256_mul_ps(vnz, vnRsqrt);
+    // w2 = (A0*vx + B0*vy + C0) * invDet
+    const __m256 vw2 = _mm256_mul_ps(
+        _mm256_fmadd_ps(A0, vx, _mm256_fmadd_ps(B0, vy, C0)),
+        vInvDet);
+
+    // invZ = w0*z0 + w1*z1 + w2*z2
+    const __m256 vZ = _mm256_rcp_ps(_mm256_fmadd_ps(
+        vw0, _mm256_set1_ps(bin->v0.invZ),
+        _mm256_fmadd_ps(
+            vw1, _mm256_set1_ps(bin->v1.invZ),
+            _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.invZ)))));
+
+    // ((w0*a0 + w1*a1 + w2*a2) * vZ)
+    #define INTERP(attr) \
+        _mm256_mul_ps( \
+            _mm256_fmadd_ps(vw0, _mm256_set1_ps(bin->v0.attr), \
+                _mm256_fmadd_ps(vw1, _mm256_set1_ps(bin->v1.attr), \
+                    _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.attr)) \
+                ) \
+            ), \
+            vZ \
+        )
+
+    // attribute interpolation 1
+    const __m256 vu = INTERP(u);
+    const __m256 vv = INTERP(v);
 
     // vv base material properties vv
     __m256 vAlbedoR = _mm256_set1_ps((f32)((bin->col >> 16) & 0xFF) / 255.f);
@@ -2469,7 +2466,7 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
         __m256i vTexInds = _mm256_add_epi32(_mm256_mullo_epi32(vaty, _mm256_set1_epi32(currW)), vatx);
         // only fetch active pixels
         __m256i vCol = _mm256_mask_i32gather_epi32(_mm256_setzero_si256(), (const int*)mipPixels, vTexInds, writeMask, 4);
-        
+
         const __m256 vInv255 = _mm256_set1_ps(1.f / 255.f);
         const __m256i v0xFF  = _mm256_set1_epi32(0xFF);
         vAlbedoR = _mm256_mul_ps(vAlbedoR, _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(vCol, 16), v0xFF)), vInv255));
@@ -2479,7 +2476,7 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
         if (mat->metallicRoughnessTex) {
             const SfrTexture* mrTex = mat->metallicRoughnessTex;
             const u32* const mrMipPixels = (0 == aLod) ? mrTex->pixels : mrTex->mipPixels[aLod - 1];
-            __m256i vMrCol = _mm256_i32gather_epi32((const int*)mrMipPixels, vTexInds, 4);
+            const __m256i vMrCol = _mm256_mask_i32gather_epi32(_mm256_setzero_si256(), (const int*)mrMipPixels, vTexInds, writeMask, 4);
 
             __m256 vTexRoughness = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(vMrCol, 8), v0xFF)), vInv255);
             vRoughness = _mm256_max_ps(_mm256_set1_ps(0.001f), vTexRoughness);
@@ -2497,9 +2494,9 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
     const __m256 vDiffB = _mm256_mul_ps(vAlbedoB, vInvMetallic);
 
     const __m256 vF0Base = _mm256_mul_ps(_mm256_set1_ps(0.04f), vInvMetallic);
-    const __m256 vF0R = _mm256_add_ps(vF0Base, _mm256_mul_ps(vAlbedoR, vMetallic));
-    const __m256 vF0G = _mm256_add_ps(vF0Base, _mm256_mul_ps(vAlbedoG, vMetallic));
-    const __m256 vF0B = _mm256_add_ps(vF0Base, _mm256_mul_ps(vAlbedoB, vMetallic));
+    const __m256 vF0R = _mm256_fmadd_ps(vAlbedoR, vMetallic, vF0Base);
+    const __m256 vF0G = _mm256_fmadd_ps(vAlbedoG, vMetallic, vF0Base);
+    const __m256 vF0B = _mm256_fmadd_ps(vAlbedoB, vMetallic, vF0Base);
 
     // vv convert PBR roughness to blinn-phong shininess vv
     const __m256 vAlpha = _mm256_mul_ps(vRoughness, vRoughness);
@@ -2507,18 +2504,33 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
     __m256 vShininess = _mm256_sub_ps(_mm256_div_ps(_mm256_set1_ps(2.f), vAlphaSq), _mm256_set1_ps(2.f));
     vShininess = _mm256_max_ps(_mm256_set1_ps(1.f), _mm256_min_ps(vShininess, _mm256_set1_ps(4096.f)));
 
-    const __m256 vEnergyCons = _mm256_div_ps(_mm256_add_ps(_mm256_set1_ps(8.f), vShininess), _mm256_set1_ps(8.f * 3.14159265f));
+    const __m256 vEnergyCons = _mm256_mul_ps(_mm256_add_ps(_mm256_set1_ps(8.f), vShininess), _mm256_set1_ps(1.f / (8.f * SFR_PI)));
 
     // vv lighting vv
     __m256 vFinalR = _mm256_setzero_ps();
     __m256 vFinalG = _mm256_setzero_ps();
     __m256 vFinalB = _mm256_setzero_ps();
 
+    // attribute interpolation 2
+    const __m256 vFragX = INTERP(wx);
+    const __m256 vFragY = INTERP(wy);
+    const __m256 vFragZ = INTERP(wz);
+    __m256 vnx = INTERP(nx);
+    __m256 vny = INTERP(ny);
+    __m256 vnz = INTERP(nz);
+
+    // vv fast vector normalization vv
+    __m256 vnDot = _mm256_fmadd_ps(vnx, vnx, _mm256_fmadd_ps(vny, vny, _mm256_mul_ps(vnz, vnz)));
+    __m256 vnRsqrt = _mm256_rsqrt_ps(vnDot);
+    vnx = _mm256_mul_ps(vnx, vnRsqrt);
+    vny = _mm256_mul_ps(vny, vnRsqrt);
+    vnz = _mm256_mul_ps(vnz, vnRsqrt);
+
     if (sfrState.lightingEnabled && sfrState.lightCount > 0) {
         __m256 vViewX = _mm256_sub_ps(_mm256_set1_ps(sfrCamPos.x), vFragX);
         __m256 vViewY = _mm256_sub_ps(_mm256_set1_ps(sfrCamPos.y), vFragY);
         __m256 vViewZ = _mm256_sub_ps(_mm256_set1_ps(sfrCamPos.z), vFragZ);
-        const __m256 vViewDot = _mm256_add_ps(_mm256_mul_ps(vViewX, vViewX), _mm256_add_ps(_mm256_mul_ps(vViewY, vViewY), _mm256_mul_ps(vViewZ, vViewZ)));
+        __m256 vViewDot = _mm256_fmadd_ps(vViewX, vViewX, _mm256_fmadd_ps(vViewY, vViewY, _mm256_mul_ps(vViewZ, vViewZ)));
         const __m256 vViewRsqrt = _mm256_rsqrt_ps(vViewDot);
         vViewX = _mm256_mul_ps(vViewX, vViewRsqrt);
         vViewY = _mm256_mul_ps(vViewY, vViewRsqrt);
@@ -2567,15 +2579,7 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
             const __m256 vnDotH = _mm256_max_ps(_mm256_setzero_ps(),
                 _mm256_add_ps(_mm256_mul_ps(vnx, vhx), _mm256_add_ps(_mm256_mul_ps(vny, vhy), _mm256_mul_ps(vnz, vhz))));
 
-            // fallback calculation, TODO make a SIMD pow function
-            __m256 vSpec;
-            union { __m256 v; f32 f[8]; } uDot, uShininess, uSpecRes;
-            _mm256_storeu_ps(uDot.f, vnDotH);
-            _mm256_storeu_ps(uShininess.f, vShininess);
-            for (int p = 0; p < 8; p += 1) {
-                uSpecRes.f[p] = sfr_powf(uDot.f[p], uShininess.f[p]);
-            }
-            vSpec = _mm256_loadu_ps(uSpecRes.f);
+            __m256 vSpec = sfr__mm256_pow_ps(vnDotH, vShininess);
 
             // apply energy conservation and mask zero diffuse
             vSpec = _mm256_mul_ps(vSpec, vEnergyCons);
@@ -2593,12 +2597,20 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
             const __m256 vDiffTerm = _mm256_add_ps(vAmbient, vDiffuseIntensity);
             const __m256 vSpecTerm = _mm256_add_ps(vAmbient, vSpecularIntensity);
 
-            vFinalR = _mm256_add_ps(vFinalR, _mm256_add_ps(_mm256_mul_ps(_mm256_mul_ps(vDiffTerm, vLightR), vDiffR),
-                                                           _mm256_mul_ps(_mm256_mul_ps(vSpecTerm, vLightR), vF0R)));
-            vFinalG = _mm256_add_ps(vFinalG, _mm256_add_ps(_mm256_mul_ps(_mm256_mul_ps(vDiffTerm, vLightG), vDiffG),
-                                                           _mm256_mul_ps(_mm256_mul_ps(vSpecTerm, vLightG), vF0G)));
-            vFinalB = _mm256_add_ps(vFinalB, _mm256_add_ps(_mm256_mul_ps(_mm256_mul_ps(vDiffTerm, vLightB), vDiffB),
-                                                           _mm256_mul_ps(_mm256_mul_ps(vSpecTerm, vLightB), vF0B)));
+            const __m256 vLightDiffR = _mm256_mul_ps(vLightR, vDiffR);
+            const __m256 vLightSpecR = _mm256_mul_ps(vLightR, vF0R);
+            vFinalR = _mm256_fmadd_ps(vDiffTerm, vLightDiffR, vFinalR);
+            vFinalR = _mm256_fmadd_ps(vSpecTerm, vLightSpecR, vFinalR);
+
+            const __m256 vLightDiffG = _mm256_mul_ps(vLightG, vDiffG);
+            const __m256 vLightSpecG = _mm256_mul_ps(vLightG, vF0G);
+            vFinalG = _mm256_fmadd_ps(vDiffTerm, vLightDiffG, vFinalG);
+            vFinalG = _mm256_fmadd_ps(vSpecTerm, vLightSpecG, vFinalG);
+
+            const __m256 vLightDiffB = _mm256_mul_ps(vLightB, vDiffB);
+            const __m256 vLightSpecB = _mm256_mul_ps(vLightB, vF0B);
+            vFinalB = _mm256_fmadd_ps(vDiffTerm, vLightDiffB, vFinalB);
+            vFinalB = _mm256_fmadd_ps(vSpecTerm, vLightSpecB, vFinalB);
         }
     } else {
         vFinalR = vAlbedoR;
@@ -2633,6 +2645,8 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
         _mm256_or_si256(_mm256_slli_epi32(_mm256_cvttps_epi32(vfg), 8), _mm256_cvttps_epi32(vfb))));
 
     _mm256_maskstore_epi32((int*)&sfrPixelBuf[globalInd], writeMask, vFinalPixel);
+
+    #undef INTERP
 }
 
 #endif // !SFR_NO_SIMD
@@ -2744,9 +2758,10 @@ static void sfr__resolve_pixel(u32 id, i32 globalX, i32 globalY, i32 globalInd) 
         }
 
         const u32 col = aMipPixels[aty * currW + atx];
-        albedoR *= (f32)((col >> 16) & 0xFF) / 255.f;
-        albedoG *= (f32)((col >> 8)  & 0xFF) / 255.f;
-        albedoB *= (f32)((col >> 0)  & 0xFF) / 255.f;
+        const f32 i255 = 1.f / 255.f;
+        albedoR *= (f32)((col >> 16) & 0xFF) * i255;
+        albedoG *= (f32)((col >> 8)  & 0xFF) * i255;
+        albedoB *= (f32)((col >> 0)  & 0xFF) * i255;
 
         // assume metallicRoughnessTex and albedoTex have the same dimensions
         if (mat->metallicRoughnessTex) {
@@ -2755,8 +2770,8 @@ static void sfr__resolve_pixel(u32 id, i32 globalX, i32 globalY, i32 globalInd) 
 
             // g = roughness, b = metallic
             const u32 col = mrMipPixels[aty * currW + atx];
-            roughness = sfr_fmaxf(0.001f, (f32)((col >> 8)  & 0xFF) / 255.f);
-            metallic = (f32)((col >> 0)  & 0xFF) / 255.f;
+            roughness = sfr_fmaxf(0.001f, (f32)((col >> 8)  & 0xFF) * i255);
+            metallic = (f32)((col >> 0)  & 0xFF) * i255;
         }
     }
 
@@ -2776,7 +2791,7 @@ static void sfr__resolve_pixel(u32 id, i32 globalX, i32 globalY, i32 globalInd) 
     f32 shininess = (2.f / (alpha * alpha)) - 2.f;
     shininess = sfr_fmaxf(1.f, sfr_fminf(shininess, 4096.f));
 
-    const f32 energyConservation = (8.f + shininess) / (8.f * SFR_PI);
+    const f32 energyConservation = (8.f + shininess) * (1.f / (8.f * SFR_PI));
 
     // blinn-phong
     f32 finalR = 0.f, finalG = 0.f, finalB = 0.f;
@@ -3132,8 +3147,8 @@ static void sfr__generate_mipmaps(SfrTexture* tex) {
                 const u32 c11 = ((sx + 1 < cw) && (sy + 1 < ch)) ? src[(sy + 1) * cw + (sx + 1)] : c00;
 
                 const u32 r = (((c00 >> 16) & 0xFF) + ((c01 >> 16) & 0xFF) + ((c10 >> 16) & 0xFF) + ((c11 >> 16) & 0xFF)) / 4;
-                const u32 g = (((c00 >> 8) & 0xFF)  + ((c01 >> 8) & 0xFF)  + ((c10 >> 8) & 0xFF)  + ((c11 >> 8) & 0xFF)) / 4;
-                const u32 b = (((c00 >> 0) & 0xFF)  + ((c01 >> 0) & 0xFF)  + ((c10 >> 0) & 0xFF)  + ((c11 >> 0) & 0xFF)) / 4;
+                const u32 g = (((c00 >> 8)  & 0xFF) + ((c01 >> 8)  & 0xFF) + ((c10 >> 8)  & 0xFF) + ((c11 >> 8)  & 0xFF)) / 4;
+                const u32 b = (((c00 >> 0)  & 0xFF) + ((c01 >> 0)  & 0xFF) + ((c10 >> 0)  & 0xFF) + ((c11 >> 0)  & 0xFF)) / 4;
                 const u32 a = (((c00 >> 24) & 0xFF) + ((c01 >> 24) & 0xFF) + ((c10 >> 24) & 0xFF) + ((c11 >> 24) & 0xFF)) / 4;
 
                 dest[y * nw + x] = (a << 24) | (r << 16) | (g << 8) | b;
@@ -5642,26 +5657,8 @@ static void* sfr__worker_thread_func(void* arg) {
             const i32 jobInd = sfrThreadBuf->geometryWorkQueue[head];
             const struct sfrMeshChunkJob* job = &sfrThreadBuf->meshJobPool[jobInd];
 
-            i32 i = 0;
-
-            /* #ifndef SFR_NO_SIMD
-                for (; i <= job->triangleCount - 8; i += 8) {
-                    const i32 triInd = i * 9;
-                    const i32 uvInd = i * 6;
-                    const i32 tanInd = i * 12;
-                    sfr__process_and_bin_triangles8(
-                        &job->matMVP, &job->matNormal,
-                        &job->tris[triInd],
-                        job->uvs ? &job->uvs[uvInd] : NULL,
-                        &job->normals[triInd],
-                        job->tangents ? &job->tangents[tanInd] : NULL,
-                        job->col, job->mat
-                    );
-                }
-            #endif */
-
             // process all triangles in this job
-            for (; i < job->triangleCount; i += 1) {
+            for (i32 i = 0; i < job->triangleCount; i += 1) {
                 const i32 triInd = i * 9;
                 const i32 uvInd = i * 6;
                 const i32 tanInd = i * 12;
