@@ -9,14 +9,13 @@
 ---
 
 <details>
-  <summary>About...</summary>
-  This is (for now) faked / hacked animation. I made a python script to export each frame of an animated
-  .fbx model to many individual .glb models, where I then load each frame in an array of
-  SfrModel* and render them sequentially (like a spritesheet but with full models).
-  This is obviously terrible and won't be done in the future when skinned mesh rendering is supported.
+  <summary>About the lighting...</summary>
+  This is baked lighting from a Hammer style editor designed around outputting to sofren that I've been working on in between classes.
+  The engine / editor isn't public because the code is not good, and I'm not sure it will ever be public.
+  I genuinely think it looks cool, but the monte carlo baking loop I use leaves a lot of splotchyness after the bilateral denoising and dilation.
 </details>
 
-https://github.com/user-attachments/assets/8ad46e35-616c-48bd-bc51-4779224e59b1
+<img width="1280" height="720" alt="baked lighting" src="https://github.com/user-attachments/assets/4c9e3bcc-dd96-468a-89a8-2d5d949bc001" />
 
 ---
 
@@ -171,18 +170,15 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A current
 
 ## Gallery
 
-Pretty Cornell box
-<details>
-  <summary>About...</summary>
-  Lighting baked in Blender, exported to .glb, and loaded using sofren's cgltf wrapper (sfr_load_model).
-  
-  This is meant to show that lightmaps work in sofren, allowing for much better lighting than would otherwise be possible when rasterizing at high resolutions.
-  
-  Background skybox from [here](https://bumbadida.itch.io/skybox-textures-sdr).
+Some more baked lighting images
 
-  The scene is being rendered at 1280x720 235fps.
-</details>
-<img width="1274" height="714" alt="cornellbox" src="https://github.com/user-attachments/assets/137517ac-d80d-4d9d-bb74-eccc85dca6a8" />
+<img width="1280" height="720" alt="baked room 2" src="https://github.com/user-attachments/assets/abd6ebf6-047c-4fee-bacd-22878eadbe9e" />
+
+<img width="1280" height="720" alt="baked pillars" src="https://github.com/user-attachments/assets/cb407585-8b76-48c1-a057-ad870a713fce" />
+
+<img width="1280" height="720" alt="baked corridor" src="https://github.com/user-attachments/assets/9f184b37-2587-403b-9103-a0749fbee154" />
+
+<img width="1280" height="720" alt="baked room 1" src="https://github.com/user-attachments/assets/03d9c19f-22f9-4ba1-addf-06198509289b" />
 
 ---
 
@@ -203,6 +199,20 @@ Sponza at 720p 60fps on an older laptop while recording
 </details>
 
 https://github.com/user-attachments/assets/c11733d0-74b1-42f1-ad72-7a49711e4004
+
+---
+
+<details>
+  <summary>About the animation...</summary>
+  This is (for now) faked / hacked animation. I made a python script to export each frame of an animated
+  .fbx model to many individual .glb models, where I then load each frame in an array of
+  SfrModel* and render them sequentially (like a spritesheet but with full models).
+  This is obviously terrible and won't be done in the future when skinned mesh rendering is supported.
+</details>
+
+https://github.com/user-attachments/assets/8ad46e35-616c-48bd-bc51-4779224e59b1
+
+---
 
 # License
 This project is under the MIT license, do with that what you will
