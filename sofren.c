@@ -624,11 +624,9 @@ struct sfrTexVert {
     f32 viewZ;       // z in view space for perspective correction
 };
 
-struct sfrTriangleBin {
-    i32 binId;
-
-    // needed for barycentric weights
-    f32 invDet;
+// only used during rasterization
+struct sfrRasterBin {
+    i32 shadeId;
 
     // depth buffer equations (rasterizer)
     f32 dzdx, dzdy, zBase;
@@ -639,8 +637,14 @@ struct sfrTriangleBin {
     f32 A2, B2, C2;
 
     // bounding box (rasterizer)
-    i32 minX, maxX;
-    i32 minY, maxY;
+    i16 minX, maxX;
+    i16 minY, maxY;
+};
+
+// only used once per visible pixel during the resolve phase
+struct sfrShadeBin {
+    // needed for barycentric weights
+    f32 invDet;
 
     // the 3 verts and their attributes (resolver)
     struct sfrVertexData v0;
@@ -656,7 +660,7 @@ struct sfrTile {
     f32 minInvZ; // furthest visible depth in the tile (stored natively as 1/Z)
 
     #ifdef SFR_MULTITHREADED
-        struct sfrTriangleBin** bins[SFR_THREAD_COUNT + 1];
+        struct sfrRasterBin** bins[SFR_THREAD_COUNT + 1];
         i32 binsCapacity[SFR_THREAD_COUNT + 1];
         i32 binCount[SFR_THREAD_COUNT + 1];
         SfrAtomic32 hasWork;
@@ -694,7 +698,8 @@ struct sfrTile {
             ((SFR_MAX_WIDTH + SFR_TILE_WIDTH - 1) / SFR_TILE_WIDTH)];
         i32 tileCols, tileRows, tileCount;
 
-        struct sfrTriangleBin** binPages; // dynamic array of pointers to fixed size pages
+        struct sfrRasterBin** rasterBinPages;
+        struct sfrShadeBin** shadeBinPages;
         i32 binPagesCapacity; // how many pages pointers have been allocated for
         SfrAtomic32 triangleBinAllocator; // total bins allocated across all pages
         SfrMutex binPoolMutex; // protects the binPages array resizing
@@ -755,7 +760,8 @@ struct sfrState {
 #ifdef SFR_MULTITHREADED
     u8 shutdown;
 #else
-    struct sfrTriangleBin* globalBins;
+    struct sfrRasterBin* globalRasterBins;
+    struct sfrShadeBin* globalShadeBins;
     i32 globalBinsCount, globalBinsCap;
 
     i32* idBuf;
@@ -1769,7 +1775,7 @@ static i32 sfr__clip_tri_homogeneous(struct sfrTexVert out[restrict 2][3], sfrve
     return 0;
 }
 
-static void sfr__rasterize_bin(const struct sfrTriangleBin* bin, struct sfrTile* tile) {
+static void sfr__rasterize_bin(const struct sfrRasterBin* bin, struct sfrTile* tile) {
     const f32 dzdx = bin->dzdx, dzdy = bin->dzdy, zBase = bin->zBase;
 
     const f32 A0 = bin->A0, B0 = bin->B0, C0 = bin->C0;
@@ -1851,7 +1857,7 @@ static void sfr__rasterize_bin(const struct sfrTriangleBin* bin, struct sfrTile*
     const __m256 vXOffsets = _mm256_setr_ps(0.5f, 1.5f, 2.5f, 3.5f, 4.5f, 5.5f, 6.5f, 7.5f);
     const __m256i vIndex = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
 
-    const __m256i vBinId = _mm256_set1_epi32(bin->binId);
+    const __m256i vShadeId = _mm256_set1_epi32(bin->shadeId);
 
     for (i32 yBase = minY; yBase < maxY; yBase += 8) {
         const f32 fy = (f32)(yBase - bin->minY) + 0.5f;
@@ -1922,11 +1928,11 @@ static void sfr__rasterize_bin(const struct sfrTriangleBin* bin, struct sfrTile*
                     if (0xFF == maskInt) {
                         // 100% coverage so skip the load/blend and store
                         _mm256_storeu_ps(&targetDepthBuf[pixelInd], vz);
-                        _mm256_storeu_si256((__m256i*)&targetIdBuf[pixelInd], vBinId);
+                        _mm256_storeu_si256((__m256i*)&targetIdBuf[pixelInd], vShadeId);
                     } else if (maskInt) {
                         const __m256 vNewDepth = _mm256_blendv_ps(vOldDepth, vz, mask);
                         _mm256_storeu_ps(&targetDepthBuf[pixelInd], vNewDepth);
-                        _mm256_maskstore_epi32((int*)&targetIdBuf[pixelInd], _mm256_castps_si256(mask), vBinId);
+                        _mm256_maskstore_epi32((int*)&targetIdBuf[pixelInd], _mm256_castps_si256(mask), vShadeId);
                     }
                 }
 
@@ -1969,7 +1975,7 @@ static void sfr__rasterize_bin(const struct sfrTriangleBin* bin, struct sfrTile*
             }
 
             targetDepthBuf[pixelInd] = z;
-            targetIdBuf[pixelInd] = bin->binId;
+            targetIdBuf[pixelInd] = bin->shadeId;
         }
     }
 }
@@ -2019,7 +2025,7 @@ static void sfr__bin_triangle(
     const i32 pageOffset = globalInd % SFR_BIN_PAGE_SIZE;
 
     // ensure page exists (rare lock)
-    if (pageInd >= sfrThreadBuf->binPagesCapacity || !sfrThreadBuf->binPages[pageInd]) {
+    if (pageInd >= sfrThreadBuf->binPagesCapacity || !sfrThreadBuf->rasterBinPages[pageInd]) {
         sfr_mutex_lock(&sfrThreadBuf->binPoolMutex);
 
         // resize page pointer array
@@ -2027,54 +2033,64 @@ static void sfr__bin_triangle(
             i32 newCap = sfrThreadBuf->binPagesCapacity * 2;
             while (pageInd >= newCap) newCap *= 2;
 
-            struct sfrTriangleBin** newPageArr = (struct sfrTriangleBin**)sfrRealloc(sfrThreadBuf->binPages, sizeof(struct sfrTriangleBin*) * newCap);
-            if (newPageArr) {
-                sfr_memset(newPageArr + sfrThreadBuf->binPagesCapacity, 0,
-                    (newCap - sfrThreadBuf->binPagesCapacity) * sizeof(struct sfrTriangleBin*));
-                sfrThreadBuf->binPages = newPageArr;
+            struct sfrRasterBin** newRPageArr = (struct sfrRasterBin**)sfrRealloc(sfrThreadBuf->rasterBinPages, sizeof(struct sfrRasterBin*) * newCap);
+            struct sfrShadeBin** newSPageArr = (struct sfrShadeBin**)sfrRealloc(sfrThreadBuf->shadeBinPages, sizeof(struct sfrShadeBin*) * newCap);
+            
+            if (newRPageArr && newSPageArr) {
+                sfr_memset(newRPageArr + sfrThreadBuf->binPagesCapacity, 0, (newCap - sfrThreadBuf->binPagesCapacity) * sizeof(struct sfrRasterBin*));
+                sfr_memset(newSPageArr + sfrThreadBuf->binPagesCapacity, 0, (newCap - sfrThreadBuf->binPagesCapacity) * sizeof(struct sfrShadeBin*));
+                sfrThreadBuf->rasterBinPages = newRPageArr;
+                sfrThreadBuf->shadeBinPages = newSPageArr;
                 sfrThreadBuf->binPagesCapacity = newCap;
             }
         }
 
         // allocate specific page if its missing
-        if (!sfrThreadBuf->binPages[pageInd]) {
-            SFR__MALLOC(sfrThreadBuf->binPages[pageInd], sizeof(struct sfrTriangleBin) * SFR_BIN_PAGE_SIZE);
+        if (!sfrThreadBuf->rasterBinPages[pageInd]) {
+            SFR__MALLOC(sfrThreadBuf->rasterBinPages[pageInd], sizeof(struct sfrRasterBin) * SFR_BIN_PAGE_SIZE);
+            SFR__MALLOC(sfrThreadBuf->shadeBinPages[pageInd], sizeof(struct sfrShadeBin) * SFR_BIN_PAGE_SIZE);
         }
 
         sfr_mutex_unlock(&sfrThreadBuf->binPoolMutex);
     }
 
-    if (!sfrThreadBuf->binPages[pageInd]) {
+    if (!sfrThreadBuf->rasterBinPages[pageInd] || !sfrThreadBuf->shadeBinPages[pageInd]) {
         return;
     }
 
-    struct sfrTriangleBin* bin = &sfrThreadBuf->binPages[pageInd][pageOffset];
+    struct sfrRasterBin* rBin = &sfrThreadBuf->rasterBinPages[pageInd][pageOffset];
+    struct sfrShadeBin* sBin = &sfrThreadBuf->shadeBinPages[pageInd][pageOffset];
 #else
     if (sfrState.globalBinsCount >= sfrState.globalBinsCap) {
         sfrState.globalBinsCap = (i32)(sfrState.globalBinsCap * 1.5f);
-        sfrState.globalBins = (struct sfrTriangleBin*)sfrRealloc(sfrState.globalBins,
-            sizeof(struct sfrTriangleBin) * (u64)sfrState.globalBinsCap);
+        sfrState.globalRasterBins = (struct sfrRasterBin*)sfrRealloc(sfrState.globalRasterBins,
+            sizeof(struct sfrRasterBin) * (u64)sfrState.globalBinsCap);
+        sfrState.globalShadeBins = (struct sfrShadeBin*)sfrRealloc(sfrState.globalShadeBins,
+            sizeof(struct sfrShadeBin) * (u64)sfrState.globalBinsCap);
     }
-    struct sfrTriangleBin* bin = &sfrState.globalBins[sfrState.globalBinsCount];
+    struct sfrRasterBin* rBin = &sfrState.globalRasterBins[sfrState.globalBinsCount];
+    struct sfrShadeBin* sBin = &sfrState.globalShadeBins[sfrState.globalBinsCount];
+    
+    // assign singlethreaded global id
+    const i32 globalInd = sfrState.globalBinsCount;
     sfrState.globalBinsCount += 1;
 #endif
 
-    *bin = (struct sfrTriangleBin){
-#ifdef SFR_MULTITHREADED
-        .binId = globalInd,
-#else
-        .binId = sfrState.globalBinsCount - 1,
-#endif
-        .invDet = invDet,
+    // populate rasterizer data
+    *rBin = (struct sfrRasterBin){
+        .shadeId = globalInd,
         .dzdx = dzdx, .dzdy = dzdy, .zBase = zBase,
         .A0 = A0, .B0 = B0, .C0 = C0,
         .A1 = A1, .B1 = B1, .C1 = C1,
         .A2 = A2, .B2 = B2, .C2 = C2,
-        .minX = minX, .maxX = maxX,
-        .minY = minY, .maxY = maxY,
+        .minX = (i16)minX, .maxX = (i16)maxX,
+        .minY = (i16)minY, .maxY = (i16)maxY
+    };
 
+    // populate shading data
+    *sBin = (struct sfrShadeBin){
+        .invDet = invDet,
         .v0 = *v0, .v1 = *v1, .v2 = *v2,
-
         .col = (mat ? (mat->albedoTex ? col : mat->baseColor) : col),
         .mat = mat
     };
@@ -2097,8 +2113,8 @@ static void sfr__bin_triangle(
             // thread local resize
             if (tile->binCount[tInd] >= tile->binsCapacity[tInd]) {
                 const i32 newCap = tile->binsCapacity[tInd] * 2;
-                struct sfrTriangleBin** const newBins = (struct sfrTriangleBin**)sfrRealloc(
-                    tile->bins[tInd], sizeof(struct sfrTriangleBin*) * newCap);
+                struct sfrRasterBin** const newBins = (struct sfrRasterBin**)sfrRealloc(
+                    tile->bins[tInd], sizeof(struct sfrRasterBin*) * newCap);
                 if (newBins) {
                     tile->bins[tInd] = newBins;
                     tile->binsCapacity[tInd] = newCap;
@@ -2106,7 +2122,7 @@ static void sfr__bin_triangle(
             }
 
             if (tile->bins[tInd]) {
-                tile->bins[tInd][tile->binCount[tInd]++] = bin;
+                tile->bins[tInd][tile->binCount[tInd]++] = rBin;
             }
         }
     }
@@ -2117,7 +2133,7 @@ static void sfr__bin_triangle(
         .maxX = sfrWidth, .maxY = sfrHeight,
         .minInvZ = 0.f
     };
-    sfr__rasterize_bin(bin, &fullTile);
+    sfr__rasterize_bin(rBin, &fullTile);
 #endif
 }
 
@@ -2377,36 +2393,40 @@ static __m256 sfr__mm256_pow_ps(__m256 x, __m256 y) {
 
 static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 globalInd, __m256i writeMask) {
 #ifdef SFR_MULTITHREADED
-    const struct sfrTriangleBin* bin = &sfrThreadBuf->binPages[firstId / SFR_BIN_PAGE_SIZE][firstId % SFR_BIN_PAGE_SIZE];
+    const i32 page = firstId / SFR_BIN_PAGE_SIZE;
+    const i32 offset = firstId % SFR_BIN_PAGE_SIZE;
+    const struct sfrRasterBin* rBin = &sfrThreadBuf->rasterBinPages[page][offset];
+    const struct sfrShadeBin* sBin = &sfrThreadBuf->shadeBinPages[page][offset];
 #else
-    const struct sfrTriangleBin* bin = &sfrState.globalBins[firstId];
+    const struct sfrRasterBin* rBin = &sfrState.globalRasterBins[firstId];
+    const struct sfrShadeBin* sBin = &sfrState.globalShadeBins[firstId];
 #endif
 
-    const SfrMaterial* mat = bin->mat;
+    const SfrMaterial* mat = sBin->mat;
 
     // vv scalar chunk LOD vv
-    const f32 ccx = (f32)(globalX - bin->minX) + 3.5f;
-    const f32 ccy = (f32)(globalY - bin->minY) + 0.5f;
+    const f32 ccx = (f32)(globalX - rBin->minX) + 3.5f;
+    const f32 ccy = (f32)(globalY - rBin->minY) + 0.5f;
 
-    const f32 cw0 = (bin->C1 + bin->A1 * ccx + bin->B1 * ccy) * bin->invDet;
-    const f32 cw1 = (bin->C2 + bin->A2 * ccx + bin->B2 * ccy) * bin->invDet;
-    const f32 cw2 = (bin->C0 + bin->A0 * ccx + bin->B0 * ccy) * bin->invDet;
+    const f32 cw0 = (rBin->C1 + rBin->A1 * ccx + rBin->B1 * ccy) * sBin->invDet;
+    const f32 cw1 = (rBin->C2 + rBin->A2 * ccx + rBin->B2 * ccy) * sBin->invDet;
+    const f32 cw2 = (rBin->C0 + rBin->A0 * ccx + rBin->B0 * ccy) * sBin->invDet;
 
-    const f32 cw0x = cw0 + bin->A1 * bin->invDet, cw1x = cw1 + bin->A2 * bin->invDet, cw2x = cw2 + bin->A0 * bin->invDet;
-    const f32 cw0y = cw0 + bin->B1 * bin->invDet, cw1y = cw1 + bin->B2 * bin->invDet, cw2y = cw2 + bin->B0 * bin->invDet;
+    const f32 cw0x = cw0 + rBin->A1 * sBin->invDet, cw1x = cw1 + rBin->A2 * sBin->invDet, cw2x = cw2 + rBin->A0 * sBin->invDet;
+    const f32 cw0y = cw0 + rBin->B1 * sBin->invDet, cw1y = cw1 + rBin->B2 * sBin->invDet, cw2y = cw2 + rBin->B0 * sBin->invDet;
 
-    const f32 cinvZ = cw0 * bin->v0.invZ + cw1 * bin->v1.invZ + cw2 * bin->v2.invZ;
+    const f32 cinvZ = cw0 * sBin->v0.invZ + cw1 * sBin->v1.invZ + cw2 * sBin->v2.invZ;
     const f32 cz = 1.f / cinvZ;
-    const f32 ccu = (cw0 * bin->v0.u + cw1 * bin->v1.u + cw2 * bin->v2.u) * cz;
-    const f32 ccv = (cw0 * bin->v0.v + cw1 * bin->v1.v + cw2 * bin->v2.v) * cz;
+    const f32 ccu = (cw0 * sBin->v0.u + cw1 * sBin->v1.u + cw2 * sBin->v2.u) * cz;
+    const f32 ccv = (cw0 * sBin->v0.v + cw1 * sBin->v1.v + cw2 * sBin->v2.v) * cz;
 
-    const f32 cinvZX = cw0x * bin->v0.invZ + cw1x * bin->v1.invZ + cw2x * bin->v2.invZ;
-    const f32 cuX = (cw0x * bin->v0.u + cw1x * bin->v1.u + cw2x * bin->v2.u) / cinvZX;
-    const f32 cvX = (cw0x * bin->v0.v + cw1x * bin->v1.v + cw2x * bin->v2.v) / cinvZX;
+    const f32 cinvZX = cw0x * sBin->v0.invZ + cw1x * sBin->v1.invZ + cw2x * sBin->v2.invZ;
+    const f32 cuX = (cw0x * sBin->v0.u + cw1x * sBin->v1.u + cw2x * sBin->v2.u) / cinvZX;
+    const f32 cvX = (cw0x * sBin->v0.v + cw1x * sBin->v1.v + cw2x * sBin->v2.v) / cinvZX;
 
-    const f32 cinvZY = cw0y * bin->v0.invZ + cw1y * bin->v1.invZ + cw2y * bin->v2.invZ;
-    const f32 cuY = (cw0y * bin->v0.u + cw1y * bin->v1.u + cw2y * bin->v2.u) / cinvZY;
-    const f32 cvY = (cw0y * bin->v0.v + cw1y * bin->v1.v + cw2y * bin->v2.v) / cinvZY;
+    const f32 cinvZY = cw0y * sBin->v0.invZ + cw1y * sBin->v1.invZ + cw2y * sBin->v2.invZ;
+    const f32 cuY = (cw0y * sBin->v0.u + cw1y * sBin->v1.u + cw2y * sBin->v2.u) / cinvZY;
+    const f32 cvY = (cw0y * sBin->v0.v + cw1y * sBin->v1.v + cw2y * sBin->v2.v) / cinvZY;
 
     const f32 dudx = cuX - ccu, dvdx = cvX - ccv;
     const f32 dudy = cuY - ccu, dvdy = cvY - ccv;
@@ -2424,22 +2444,22 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
     }
 
     // vv barycentrics and depth vv
-    const __m256 vx = _mm256_add_ps(_mm256_set1_ps((f32)(globalX - bin->minX) + 0.5f), _mm256_setr_ps(0.f, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f));
-    const __m256 vy = _mm256_set1_ps((f32)(globalY - bin->minY) + 0.5f);
-    const __m256 vInvDet = _mm256_set1_ps(bin->invDet);
+    const __m256 vx = _mm256_add_ps(_mm256_set1_ps((f32)(globalX - rBin->minX) + 0.5f), _mm256_setr_ps(0.f, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f));
+    const __m256 vy = _mm256_set1_ps((f32)(globalY - rBin->minY) + 0.5f);
+    const __m256 vInvDet = _mm256_set1_ps(sBin->invDet);
 
     // constants
-    const __m256 A0 = _mm256_set1_ps(bin->A0);
-    const __m256 B0 = _mm256_set1_ps(bin->B0);
-    const __m256 C0 = _mm256_set1_ps(bin->C0);
+    const __m256 A0 = _mm256_set1_ps(rBin->A0);
+    const __m256 B0 = _mm256_set1_ps(rBin->B0);
+    const __m256 C0 = _mm256_set1_ps(rBin->C0);
 
-    const __m256 A1 = _mm256_set1_ps(bin->A1);
-    const __m256 B1 = _mm256_set1_ps(bin->B1);
-    const __m256 C1 = _mm256_set1_ps(bin->C1);
+    const __m256 A1 = _mm256_set1_ps(rBin->A1);
+    const __m256 B1 = _mm256_set1_ps(rBin->B1);
+    const __m256 C1 = _mm256_set1_ps(rBin->C1);
 
-    const __m256 A2 = _mm256_set1_ps(bin->A2);
-    const __m256 B2 = _mm256_set1_ps(bin->B2);
-    const __m256 C2 = _mm256_set1_ps(bin->C2);
+    const __m256 A2 = _mm256_set1_ps(rBin->A2);
+    const __m256 B2 = _mm256_set1_ps(rBin->B2);
+    const __m256 C2 = _mm256_set1_ps(rBin->C2);
 
     // w0 = (A1*vx + B1*vy + C1) * invDet
     const __m256 vw0 = _mm256_mul_ps(
@@ -2458,17 +2478,17 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
 
     // invZ = w0*z0 + w1*z1 + w2*z2
     const __m256 vZ = _mm256_rcp_ps(_mm256_fmadd_ps(
-        vw0, _mm256_set1_ps(bin->v0.invZ),
+        vw0, _mm256_set1_ps(sBin->v0.invZ),
         _mm256_fmadd_ps(
-            vw1, _mm256_set1_ps(bin->v1.invZ),
-            _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.invZ)))));
+            vw1, _mm256_set1_ps(sBin->v1.invZ),
+            _mm256_mul_ps(vw2, _mm256_set1_ps(sBin->v2.invZ)))));
 
     // ((w0*a0 + w1*a1 + w2*a2) * vZ)
     #define INTERP(attr) \
         _mm256_mul_ps( \
-            _mm256_fmadd_ps(vw0, _mm256_set1_ps(bin->v0.attr), \
-                _mm256_fmadd_ps(vw1, _mm256_set1_ps(bin->v1.attr), \
-                    _mm256_mul_ps(vw2, _mm256_set1_ps(bin->v2.attr)) \
+            _mm256_fmadd_ps(vw0, _mm256_set1_ps(sBin->v0.attr), \
+                _mm256_fmadd_ps(vw1, _mm256_set1_ps(sBin->v1.attr), \
+                    _mm256_mul_ps(vw2, _mm256_set1_ps(sBin->v2.attr)) \
                 ) \
             ), \
             vZ \
@@ -2481,9 +2501,9 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
     const __m256 vlv = INTERP(lv);
 
     // vv base material properties vv
-    __m256 vAlbedoR = _mm256_set1_ps((f32)((bin->col >> 16) & 0xFF) / 255.f);
-    __m256 vAlbedoG = _mm256_set1_ps((f32)((bin->col >> 8)  & 0xFF) / 255.f);
-    __m256 vAlbedoB = _mm256_set1_ps((f32)((bin->col >> 0)  & 0xFF) / 255.f);
+    __m256 vAlbedoR = _mm256_set1_ps((f32)((sBin->col >> 16) & 0xFF) / 255.f);
+    __m256 vAlbedoG = _mm256_set1_ps((f32)((sBin->col >> 8)  & 0xFF) / 255.f);
+    __m256 vAlbedoB = _mm256_set1_ps((f32)((sBin->col >> 0)  & 0xFF) / 255.f);
 
     __m256 vMetallic = _mm256_set1_ps(mat->metallicFactor);
     __m256 vRoughness = _mm256_max_ps(_mm256_set1_ps(0.001f), _mm256_set1_ps(mat->roughnessFactor));
@@ -2796,45 +2816,49 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
 
 static void sfr__resolve_pixel(u32 id, i32 globalX, i32 globalY, i32 globalInd) {
 #ifdef SFR_MULTITHREADED
-    const struct sfrTriangleBin* bin = &sfrThreadBuf->binPages[id / SFR_BIN_PAGE_SIZE][id % SFR_BIN_PAGE_SIZE];
+    const i32 page = id / SFR_BIN_PAGE_SIZE;
+    const i32 offset = id % SFR_BIN_PAGE_SIZE;
+    const struct sfrRasterBin* rBin = &sfrThreadBuf->rasterBinPages[page][offset];
+    const struct sfrShadeBin* sBin = &sfrThreadBuf->shadeBinPages[page][offset];
 #else
-    const struct sfrTriangleBin* bin = &sfrState.globalBins[id];
+    const struct sfrRasterBin* rBin = &sfrState.globalRasterBins[id];
+    const struct sfrShadeBin* sBin = &sfrState.globalShadeBins[id];
 #endif
 
-    const SfrMaterial* const mat = bin->mat;
+    const SfrMaterial* const mat = sBin->mat;
 
     // pixel centers
-    const f32 cx = (f32)(globalX - bin->minX) + 0.5f;
-    const f32 cy = (f32)(globalY - bin->minY) + 0.5f;
+    const f32 cx = (f32)(globalX - rBin->minX) + 0.5f;
+    const f32 cy = (f32)(globalY - rBin->minY) + 0.5f;
 
     // base barycentric weights
-    const f32 w0 = (bin->C1 + bin->A1 * cx + bin->B1 * cy) * bin->invDet;
-    const f32 w1 = (bin->C2 + bin->A2 * cx + bin->B2 * cy) * bin->invDet;
-    const f32 w2 = (bin->C0 + bin->A0 * cx + bin->B0 * cy) * bin->invDet;
+    const f32 w0 = (rBin->C1 + rBin->A1 * cx + rBin->B1 * cy) * sBin->invDet;
+    const f32 w1 = (rBin->C2 + rBin->A2 * cx + rBin->B2 * cy) * sBin->invDet;
+    const f32 w2 = (rBin->C0 + rBin->A0 * cx + rBin->B0 * cy) * sBin->invDet;
 
     // offset barycentric weights for screen space derivatives
-    const f32 w0x = w0 + bin->A1 * bin->invDet, w1x = w1 + bin->A2 * bin->invDet, w2x = w2 + bin->A0 * bin->invDet;
-    const f32 w0y = w0 + bin->B1 * bin->invDet, w1y = w1 + bin->B2 * bin->invDet, w2y = w2 + bin->B0 * bin->invDet;
+    const f32 w0x = w0 + rBin->A1 * sBin->invDet, w1x = w1 + rBin->A2 * sBin->invDet, w2x = w2 + rBin->A0 * sBin->invDet;
+    const f32 w0y = w0 + rBin->B1 * sBin->invDet, w1y = w1 + rBin->B2 * sBin->invDet, w2y = w2 + rBin->B0 * sBin->invDet;
 
     // perspective correction (base)
-    const f32 invZ = w0 * bin->v0.invZ + w1 * bin->v1.invZ + w2 * bin->v2.invZ;
+    const f32 invZ = w0 * sBin->v0.invZ + w1 * sBin->v1.invZ + w2 * sBin->v2.invZ;
     const f32 z = 1.f / invZ;
-    const f32 cu = (w0 * bin->v0.u + w1 * bin->v1.u + w2 * bin->v2.u) * z;
-    const f32 cv = (w0 * bin->v0.v + w1 * bin->v1.v + w2 * bin->v2.v) * z;
-    const f32 lu = (w0 * bin->v0.lu + w1 * bin->v1.lu + w2 * bin->v2.lu) * z;
-    const f32 lv = (w0 * bin->v0.lv + w1 * bin->v1.lv + w2 * bin->v2.lv) * z;
+    const f32 cu = (w0 * sBin->v0.u + w1 * sBin->v1.u + w2 * sBin->v2.u) * z;
+    const f32 cv = (w0 * sBin->v0.v + w1 * sBin->v1.v + w2 * sBin->v2.v) * z;
+    const f32 lu = (w0 * sBin->v0.lu + w1 * sBin->v1.lu + w2 * sBin->v2.lu) * z;
+    const f32 lv = (w0 * sBin->v0.lv + w1 * sBin->v1.lv + w2 * sBin->v2.lv) * z;
 
     // perspective correction (X + 1)
-    const f32 invZX = w0x * bin->v0.invZ + w1x * bin->v1.invZ + w2x * bin->v2.invZ;
+    const f32 invZX = w0x * sBin->v0.invZ + w1x * sBin->v1.invZ + w2x * sBin->v2.invZ;
     const f32 zX = 1.f / invZX;
-    const f32 cuX = (w0x * bin->v0.u + w1x * bin->v1.u + w2x * bin->v2.u) * zX;
-    const f32 cvX = (w0x * bin->v0.v + w1x * bin->v1.v + w2x * bin->v2.v) * zX;
+    const f32 cuX = (w0x * sBin->v0.u + w1x * sBin->v1.u + w2x * sBin->v2.u) * zX;
+    const f32 cvX = (w0x * sBin->v0.v + w1x * sBin->v1.v + w2x * sBin->v2.v) * zX;
 
     // perspective correction (Y + 1)
-    const f32 invZY = w0y * bin->v0.invZ + w1y * bin->v1.invZ + w2y * bin->v2.invZ;
+    const f32 invZY = w0y * sBin->v0.invZ + w1y * sBin->v1.invZ + w2y * sBin->v2.invZ;
     const f32 zY = 1.f / invZY;
-    const f32 cuY = (w0y * bin->v0.u + w1y * bin->v1.u + w2y * bin->v2.u) * zY;
-    const f32 cvY = (w0y * bin->v0.v + w1y * bin->v1.v + w2y * bin->v2.v) * zY;
+    const f32 cuY = (w0y * sBin->v0.u + w1y * sBin->v1.u + w2y * sBin->v2.u) * zY;
+    const f32 cvY = (w0y * sBin->v0.v + w1y * sBin->v1.v + w2y * sBin->v2.v) * zY;
 
     // normalized uv gradients
     const f32 dudx = cuX - cu, dvdx = cvX - cv;
@@ -2842,23 +2866,23 @@ static void sfr__resolve_pixel(u32 id, i32 globalX, i32 globalY, i32 globalInd) 
 
     // interpolate normal
     sfrvec normal = sfr_vec_normf(
-        (w0 * bin->v0.nx + w1 * bin->v1.nx + w2 * bin->v2.nx) * z,
-        (w0 * bin->v0.ny + w1 * bin->v1.ny + w2 * bin->v2.ny) * z,
-        (w0 * bin->v0.nz + w1 * bin->v1.nz + w2 * bin->v2.nz) * z
+        (w0 * sBin->v0.nx + w1 * sBin->v1.nx + w2 * sBin->v2.nx) * z,
+        (w0 * sBin->v0.ny + w1 * sBin->v1.ny + w2 * sBin->v2.ny) * z,
+        (w0 * sBin->v0.nz + w1 * sBin->v1.nz + w2 * sBin->v2.nz) * z
     );
 
     // interpolate world pos
     const sfrvec fragPos = {
-        (w0 * bin->v0.wx + w1 * bin->v1.wx + w2 * bin->v2.wx) * z,
-        (w0 * bin->v0.wy + w1 * bin->v1.wy + w2 * bin->v2.wy) * z,
-        (w0 * bin->v0.wz + w1 * bin->v1.wz + w2 * bin->v2.wz) * z,
+        (w0 * sBin->v0.wx + w1 * sBin->v1.wx + w2 * sBin->v2.wx) * z,
+        (w0 * sBin->v0.wy + w1 * sBin->v1.wy + w2 * sBin->v2.wy) * z,
+        (w0 * sBin->v0.wz + w1 * sBin->v1.wz + w2 * sBin->v2.wz) * z,
         1.f
     };
 
     // vertex / material base color
-    f32 albedoR = (f32)((bin->col >> 16) & 0xFF) / 255.f;
-    f32 albedoG = (f32)((bin->col >> 8)  & 0xFF) / 255.f;
-    f32 albedoB = (f32)((bin->col >> 0)  & 0xFF) / 255.f;
+    f32 albedoR = (f32)((sBin->col >> 16) & 0xFF) / 255.f;
+    f32 albedoG = (f32)((sBin->col >> 8)  & 0xFF) / 255.f;
+    f32 albedoB = (f32)((sBin->col >> 0)  & 0xFF) / 255.f;
 
     f32 metallic = mat->metallicFactor;
     // clamped to avoid division by zero later
@@ -3409,18 +3433,26 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
         sfr_mutex_init(&sfrThreadBuf->geometryMutex);
 
         sfrThreadBuf->binPagesCapacity = 64;
-        SFR__MALLOC(sfrThreadBuf->binPages, sizeof(struct sfrTriangleBin*) * sfrThreadBuf->binPagesCapacity);
-        sfr_memset(sfrThreadBuf->binPages, 0, sizeof(struct sfrTriangleBin*) * sfrThreadBuf->binPagesCapacity);
+        
+        SFR__MALLOC(sfrThreadBuf->rasterBinPages, sizeof(struct sfrRasterBin*) * sfrThreadBuf->binPagesCapacity);
+        sfr_memset(sfrThreadBuf->rasterBinPages, 0, sizeof(struct sfrRasterBin*) * sfrThreadBuf->binPagesCapacity);
+        
+        SFR__MALLOC(sfrThreadBuf->shadeBinPages, sizeof(struct sfrShadeBin*) * sfrThreadBuf->binPagesCapacity);
+        sfr_memset(sfrThreadBuf->shadeBinPages, 0, sizeof(struct sfrShadeBin*) * sfrThreadBuf->binPagesCapacity);
 
-        // pre allocate first page
-        SFR__MALLOC(sfrThreadBuf->binPages[0], sizeof(struct sfrTriangleBin) * SFR_BIN_PAGE_SIZE);
+        // pre allocate first page for both
+        SFR__MALLOC(sfrThreadBuf->rasterBinPages[0], sizeof(struct sfrRasterBin) * SFR_BIN_PAGE_SIZE);
+        SFR__MALLOC(sfrThreadBuf->shadeBinPages[0], sizeof(struct sfrShadeBin) * SFR_BIN_PAGE_SIZE);
+        
         sfrThreadBuf->meshJobPoolCapacity = 1024 * 8;
         SFR__MALLOC(sfrThreadBuf->meshJobPool, sizeof(struct sfrMeshChunkJob) * sfrThreadBuf->meshJobPoolCapacity);
 
         sfrThreadBuf->geometryWorkQueueCapacity = 1024 * 8;
         SFR__MALLOC(sfrThreadBuf->geometryWorkQueue, sizeof(i32) * sfrThreadBuf->geometryWorkQueueCapacity);
 
-        if (!sfrThreadBuf->binPages || !sfrThreadBuf->meshJobPool || !sfrThreadBuf->geometryWorkQueue) {
+        if (!sfrThreadBuf->rasterBinPages || !sfrThreadBuf->shadeBinPages ||
+            !sfrThreadBuf->meshJobPool || !sfrThreadBuf->geometryWorkQueue
+        ) {
             SFR__ERR_EXIT("failed to allocate dynamic buffers\n");
         }
 
@@ -3456,10 +3488,12 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
 
         sfrState.globalBinsCap = 1024 * 32;
         sfrState.globalBinsCount = 0;
-        SFR__MALLOC(sfrState.globalBins, sizeof(struct sfrTriangleBin) * sfrState.globalBinsCap);
-        if (!sfrState.globalBins) {
-            SFR__ERR_EXIT("failed to allcoate sfrState.globalBins (%ld bytes)\n",
-                sizeof(struct sfrTriangleBin) * sfrState.globalBinsCap);
+        SFR__MALLOC(sfrState.globalRasterBins, sizeof(struct sfrRasterBin) * sfrState.globalBinsCap);
+        SFR__MALLOC(sfrState.globalShadeBins, sizeof(struct sfrShadeBin) * sfrState.globalBinsCap);
+        if (!sfrState.globalRasterBins || !sfrState.globalShadeBins) {
+            SFR__ERR_EXIT("failed to allcoate global bins (%ld, %ld bytes)\n",
+                sizeof(struct sfrRasterBin) * sfrState.globalBinsCap,
+                sizeof(struct sfrShadeBin) * sfrState.globalBinsCap);
         }
     #endif
 
@@ -3536,13 +3570,17 @@ SFR_FUNC void sfr__shutdown(void) {
     sfr_mutex_destroy(&sfrThreadBuf->binPoolMutex);
     sfr_mutex_destroy(&sfrThreadBuf->geometryMutex);
 
-    if (sfrThreadBuf->binPages) {
+    if (sfrThreadBuf->rasterBinPages) {
         for (i32 i = 0; i < sfrThreadBuf->binPagesCapacity; i += 1) {
-            if (sfrThreadBuf->binPages[i]) {
-                sfrFree(sfrThreadBuf->binPages[i]);
+            if (sfrThreadBuf->rasterBinPages[i]) {
+                sfrFree(sfrThreadBuf->rasterBinPages[i]);
+            }
+            if (sfrThreadBuf->shadeBinPages[i]) {
+                sfrFree(sfrThreadBuf->shadeBinPages[i]);
             }
         }
-        sfrFree(sfrThreadBuf->binPages);
+        sfrFree(sfrThreadBuf->rasterBinPages);
+        sfrFree(sfrThreadBuf->shadeBinPages);
     }
 
     sfr_semaphore_destroy(&sfrThreadBuf->geometryStartSem);
@@ -3671,8 +3709,7 @@ SFR_FUNC void sfr_resize(i32 width, i32 height) {
                     if (tile->bins[t]) {
                         sfrFree(tile->bins[t]);
                     }
-                    SFR__MALLOC(tile->bins[t],
-                        sizeof(struct sfrTriangleBin) * tile->binsCapacity[t]);
+                    SFR__MALLOC(tile->bins[t], sizeof(struct sfrRasterBin*) * tile->binsCapacity[t]);
                     tile->binCount[t] = 0;
                 }
 
@@ -5001,6 +5038,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
 
             SfrMesh* sm;
             SFR__MALLOC(sm, sizeof(SfrMesh));
+            sfr_memset(sm, 0, sizeof(SfrMesh));
             sm->vertCount = count * 3;
             SFR__MALLOC(sm->tris, sizeof(f32) * sm->vertCount);
             SFR__MALLOC(sm->normals, sizeof(f32) * sm->vertCount);
