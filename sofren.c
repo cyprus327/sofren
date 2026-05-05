@@ -422,6 +422,11 @@ typedef struct sfrtex {
     u32* pixels;
     i32 w, h;
 
+    // only allocated and used for lightmaps to avoid expensive filtering
+    u32* quadR;
+    u32* quadG;
+    u32* quadB;
+
     u32* mipPixels[14]; // levels 1-14, up to 16k x 16k textures
     i32 mipW[14];
     i32 mipH[14];
@@ -2370,27 +2375,6 @@ static void sfr__process_and_bin_triangle(
 
 #ifndef SFR_NO_SIMD
 
-static __m256 sfr__mm256_log2_ps(__m256 x) {
-    const __m256i i = _mm256_castps_si256(x);
-    const __m256 e = _mm256_cvtepi32_ps(_mm256_sub_epi32(i, _mm256_set1_epi32(0x3F800000)));
-    return _mm256_mul_ps(e, _mm256_set1_ps(1.1920928955078125e-7f));
-}
-
-static __m256 sfr__mm256_exp2_ps(__m256 x) {
-    // clamp x to avoid underflowing the IEEE-754 exponent into negative numbers/NaNs
-    x = _mm256_max_ps(x, _mm256_set1_ps(-126.f));
-
-    const __m256i i = _mm256_cvtps_epi32(_mm256_mul_ps(x, _mm256_set1_ps(8388608.f)));
-    return _mm256_castsi256_ps(_mm256_add_epi32(i, _mm256_set1_epi32(0x3F800000)));
-}
-
-// fast pow(x, y)
-static __m256 sfr__mm256_pow_ps(__m256 x, __m256 y) {
-    // clamp x to avoid taking the log of zero or negative numbers (NaN/inf)
-    const __m256 cx = _mm256_max_ps(x, _mm256_set1_ps(0.000001f));
-    return sfr__mm256_exp2_ps(_mm256_mul_ps(y, sfr__mm256_log2_ps(cx)));
-}
-
 static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 globalInd, __m256i writeMask) {
 #ifdef SFR_MULTITHREADED
     const i32 page = firstId / SFR_BIN_PAGE_SIZE;
@@ -2444,44 +2428,31 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
     }
 
     // vv barycentrics and depth vv
-    const __m256 vx = _mm256_add_ps(_mm256_set1_ps((f32)(globalX - rBin->minX) + 0.5f), _mm256_setr_ps(0.f, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f));
-    const __m256 vy = _mm256_set1_ps((f32)(globalY - rBin->minY) + 0.5f);
     const __m256 vInvDet = _mm256_set1_ps(sBin->invDet);
 
-    // constants
-    const __m256 A0 = _mm256_set1_ps(rBin->A0);
-    const __m256 B0 = _mm256_set1_ps(rBin->B0);
-    const __m256 C0 = _mm256_set1_ps(rBin->C0);
+    const __m256 vSteps = _mm256_setr_ps(0.f, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f);
 
-    const __m256 A1 = _mm256_set1_ps(rBin->A1);
-    const __m256 B1 = _mm256_set1_ps(rBin->B1);
-    const __m256 C1 = _mm256_set1_ps(rBin->C1);
+    // compute scalar base values for the start of the vector chunk
+    const f32 baseX = (f32)(globalX - rBin->minX) + 0.5f;
+    const f32 baseY = (f32)(globalY - rBin->minY) + 0.5f;
+    const f32 w0base = rBin->A1 * baseX + rBin->B1 * baseY + rBin->C1;
+    const f32 w1base = rBin->A2 * baseX + rBin->B2 * baseY + rBin->C2;
+    const f32 w2base = rBin->A0 * baseX + rBin->B0 * baseY + rBin->C0;
 
-    const __m256 A2 = _mm256_set1_ps(rBin->A2);
-    const __m256 B2 = _mm256_set1_ps(rBin->B2);
-    const __m256 C2 = _mm256_set1_ps(rBin->C2);
+    const __m256 vw0 = _mm256_mul_ps(_mm256_fmadd_ps(_mm256_set1_ps(rBin->A1), vSteps, _mm256_set1_ps(w0base)), vInvDet);
+    const __m256 vw1 = _mm256_mul_ps(_mm256_fmadd_ps(_mm256_set1_ps(rBin->A2), vSteps, _mm256_set1_ps(w1base)), vInvDet);
+    const __m256 vw2 = _mm256_mul_ps(_mm256_fmadd_ps(_mm256_set1_ps(rBin->A0), vSteps, _mm256_set1_ps(w2base)), vInvDet);
 
-    // w0 = (A1*vx + B1*vy + C1) * invDet
-    const __m256 vw0 = _mm256_mul_ps(
-        _mm256_fmadd_ps(A1, vx, _mm256_fmadd_ps(B1, vy, C1)),
-        vInvDet);
+    const __m256 vInvZ_val = _mm256_fmadd_ps(vw0, _mm256_set1_ps(sBin->v0.invZ),
+                                _mm256_fmadd_ps(vw1, _mm256_set1_ps(sBin->v1.invZ),
+                                _mm256_mul_ps(vw2, _mm256_set1_ps(sBin->v2.invZ))));
 
-    // w1 = (A2*vx + B2*vy + C2) * invDet
-    const __m256 vw1 = _mm256_mul_ps(
-        _mm256_fmadd_ps(A2, vx, _mm256_fmadd_ps(B2, vy, C2)),
-        vInvDet);
+    // approximation (~11 bits)
+    const __m256 vZ_approx = _mm256_rcp_ps(vInvZ_val);
 
-    // w2 = (A0*vx + B0*vy + C0) * invDet
-    const __m256 vw2 = _mm256_mul_ps(
-        _mm256_fmadd_ps(A0, vx, _mm256_fmadd_ps(B0, vy, C0)),
-        vInvDet);
-
-    // invZ = w0*z0 + w1*z1 + w2*z2
-    const __m256 vZ = _mm256_rcp_ps(_mm256_fmadd_ps(
-        vw0, _mm256_set1_ps(sBin->v0.invZ),
-        _mm256_fmadd_ps(
-            vw1, _mm256_set1_ps(sBin->v1.invZ),
-            _mm256_mul_ps(vw2, _mm256_set1_ps(sBin->v2.invZ)))));
+    // one step: y = y * (2.f - x * y) to double precision
+    const __m256 vZ = _mm256_mul_ps(vZ_approx, 
+                        _mm256_fnmadd_ps(vInvZ_val, vZ_approx, _mm256_set1_ps(2.0f)));
 
     // ((w0*a0 + w1*a1 + w2*a2) * vZ)
     #define INTERP(attr) \
@@ -2596,17 +2567,13 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
     if (sfrState.activeLightmap) {
         const SfrTexture* lm = sfrState.activeLightmap;
 
-        // extract fraction bounds
-        const __m256 valu = _mm256_sub_ps(vlu, _mm256_floor_ps(vlu));
-        const __m256 valv = _mm256_sub_ps(vlv, _mm256_floor_ps(vlv));
-
         // map to pixel centers (-0.5)
         const __m256 vlmW = _mm256_set1_ps((f32)lm->w);
         const __m256 vlmH = _mm256_set1_ps((f32)lm->h);
         const __m256 vHalf = _mm256_set1_ps(0.5f);
         
-        __m256 vpx = _mm256_sub_ps(_mm256_mul_ps(valu, vlmW), vHalf);
-        __m256 vpy = _mm256_sub_ps(_mm256_mul_ps(valv, vlmH), vHalf);
+        __m256 vpx = _mm256_sub_ps(_mm256_mul_ps(vlu, vlmW), vHalf);
+        __m256 vpy = _mm256_sub_ps(_mm256_mul_ps(vlv, vlmH), vHalf);
 
         // clamp
         const __m256 vZero = _mm256_setzero_ps();
@@ -2619,76 +2586,43 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
         const __m256i vtx0 = _mm256_cvttps_epi32(vpx);
         const __m256i vty0 = _mm256_cvttps_epi32(vpy);
         
-        const __m256i vOneInt = _mm256_set1_epi32(1);
-        const __m256i vtx1 = _mm256_add_epi32(vtx0, vOneInt);
-        const __m256i vty1 = _mm256_add_epi32(vty0, vOneInt);
-
         // fractional blends
         const __m256 vfx = _mm256_sub_ps(vpx, _mm256_cvtepi32_ps(vtx0));
         const __m256 vfy = _mm256_sub_ps(vpy, _mm256_cvtepi32_ps(vty0));
 
-        // setup 1D array inds for the 4 taps
-        const __m256i vPitch = _mm256_set1_epi32(lm->w);
-        const __m256i vRow0 = _mm256_mullo_epi32(vty0, vPitch);
-        const __m256i vRow1 = _mm256_mullo_epi32(vty1, vPitch);
-
-        const __m256i vInd00 = _mm256_add_epi32(vRow0, vtx0);
-        const __m256i vInd10 = _mm256_add_epi32(vRow0, vtx1);
-        const __m256i vInd01 = _mm256_add_epi32(vRow1, vtx0);
-        const __m256i vInd11 = _mm256_add_epi32(vRow1, vtx1);
-
-        // gather the 4 unblended pixels
         const __m256i vZeroInt = _mm256_setzero_si256();
-        const __m256i vc00 = _mm256_mask_i32gather_epi32(vZeroInt, (const int*)lm->pixels, vInd00, writeMask, 4);
-        const __m256i vc10 = _mm256_mask_i32gather_epi32(vZeroInt, (const int*)lm->pixels, vInd10, writeMask, 4);
-        const __m256i vc01 = _mm256_mask_i32gather_epi32(vZeroInt, (const int*)lm->pixels, vInd01, writeMask, 4);
-        const __m256i vc11 = _mm256_mask_i32gather_epi32(vZeroInt, (const int*)lm->pixels, vInd11, writeMask, 4);
-
-        const __m256 vInv255 = _mm256_set1_ps(1.f / 255.f);
         const __m256i v0xFF = _mm256_set1_epi32(0xFF);
 
-        #define UNPACK_R(vc) _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(vc, 16), v0xFF)), vInv255)
-        #define UNPACK_G(vc) _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(vc, 8), v0xFF)), vInv255)
-        #define UNPACK_B(vc) _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_and_si256(vc, v0xFF)), vInv255)
+        // calculate one index
+        const __m256i vPitch = _mm256_set1_epi32(lm->w);
+        const __m256i vInd00 = _mm256_add_epi32(_mm256_mullo_epi32(vty0, vPitch), vtx0);
 
-        const __m256 vr00 = UNPACK_R(vc00);
-        const __m256 vg00 = UNPACK_G(vc00);
-        const __m256 vb00 = UNPACK_B(vc00);
+        // three gathers instead of four
+        const __m256i vQuadR = _mm256_mask_i32gather_epi32(vZeroInt, (const int*)lm->quadR, vInd00, writeMask, 4);
+        const __m256i vQuadG = _mm256_mask_i32gather_epi32(vZeroInt, (const int*)lm->quadG, vInd00, writeMask, 4);
+        const __m256i vQuadB = _mm256_mask_i32gather_epi32(vZeroInt, (const int*)lm->quadB, vInd00, writeMask, 4);
 
-        const __m256 vr10 = UNPACK_R(vc10);
-        const __m256 vg10 = UNPACK_G(vc10);
-        const __m256 vb10 = UNPACK_B(vc10);
+        // planar unpack and blend macro
+        #define BLEND_PLANAR(vQuad) \
+            __extension__ ({ \
+                __m256 c00 = _mm256_cvtepi32_ps(_mm256_and_si256(vQuad, v0xFF)); \
+                __m256 c10 = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(vQuad, 8), v0xFF)); \
+                __m256 c01 = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(vQuad, 16), v0xFF)); \
+                __m256 c11 = _mm256_cvtepi32_ps(_mm256_srli_epi32(vQuad, 24)); \
+                __m256 cTop = _mm256_fmadd_ps(vfx, _mm256_sub_ps(c10, c00), c00); \
+                __m256 cBot = _mm256_fmadd_ps(vfx, _mm256_sub_ps(c11, c01), c01); \
+                _mm256_fmadd_ps(vfy, _mm256_sub_ps(cBot, cTop), cTop); \
+            })
 
-        const __m256 vr01 = UNPACK_R(vc01);
-        const __m256 vg01 = UNPACK_G(vc01);
-        const __m256 vb01 = UNPACK_B(vc01);
-
-        const __m256 vr11 = UNPACK_R(vc11);
-        const __m256 vg11 = UNPACK_G(vc11);
-        const __m256 vb11 = UNPACK_B(vc11);
-
-        #undef UNPACK_R
-        #undef UNPACK_G
-        #undef UNPACK_B
-
-        // horizontally blend the top and bottom rows (lerp(a, b, t) = a + t * (b - a) => fmadd)
-        const __m256 vrTop = _mm256_fmadd_ps(vfx, _mm256_sub_ps(vr10, vr00), vr00);
-        const __m256 vgTop = _mm256_fmadd_ps(vfx, _mm256_sub_ps(vg10, vg00), vg00);
-        const __m256 vbTop = _mm256_fmadd_ps(vfx, _mm256_sub_ps(vb10, vb00), vb00);
-
-        const __m256 vrBot = _mm256_fmadd_ps(vfx, _mm256_sub_ps(vr11, vr01), vr01);
-        const __m256 vgBot = _mm256_fmadd_ps(vfx, _mm256_sub_ps(vg11, vg01), vg01);
-        const __m256 vbBot = _mm256_fmadd_ps(vfx, _mm256_sub_ps(vb11, vb01), vb01);
-
-        // vertically blend the results
-        const __m256 vlmR = _mm256_fmadd_ps(vfy, _mm256_sub_ps(vrBot, vrTop), vrTop);
-        const __m256 vlmG = _mm256_fmadd_ps(vfy, _mm256_sub_ps(vgBot, vgTop), vgTop);
-        const __m256 vlmB = _mm256_fmadd_ps(vfy, _mm256_sub_ps(vbBot, vbTop), vbTop);
+        const __m256 vlmR = BLEND_PLANAR(vQuadR);
+        const __m256 vlmG = BLEND_PLANAR(vQuadG);
+        const __m256 vlmB = BLEND_PLANAR(vQuadB);
 
         // multiply base albedo
-        vFinalR = _mm256_mul_ps(vAlbedoR, vlmR);
-        vFinalG = _mm256_mul_ps(vAlbedoG, vlmG);
-        vFinalB = _mm256_mul_ps(vAlbedoB, vlmB);
+        const __m256 vInv255 = _mm256_set1_ps(1.f / 255.f);
+        vFinalR = _mm256_mul_ps(vAlbedoR, _mm256_mul_ps(vlmR, vInv255));
+        vFinalG = _mm256_mul_ps(vAlbedoG, _mm256_mul_ps(vlmG, vInv255));
+        vFinalB = _mm256_mul_ps(vAlbedoB, _mm256_mul_ps(vlmB, vInv255));
     } else if (sfrState.lightingEnabled && sfrState.lightCount > 0) {
         __m256 vViewX = _mm256_sub_ps(_mm256_set1_ps(sfrCamPos.x), vFragX);
         __m256 vViewY = _mm256_sub_ps(_mm256_set1_ps(sfrCamPos.y), vFragY);
@@ -2742,8 +2676,17 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
             const __m256 vnDotH = _mm256_max_ps(_mm256_setzero_ps(),
                 _mm256_add_ps(_mm256_mul_ps(vnx, vhx), _mm256_add_ps(_mm256_mul_ps(vny, vhy), _mm256_mul_ps(vnz, vhz))));
 
-            __m256 vSpec = sfr__mm256_pow_ps(vnDotH, vShininess);
+            // Assuming vAlphaSq is already computed from your roughness
+            const __m256 vNDotHSq = _mm256_mul_ps(vnDotH, vnDotH);
+            const __m256 vAlphaSqMinusOne = _mm256_sub_ps(vAlphaSq, vOne);
 
+            // Denominator term: (n.h)^2 * (a^2 - 1) + 1
+            __m256 vDenom = _mm256_fmadd_ps(vNDotHSq, vAlphaSqMinusOne, vOne);
+            vDenom = _mm256_mul_ps(vDenom, vDenom); // Square it
+
+            // Calculate final specular factor (you can pre-multiply Pi into EnergyCons)
+            __m256 vSpec = _mm256_mul_ps(vAlphaSq, _mm256_rcp_ps(vDenom));
+            
             // apply energy conservation and mask zero diffuse
             vSpec = _mm256_mul_ps(vSpec, vEnergyCons);
             vSpec = _mm256_blendv_ps(_mm256_setzero_ps(), vSpec, _mm256_cmp_ps(vDiff, _mm256_setzero_ps(), _CMP_GT_OQ));
@@ -2807,7 +2750,11 @@ static void sfr__resolve_chunk(u32 firstId, i32 globalX, i32 globalY, i32 global
         _mm256_or_si256(_mm256_slli_epi32(_mm256_cvttps_epi32(vfr), 16),
         _mm256_or_si256(_mm256_slli_epi32(_mm256_cvttps_epi32(vfg), 8), _mm256_cvttps_epi32(vfb))));
 
-    _mm256_maskstore_epi32((int*)&sfrPixelBuf[globalInd], writeMask, vFinalPixel);
+    if (_mm256_movemask_epi8(writeMask) == -1) {
+        _mm256_storeu_si256((__m256i*)&sfrPixelBuf[globalInd], vFinalPixel);
+    } else {
+        _mm256_maskstore_epi32((int*)&sfrPixelBuf[globalInd], writeMask, vFinalPixel);
+    }
 
     #undef INTERP
 }
@@ -2965,13 +2912,10 @@ static void sfr__resolve_pixel(u32 id, i32 globalX, i32 globalY, i32 globalInd) 
     f32 finalR = 0.f, finalG = 0.f, finalB = 0.f;
     if (sfrState.activeLightmap) {
         const SfrTexture* lm = sfrState.activeLightmap;
-        // wrap lightmap coords
-        const f32 alu = lu - sfr_floorf(lu);
-        const f32 alv = lv - sfr_floorf(lv);
         
         // map to pixel centers (-0.5 to sample the middle)
-        f32 px = alu * lm->w - 0.5f;
-        f32 py = alv * lm->h - 0.5f;
+        f32 px = lu * lm->w - 0.5f;
+        f32 py = lv * lm->h - 0.5f;
         
         // clamp to prevent reading outside atlas boundaries
         if (px < 0.f) px = 0.f;
@@ -2979,62 +2923,54 @@ static void sfr__resolve_pixel(u32 id, i32 globalX, i32 globalY, i32 globalInd) 
         if (px >= lm->w - 1) px = (f32)(lm->w - 1) - 0.001f;
         if (py >= lm->h - 1) py = (f32)(lm->h - 1) - 0.001f;
         
-        // get the 4 neighboring pixel coordinates
+        // get the base pixel coordinate
         const i32 tx0 = (i32)px;
         const i32 ty0 = (i32)py;
-        const i32 tx1 = tx0 + 1;
-        const i32 ty1 = ty0 + 1;
         
         // calculate the fractional blend weights
         const f32 fx = px - (f32)tx0;
         const f32 fy = py - (f32)ty0;
         
-        // 4 raw integer pixels
-        const u32 c00 = lm->pixels[ty0 * lm->w + tx0];
-        const u32 c10 = lm->pixels[ty0 * lm->w + tx1];
-        const u32 c01 = lm->pixels[ty1 * lm->w + tx0];
-        const u32 c11 = lm->pixels[ty1 * lm->w + tx1];
-
-        const f32 i255 = 1.f / 255.f;
+        // single index calculation for the quad
+        const i32 ind = ty0 * lm->w + tx0;
         
-        // rgb floats for top left
-        const f32 r00 = (f32)((c00 >> 16) & 0xFF) * i255;
-        const f32 g00 = (f32)((c00 >> 8)  & 0xFF) * i255;
-        const f32 b00 = (f32)((c00 >> 0)  & 0xFF) * i255;
+        // fetch the pre-packed 2x2 quads
+        const u32 qR = lm->quadR[ind];
+        const u32 qG = lm->quadG[ind];
+        const u32 qB = lm->quadB[ind];
         
-        // rgb floats for top right
-        const f32 r10 = (f32)((c10 >> 16) & 0xFF) * i255;
-        const f32 g10 = (f32)((c10 >> 8)  & 0xFF) * i255;
-        const f32 b10 = (f32)((c10 >> 0)  & 0xFF) * i255;
-        
-        // rgb floats for bottom left
-        const f32 r01 = (f32)((c01 >> 16) & 0xFF) * i255;
-        const f32 g01 = (f32)((c01 >> 8)  & 0xFF) * i255;
-        const f32 b01 = (f32)((c01 >> 0)  & 0xFF) * i255;
-        
-        // rgb floats for bottom right
-        const f32 r11 = (f32)((c11 >> 16) & 0xFF) * i255;
-        const f32 g11 = (f32)((c11 >> 8)  & 0xFF) * i255;
-        const f32 b11 = (f32)((c11 >> 0)  & 0xFF) * i255;
-        
-        // horizontally blend the top and bottom rows
+        // unpack and blend Red
+        const f32 r00 = (f32)(qR & 0xFF);
+        const f32 r10 = (f32)((qR >> 8) & 0xFF);
+        const f32 r01 = (f32)((qR >> 16) & 0xFF);
+        const f32 r11 = (f32)(qR >> 24);
         const f32 rTop = r00 + fx * (r10 - r00);
-        const f32 gTop = g00 + fx * (g10 - g00);
-        const f32 bTop = b00 + fx * (b10 - b00);
-        
         const f32 rBot = r01 + fx * (r11 - r01);
-        const f32 gBot = g01 + fx * (g11 - g01);
-        const f32 bBot = b01 + fx * (b11 - b01);
-        
-        // vertically blend the results
         const f32 lmR = rTop + fy * (rBot - rTop);
+        
+        // unpack and blend Green
+        const f32 g00 = (f32)(qG & 0xFF);
+        const f32 g10 = (f32)((qG >> 8) & 0xFF);
+        const f32 g01 = (f32)((qG >> 16) & 0xFF);
+        const f32 g11 = (f32)(qG >> 24);
+        const f32 gTop = g00 + fx * (g10 - g00);
+        const f32 gBot = g01 + fx * (g11 - g01);
         const f32 lmG = gTop + fy * (gBot - gTop);
+        
+        // unpack and blend Blue
+        const f32 b00 = (f32)(qB & 0xFF);
+        const f32 b10 = (f32)((qB >> 8) & 0xFF);
+        const f32 b01 = (f32)((qB >> 16) & 0xFF);
+        const f32 b11 = (f32)(qB >> 24);
+        const f32 bTop = b00 + fx * (b10 - b00);
+        const f32 bBot = b01 + fx * (b11 - b01);
         const f32 lmB = bTop + fy * (bBot - bTop);
 
-        // multiply base albedo
-        finalR = albedoR * lmR;
-        finalG = albedoG * lmG;
-        finalB = albedoB * lmB;
+        // multiply base albedo and apply delayed 1/255 scaling
+        const f32 i255 = 1.f / 255.f;
+        finalR = albedoR * (lmR * i255);
+        finalG = albedoG * (lmG * i255);
+        finalB = albedoB * (lmB * i255);
     } else if (sfrState.lightingEnabled && sfrState.lightCount > 0) {
         const sfrvec viewDir = sfr_vec_norm(sfr_vec_sub(sfrCamPos, fragPos));
 
@@ -3089,9 +3025,9 @@ static void sfr__resolve_pixel(u32 id, i32 globalX, i32 globalY, i32 globalInd) 
 
     u8 fr, fg, fb;
     if (SFR_RENDERMODE_SHADED == sfrState.renderMode) {
-        finalR = sfr_fmaxf(0.f, sfr_fminf(finalR, 1.f));
-        finalG = sfr_fmaxf(0.f, sfr_fminf(finalG, 1.f));
-        finalB = sfr_fmaxf(0.f, sfr_fminf(finalB, 1.f));
+        finalR = SFR_CLAMP(finalR, 0.f, 1.f);
+        finalG = SFR_CLAMP(finalG, 0.f, 1.f);
+        finalB = SFR_CLAMP(finalB, 0.f, 1.f);
         fr = sfrGammaLUT[(i32)(finalR * 255.f)];
         fg = sfrGammaLUT[(i32)(finalG * 255.f)];
         fb = sfrGammaLUT[(i32)(finalB * 255.f)];
@@ -5565,6 +5501,7 @@ SFR_FUNC SfrTexture* sfr_load_texture(const char* filename) {
 
     SfrTexture* tex;
     SFR__MALLOC(tex, sizeof(SfrTexture));
+    sfr_memset(tex, 0, sizeof(SfrTexture));
     tex->w = w;
     tex->h = h;
     SFR__MALLOC(tex->pixels, sizeof(u32) * w * h);
@@ -5655,6 +5592,7 @@ SFR_FUNC SfrTexture* sfr_load_texture(const char* filename) {
         sfrFree(pixelData);
         SFR__ERR_RET(NULL, "failed to allocate texture struct\n");
     }
+    sfr_memset(tex, 0, sizeof(SfrTexture));
 
     tex->w = width;
     tex->h = height;
@@ -5727,6 +5665,18 @@ SFR_FUNC void sfr_release_texture(SfrTexture** tex) {
     if ((*tex)->pixels) {
         sfrFree((*tex)->pixels);
         (*tex)->pixels = NULL;
+    }
+    if ((*tex)->quadR) {
+        sfrFree((*tex)->quadR);
+        (*tex)->quadR = NULL;
+    }
+    if ((*tex)->quadG) {
+        sfrFree((*tex)->quadG);
+        (*tex)->quadG = NULL;
+    }
+    if ((*tex)->quadB) {
+        sfrFree((*tex)->quadB);
+        (*tex)->quadB = NULL;
     }
 
     for (i32 i = 0; i < (*tex)->mipLevels - 1; i += 1) {
@@ -5870,6 +5820,7 @@ SFR_FUNC SfrScene* sfr_load_scene(const char* filename) {
 
             if (0 == strcmp(path, "DEFAULT_CHECKER")) {
                 SFR__MALLOC(scene->textures[i], sizeof(SfrTexture));
+                sfr_memset(scene->textures[i], 0, sizeof(SfrTexture));
                 scene->textures[i]->w = 2;
                 scene->textures[i]->h = 2;
                 scene->textures[i]->mipLevels = 1;
@@ -5958,22 +5909,53 @@ SFR_FUNC SfrScene* sfr_load_scene(const char* filename) {
     i32 atlasDim = 0;
     if (1 == fread(&atlasDim, 4, 1, file) && atlasDim > 0) {
         SFR__MALLOC(scene->globalLightmap, sizeof(SfrTexture));
+        sfr_memset(scene->globalLightmap, 0, sizeof(SfrTexture));
         scene->globalLightmap->w = atlasDim;
         scene->globalLightmap->h = atlasDim;
         scene->globalLightmap->mipLevels = 1;
         
         const i32 pixelCount = atlasDim * atlasDim;
-        SFR__MALLOC(scene->globalLightmap->pixels, sizeof(u32) * pixelCount);
+        
+        // allocate the 3 planar quad arrays instead of the normal pixel array
+        SFR__MALLOC(scene->globalLightmap->quadR, sizeof(u32) * pixelCount);
+        SFR__MALLOC(scene->globalLightmap->quadG, sizeof(u32) * pixelCount);
+        SFR__MALLOC(scene->globalLightmap->quadB, sizeof(u32) * pixelCount);
         
         u8* rawRGB;
         SFR__MALLOC(rawRGB, pixelCount * 3);
         
-        if (fread(rawRGB, 1, pixelCount * 3, file) == (size_t)(pixelCount * 3)) {
-            for (i32 i = 0; i < pixelCount; i += 1) {
-                const u8 r = rawRGB[i * 3 + 0];
-                const u8 g = rawRGB[i * 3 + 1];
-                const u8 b = rawRGB[i * 3 + 2];
-                scene->globalLightmap->pixels[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+        if (fread(rawRGB, 1, pixelCount * 3, file) == (u64)(pixelCount * 3)) {
+            for (i32 y = 0; y < atlasDim; y += 1) {
+                for (i32 x = 0; x < atlasDim; x += 1) {
+                    // clamp adjacent pixels to the edge of the texture
+                    const i32 x1 = (x + 1 < atlasDim) ? x + 1 : x;
+                    const i32 y1 = (y + 1 < atlasDim) ? y + 1 : y;
+                    
+                    // base inds for the 4 corners in the raw array
+                    const i32 i00 = (y * atlasDim + x) * 3;
+                    const i32 i10 = (y * atlasDim + x1) * 3;
+                    const i32 i01 = (y1 * atlasDim + x) * 3;
+                    const i32 i11 = (y1 * atlasDim + x1) * 3;
+                    
+                    const i32 outInd = y * atlasDim + x;
+
+                    // pack the channels
+                    scene->globalLightmap->quadR[outInd] = 
+                        ((u32)rawRGB[i00 + 0])       | 
+                        ((u32)rawRGB[i10 + 0] << 8)  | 
+                        ((u32)rawRGB[i01 + 0] << 16) | 
+                        ((u32)rawRGB[i11 + 0] << 24);
+                    scene->globalLightmap->quadG[outInd] = 
+                        ((u32)rawRGB[i00 + 1])       | 
+                        ((u32)rawRGB[i10 + 1] << 8)  | 
+                        ((u32)rawRGB[i01 + 1] << 16) | 
+                        ((u32)rawRGB[i11 + 1] << 24);
+                    scene->globalLightmap->quadB[outInd] = 
+                        ((u32)rawRGB[i00 + 2])       | 
+                        ((u32)rawRGB[i10 + 2] << 8)  | 
+                        ((u32)rawRGB[i01 + 2] << 16) | 
+                        ((u32)rawRGB[i11 + 2] << 24);
+                }
             }
         }
         sfrFree(rawRGB);
