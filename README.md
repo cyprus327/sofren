@@ -4,28 +4,57 @@
 
 ---
 
-<img width="954" height="954" alt="labeled_spheres" src="https://github.com/user-attachments/assets/692a2758-875d-4657-9dd9-6c13cb042ff3" />
+Realtime Blinn-Phong shading
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/692a2758-875d-4657-9dd9-6c13cb042ff3"
+      width="800">
+</p>
 
 ---
 
+Sponza at 720p, 73 FPS, with realtime dynamic shadows
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/04cce14f-651a-4267-8511-58edd713559f"
+      width="800">
+</p>
+
+---
+
+Baked lighting
+
 <details>
-  <summary>About the lighting...</summary>
-  This is baked lighting from a Hammer style editor designed around outputting to sofren that I've been working on in between classes.
-  The engine / editor isn't public because the code is not good, and I'm not sure it will ever be public.
-  I genuinely think it looks cool, but the monte carlo baking loop I use leaves a lot of splotchyness after the bilateral denoising and dilation.
+  <summary>About...</summary>
+
+  This is baked lighting from a Hammer-style editor designed around outputting to sofren that I've been working on between classes.
+
+  The engine/editor isn't public because the code quality is rough and I'm not sure it will ever be public.
+
+  The monte carlo baking loop still leaves noticeable splotching after bilateral denoising and dilation, but I think the overall result looks interesting.
+
 </details>
 
-<img width="1280" height="720" alt="baked lighting" src="https://github.com/user-attachments/assets/4c9e3bcc-dd96-468a-89a8-2d5d949bc001" />
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/4c9e3bcc-dd96-468a-89a8-2d5d949bc001"
+      width="800">
+</p>
 
 ---
 
 [*examples/font-starter-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/font-starter-sdl2.c)
 
-![sfrfontdemo1](https://github.com/user-attachments/assets/87f62598-b39e-4d04-b19d-0f97ddba1622)
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/87f62598-b39e-4d04-b19d-0f97ddba1622"
+      width="800">
+</p>
 
 [*examples/starter-console.c*](https://github.com/cyprus327/sofren/blob/main/examples/tex-starter-sdl2.c)
 
-![sfrconsoledemo1](https://github.com/user-attachments/assets/36b51566-7893-4729-a498-b18c6569ea83)
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/36b51566-7893-4729-a498-b18c6569ea83"
+      width="800">
+</p>
 
 ---
 
@@ -37,18 +66,19 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Perspective correct texture mapping (currently only .bmp image support unless `optional/stb_image.h` is used)
 - Deferred rendering with a visibility buffer
 - SIMD rasterizing and geometry pipelines (or scalar fallback if SIMD is unavailable)
-- Blinn-phong shading with point and directional lights
-- Baked lighting support when loading gltf models
+- Blinn-Phong shading with point and directional lights
+- Realtime static and dynamic shadowmaps
+- Baked lighting support (if UVs are unwrapped already)
 - Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
 - OBJ mesh loading (requires `stdio.h`)
 - GLB / GLTF model loading (requires `optional/cgltf.h` (with `optional/stb_image.h` for textures))
 - Customizable math implementations (system or bundled)
-- Primitive drawing (triangles, cubes, billboards)
+- Primitive drawing (triangles, cubes, spheres, cylinders, billboards, etc.)
 - Skyboxes (cubemaps not spheremaps)
 - Efficient static scene rendering with fast raycasting (BVH)
 - ARGB8888 color format support (alpha currently unused)
 - Backface culling, depth buffering, and clipping
-- Simplistic design, quick to learn and use
+- Left handed and row major
 
 ## Pre Processing Configuration 
 ```c
@@ -88,10 +118,6 @@ For examples and good starting points rendering to an SDL2 window or console win
 // defines SFR_FUNC as 'static inline' default is 'static'
 #define SFR_USE_INLINE
 
-// max width and height of the window to avoid reallocations when resizing
-#define SFR_MAX_WIDTH  // default of 1280
-#define SFR_MAX_HEIGHT // default of 720
-
 // only applicable when SFR_NO_MATH is defined, their values
 // dictate the accuracy of the bundled math functions
 #define SFR_SQRT_ACCURACY // default of 20
@@ -102,7 +128,7 @@ For examples and good starting points rendering to an SDL2 window or console win
 #define SFR_FONT_VERT_MAX  // max verts per glyph, default of 72 (12 tris)
 
 // when SFR_THREAD_COUNT isn't 1, below is applicable
-#define SFR_THREAD_COUNT       // default of 1, i.e. single threaded
+#define SFR_THREAD_COUNT       // default of 8, i.e. multithreaded
 #define SFR_TILE_WIDTH         // default of 64, in pixels
 #define SFR_TILE_HEIGHT        // default of 64, in pixels
 #define SFR_GEOMETRY_JOB_SIZE  // default of 64, number of tris per geometry job
@@ -120,15 +146,6 @@ For examples and good starting points rendering to an SDL2 window or console win
 There are some global variables in sofren.c, those in the public API are:
 
 ```c
-// pixel and depth buffer's dimensions
-// set on init but can be changed if your window resizes or something,
-// just remember to call realloc on sfrPixelBuf and sfrDepthBuf
-extern i32 sfrWidth, sfrHeight;
-
-// sofren isn't double buffered, you could easily make it though
-extern u32* sfrPixelBuf;
-extern f32* sfrDepthBuf;
-
 // how many triangles have been rasterized since the last call to clear
 // atomic since it is updated by multiple threads when multithreading is enabled
 // if multithreading isn't enabled, SfrAtomic32 == i32 == int32_t
@@ -138,8 +155,10 @@ extern SfrAtomic32 sfrRasterCount;
 // use all the provided functions when changing
 extern sfrmat sfrMatModel, sfrMatView, sfrMatProj;
 
-extern sfrvec sfrCamPos; // use 'sfr_set_camera' when changing
-extern f32    sfrCamFov; // use 'sfr_set_fov' when changing
+// use 'sfr_set_camera' when changing
+extern sfrvec sfrCamPos, sfrCamUp, sfrCamTarget;
+// use 'sfr_set_fov' when changing
+extern f32 sfrCamFov;
 
 // can be freely changed, just call 'sfr_set_fov(sfrCamFov)' to
 // update 'sfrMatProj' to account for the change
@@ -152,21 +171,19 @@ extern f32 sfrNearDist, sfrFarDist;
 
 ### Red Rotating Cube
 ```c
-// this is the correct order of operations (rotate, scale, translate)
+// this is the correct order of operations (scale, rotate, translate), sofren is row major
 sfr_reset();                   // reset model matrix to identity
+sfr_scale(1.f, 3.f, 0.5f);     // scale by x y z
 sfr_rotate_y(time);            // rotate about y, radians not degrees
 sfr_rotate_x(time * 0.5f);     // rotate about x
-sfr_scale(1.f, 3.f, 0.5f);     // scale by x y z
 sfr_translate(0.f, 0.f, 2.5f); // move to x y z
 sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A currently unused)
-``` 
+```
 
 ## TODO / Upcoming Features / Known Bugs
 - Skeletal animation / some improved animation system
 - Get normal maps working
-- Shadowmapping for static scenes
 - Further optimized rasterizing
-- Dynamic shadows, maybe
 
 ## Gallery
 
@@ -179,26 +196,6 @@ Some more baked lighting images
 <img width="1280" height="720" alt="baked corridor" src="https://github.com/user-attachments/assets/9f184b37-2587-403b-9103-a0749fbee154" />
 
 <img width="1280" height="720" alt="baked room 1" src="https://github.com/user-attachments/assets/03d9c19f-22f9-4ba1-addf-06198509289b" />
-
----
-
-Sponza at 720p 60fps on an older laptop while recording
-<details>
-  <summary>About...</summary>
-  This clip is really old now. The model was loading using raylib's LoadModel function and then converted to sofren's structs.
-
-  **In newer versions, this model would've been loaded with the built in function that uses cgltf.**
-  Also in newer versions the lighting looks better, and there is mipmapping so there is no need for resizing
-  the textures down to the tiny 128x128 like I did previously.
-
-  Additionally, textures were resized down to 128x128 from 1024x1024 (from profiling, like 40% of the
-  program's time was just from cache misses so this was the "fix", mipmapping is now implemented though).
-  If you're wondering why the triangle count is changing when nothing is moving, it changes because
-  the text showing FPS and the triangle count is comprised of triangles (.srft font format), and
-  these triangles are still taken into account when counting triangles rendered.
-</details>
-
-https://github.com/user-attachments/assets/c11733d0-74b1-42f1-ad72-7a49711e4004
 
 ---
 
