@@ -27,32 +27,19 @@ Baked lighting
 <details>
   <summary>About...</summary>
 
-  This is baked lighting from a Hammer-style editor designed around outputting to sofren that I've been working on between classes.
+  Everything in this scene is baked, even the specular, no lights are enabled in this screenshot.
 
-  The engine/editor isn't public because the code quality is rough and I'm not sure it will ever be public.
+  This is exported from an editor designed around outputting to sofren that I've been working on between classes.
 
-  The monte carlo baking loop still leaves noticeable splotching after bilateral denoising and dilation, but I think the overall result looks interesting.
+  The editor isn't public because the code quality isn't good, and I'm not sure it will ever be public.
 
+  However, sofren supports baked lighting generated from other software like Blender via glb/gltf models.
+
+  Textures from [ambientcg](https://ambientcg.com/)
 </details>
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/4c9e3bcc-dd96-468a-89a8-2d5d949bc001"
-      width="800">
-</p>
-
----
-
-[*examples/font-starter-sdl2.c*](https://github.com/cyprus327/sofren/blob/main/examples/font-starter-sdl2.c)
-
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/87f62598-b39e-4d04-b19d-0f97ddba1622"
-      width="800">
-</p>
-
-[*examples/starter-console.c*](https://github.com/cyprus327/sofren/blob/main/examples/tex-starter-sdl2.c)
-
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/36b51566-7893-4729-a498-b18c6569ea83"
+  <img src="https://github.com/user-attachments/assets/93e7a30c-a026-4a5f-aec6-70038767173a"
       width="800">
 </p>
 
@@ -187,7 +174,7 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A current
 
 ## Gallery
 
-Some more baked lighting images
+Some more baked lighting images, these are much older than the one at the top of this README
 
 <img width="1280" height="720" alt="baked room 2" src="https://github.com/user-attachments/assets/abd6ebf6-047c-4fee-bacd-22878eadbe9e" />
 
