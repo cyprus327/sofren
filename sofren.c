@@ -638,14 +638,12 @@ typedef struct sfrlight {
     f32 attenuation; // radius/falloff for point lights
 } SfrLight;
 
-// pre divided data
 struct sfrVertexData {
     f32 invZ;
-    f32 u, v;
-    f32 lu, lv;
-    f32 nx, ny, nz;
-    f32 tx, ty, tz, tw;
-    f32 wx, wy, wz;
+    u32 n;      // packed normal, 10-10-10-2
+    u32 t;      // packed tangent + sign, 10-10-10-2
+    i16 u, v;   // 4.12 fixed point
+    i16 lu, lv; // 4.12 fixed point
 };
 
 // helper to track vertex attributes during clipping
@@ -655,7 +653,6 @@ struct sfrTexVert {
     f32 lu, lv;      // lightmap coords
     sfrvec normal;   // world space normal for lighting
     sfrvec tangent;  // transformed tangent and handedness sign in w
-    sfrvec worldPos; // world position
     f32 viewZ;       // z in view space for perspective correction
 };
 
@@ -737,7 +734,6 @@ struct sfrTile {
         const f32* tangents;
         sfrmat matNormal;
         sfrmat matMVP;
-        sfrmat matModel;
         u32 col;
         const SfrMaterial* mat;
         i32 startTriangle;
@@ -779,6 +775,7 @@ struct sfrTile {
 struct sfrState {
     u8 lightingEnabled;
 
+    sfrmat matInvView;
     sfrmat matNormal;
     u8 normalMatDirty;
 
@@ -1615,6 +1612,43 @@ SFR_FUNC sfrvec sfr_quat_norm(sfrvec q) {
 //: PRIVATE FUNCTIONS
 //================================================
 
+// map [-1.0, 1.0] -> [0, 1023]
+static u32 sfr__pack_vec3(f32 x, f32 y, f32 z) {
+    const u32 px = (u32)((x * 0.5f + 0.5f) * 1023.f);
+    const u32 py = (u32)((y * 0.5f + 0.5f) * 1023.f);
+    const u32 pz = (u32)((z * 0.5f + 0.5f) * 1023.f);
+    return px | (py << 10) | (pz << 20);
+}
+// map [0, 1023] -> [-1.0, 1.0]
+static void sfr__unpack_vec3(u32 packed, f32* x, f32* y, f32* z) {
+    *x = (f32)((packed >> 00) & 1023) * (2.f / 1023.f) - 1.f;
+    *y = (f32)((packed >> 10) & 1023) * (2.f / 1023.f) - 1.f;
+    *z = (f32)((packed >> 20) & 1023) * (2.f / 1023.f) - 1.f;
+}
+
+// tangent packing (10-10-10-1)
+static u32 sfr__pack_tangent(f32 x, f32 y, f32 z, f32 w) {
+    u32 px = (u32)((x * 0.5f + 0.5f) * 1023.f);
+    u32 py = (u32)((y * 0.5f + 0.5f) * 1023.f);
+    u32 pz = (u32)((z * 0.5f + 0.5f) * 1023.f);
+    u32 pw = (w > 0.f) ? 1 : 0; // 1 for positive, 0 for negative
+    return px | (py << 10) | (pz << 20) | (pw << 30);
+}
+static void sfr__unpack_tangent(u32 packed, f32* x, f32* y, f32* z, f32* w) {
+    *x = (f32)(packed & 1023) * (2.f / 1023.f) - 1.f;
+    *y = (f32)((packed >> 10) & 1023) * (2.f / 1023.f) - 1.f;
+    *z = (f32)((packed >> 20) & 1023) * (2.f / 1023.f) - 1.f;
+    *w = ((packed >> 30) & 1) ? 1.f : -1.f;
+}
+
+// NOTE: wrapping wrapping UVs can't exceed +-32
+static i16 sfr__pack_uv(f32 uv) {
+    return (i16)(uv * 1024.f);
+}
+static f32 sfr__unpack_uv(i16 packed) {
+    return (f32)packed * (1.f / 1024.f);
+}
+
 static void sfr__mesh_swap_tri(SfrMesh* mesh, i32 a, i32 b) {
     if (a == b) {
         return;
@@ -1866,14 +1900,13 @@ SFR_FUNC f32 sfr__fast_pow(f32 x, f32 y) {
 static struct sfrTexVert sfr__lerp_vert(struct sfrTexVert a, struct sfrTexVert b, f32 t) {
     return (struct sfrTexVert){
         .pos = sfr_vec_lerp(a.pos, b.pos, t),
+        .viewZ = SFR__LERPF(a.viewZ, b.viewZ, t),
         .u = SFR__LERPF(a.u, b.u, t),
         .v = SFR__LERPF(a.v, b.v, t),
         .lu = SFR__LERPF(a.lu, b.lu, t),
         .lv = SFR__LERPF(a.lv, b.lv, t),
-        .viewZ = SFR__LERPF(a.viewZ, b.viewZ, t),
         .normal = sfr_vec_lerp(a.normal, b.normal, t),
-        .tangent = sfr_vec_lerp(a.tangent, b.tangent, t),
-        .worldPos = sfr_vec_lerp(a.worldPos, b.worldPos, t)
+        .tangent = sfr_vec_lerp(a.tangent, b.tangent, t)
     };
 }
 
@@ -2393,7 +2426,7 @@ static void sfr__bin_triangle(
 }
 
 static void sfr__process_and_bin_triangle(
-    const sfrmat* matMVP, const sfrmat* matModel, const sfrmat* matNormal,
+    const sfrmat* matMVP, const sfrmat* matNormal,
     const f32* posA, const f32* uvA, const f32* lmUvA, const f32* normA, const f32* tanA,
     const f32* posB, const f32* uvB, const f32* lmUvB, const f32* normB, const f32* tanB,
     const f32* posC, const f32* uvC, const f32* lmUvC, const f32* normC, const f32* tanC,
@@ -2406,11 +2439,6 @@ static void sfr__process_and_bin_triangle(
     const sfrvec aClip = sfr_mat_mul_vec(*matMVP, ap);
     const sfrvec bClip = sfr_mat_mul_vec(*matMVP, bp);
     const sfrvec cClip = sfr_mat_mul_vec(*matMVP, cp);
-
-    // calculate world positions
-    const sfrvec aWorld = sfr_mat_mul_vec(*matModel, ap);
-    const sfrvec bWorld = sfr_mat_mul_vec(*matModel, bp);
-    const sfrvec cWorld = sfr_mat_mul_vec(*matModel, cp);
 
     // transform normals
     const sfrvec na = sfr_mat_mul_vec(*matNormal, SFR__V(normA[0], normA[1], normA[2], 0.f));
@@ -2491,27 +2519,24 @@ static void sfr__process_and_bin_triangle(
 
         const struct sfrVertexData v0 = {
             .invZ = aDepth,
-            .u = uA * aInvW, .v = vA * aInvW,
-            .lu = luA * aInvW, .lv = lvA * aInvW,
-            .nx = na.x * aInvW, .ny = na.y * aInvW, .nz = na.z * aInvW,
-            .tx = ta.x * aInvW, .ty = ta.y * aInvW, .tz = ta.z * aInvW, .tw = ta.w * aInvW,
-            .wx = aWorld.x * aInvW, .wy = aWorld.y * aInvW, .wz = aWorld.z * aInvW
+            .u = sfr__pack_uv(uA), .v = sfr__pack_uv(vA),
+            .lu = sfr__pack_uv(luA), .lv = sfr__pack_uv(lvA),
+            .n = sfr__pack_vec3(na.x, na.y, na.z),
+            .t = sfr__pack_tangent(ta.x, ta.y, ta.z, ta.w)
         };
         const struct sfrVertexData v1 = {
             .invZ = bDepth,
-            .u = uB * bInvW, .v = vB * bInvW,
-            .lu = luB * bInvW, .lv = lvB * bInvW,
-            .nx = nb.x * bInvW, .ny = nb.y * bInvW, .nz = nb.z * bInvW,
-            .tx = tb.x * bInvW, .ty = tb.y * bInvW, .tz = tb.z * bInvW, .tw = tb.w * bInvW,
-            .wx = bWorld.x * bInvW, .wy = bWorld.y * bInvW, .wz = bWorld.z * bInvW
+            .u = sfr__pack_uv(uB), .v = sfr__pack_uv(vB),
+            .lu = sfr__pack_uv(luB), .lv = sfr__pack_uv(lvB),
+            .n = sfr__pack_vec3(nb.x, nb.y, nb.z),
+            .t = sfr__pack_tangent(tb.x, tb.y, tb.z, tb.w)
         };
         const struct sfrVertexData v2 = {
             .invZ = cDepth,
-            .u = uC * cInvW, .v = vC * cInvW,
-            .lu = luC * cInvW, .lv = lvC * cInvW,
-            .nx = nc.x * cInvW, .ny = nc.y * cInvW, .nz = nc.z * cInvW,
-            .tx = tc.x * cInvW, .ty = tc.y * cInvW, .tz = tc.z * cInvW, .tw = tc.w * cInvW,
-            .wx = cWorld.x * cInvW, .wy = cWorld.y * cInvW, .wz = cWorld.z * cInvW
+            .u = sfr__pack_uv(uC), .v = sfr__pack_uv(vC),
+            .lu = sfr__pack_uv(luC), .lv = sfr__pack_uv(lvC),
+            .n = sfr__pack_vec3(nc.x, nc.y, nc.z),
+            .t = sfr__pack_tangent(tc.x, tc.y, tc.z, tc.w)
         };
 
         sfr__bin_triangle(sax, say, sbx, sby, scx, scy, &v0, &v1, &v2, col, matToUse);
@@ -2524,21 +2549,21 @@ static void sfr__process_and_bin_triangle(
     i32 inputCount = 1;
 
     clipTris[0][0] = (struct sfrTexVert){
-        .pos = aClip, .worldPos = aWorld,
+        .pos = aClip,
         .u = uA, .v = vA,
         .lu = luA, .lv = lvA,
         .normal = na, .tangent = ta,
         .viewZ = aClip.w
     };
     clipTris[0][1] = (struct sfrTexVert){
-        .pos = bClip, .worldPos = bWorld,
+        .pos = bClip,
         .u = uB, .v = vB,
         .lu = luB, .lv = lvB,
         .normal = nb, .tangent = tb,
         .viewZ = bClip.w
     };
     clipTris[0][2] = (struct sfrTexVert){
-        .pos = cClip, .worldPos = cWorld,
+        .pos = cClip,
         .u = uC, .v = vC,
         .lu = luC, .lv = lvC,
         .normal = nc, .tangent = tc,
@@ -2597,7 +2622,6 @@ static void sfr__process_and_bin_triangle(
             screen[j].viewZ = tri[j].viewZ;
             screen[j].normal = tri[j].normal;
             screen[j].tangent = tri[j].tangent;
-            screen[j].worldPos = tri[j].worldPos;
         }
 
         if (skip) {
@@ -2615,27 +2639,24 @@ static void sfr__process_and_bin_triangle(
 
         const struct sfrVertexData v0 = {
             .invZ = aDepth,
-            .u = screen[0].u * aInvZ, .v = screen[0].v * aInvZ,
-            .lu = screen[0].lu * aInvZ, .lv = screen[0].lv * aInvZ,
-            .nx = screen[0].normal.x * aInvZ, .ny = screen[0].normal.y * aInvZ, .nz = screen[0].normal.z * aInvZ,
-            .tx = screen[0].tangent.x * aInvZ, .ty = screen[0].tangent.y * aInvZ, .tz = screen[0].tangent.z * aInvZ, .tw = screen[0].tangent.w * aInvZ,
-            .wx = screen[0].worldPos.x * aInvZ, .wy = screen[0].worldPos.y * aInvZ, .wz = screen[0].worldPos.z * aInvZ
+            .u = sfr__pack_uv(screen[0].u), .v = sfr__pack_uv(screen[0].v),
+            .lu = sfr__pack_uv(screen[0].lu), .lv = sfr__pack_uv(screen[0].lv),
+            .n = sfr__pack_vec3(screen[0].normal.x, screen[0].normal.y, screen[0].normal.z),
+            .t = sfr__pack_tangent(screen[0].tangent.x, screen[0].tangent.y, screen[0].tangent.z, screen[0].tangent.w)
         };
         const struct sfrVertexData v1 = {
             .invZ = bDepth,
-            .u = screen[1].u * bInvZ, .v = screen[1].v * bInvZ,
-            .lu = screen[1].lu * bInvZ, .lv = screen[1].lv * bInvZ,
-            .nx = screen[1].normal.x * bInvZ, .ny = screen[1].normal.y * bInvZ, .nz = screen[1].normal.z * bInvZ,
-            .tx = screen[1].tangent.x * bInvZ, .ty = screen[1].tangent.y * bInvZ, .tz = screen[1].tangent.z * bInvZ, .tw = screen[1].tangent.w * bInvZ,
-            .wx = screen[1].worldPos.x * bInvZ, .wy = screen[1].worldPos.y * bInvZ, .wz = screen[1].worldPos.z * bInvZ
+            .u = sfr__pack_uv(screen[1].u), .v = sfr__pack_uv(screen[1].v),
+            .lu = sfr__pack_uv(screen[1].lu), .lv = sfr__pack_uv(screen[1].lv),
+            .n = sfr__pack_vec3(screen[1].normal.x, screen[1].normal.y, screen[1].normal.z),
+            .t = sfr__pack_tangent(screen[1].tangent.x, screen[1].tangent.y, screen[1].tangent.z, screen[1].tangent.w)
         };
         const struct sfrVertexData v2 = {
             .invZ = cDepth,
-            .u = screen[2].u * cInvZ, .v = screen[2].v * cInvZ,
-            .lu = screen[2].lu * cInvZ, .lv = screen[2].lv * cInvZ,
-            .nx = screen[2].normal.x * cInvZ, .ny = screen[2].normal.y * cInvZ, .nz = screen[2].normal.z * cInvZ,
-            .tx = screen[2].tangent.x * cInvZ, .ty = screen[2].tangent.y * cInvZ, .tz = screen[2].tangent.z * cInvZ, .tw = screen[2].tangent.w * cInvZ,
-            .wx = screen[2].worldPos.x * cInvZ, .wy = screen[2].worldPos.y * cInvZ, .wz = screen[2].worldPos.z * cInvZ
+            .u = sfr__pack_uv(screen[2].u), .v = sfr__pack_uv(screen[2].v),
+            .lu = sfr__pack_uv(screen[2].lu), .lv = sfr__pack_uv(screen[2].lv),
+            .n = sfr__pack_vec3(screen[2].normal.x, screen[2].normal.y, screen[2].normal.z),
+            .t = sfr__pack_tangent(screen[2].tangent.x, screen[2].tangent.y, screen[2].tangent.z, screen[2].tangent.w)
         };
 
         sfr__bin_triangle(
@@ -2697,18 +2718,37 @@ static void sfr__resolve_chunk(u32 id, i32 globalX, i32 globalY, i32 globalInd, 
     const f32 cw0x = cw0 + rBin->A1 * sBin->invDet, cw1x = cw1 + rBin->A2 * sBin->invDet, cw2x = cw2 + rBin->A0 * sBin->invDet;
     const f32 cw0y = cw0 + rBin->B1 * sBin->invDet, cw1y = cw1 + rBin->B2 * sBin->invDet, cw2y = cw2 + rBin->B0 * sBin->invDet;
 
+    // unpack base UVs once for the chunk
+    const f32 v0u = sfr__unpack_uv(sBin->v0.u), v0v = sfr__unpack_uv(sBin->v0.v);
+    const f32 v1u = sfr__unpack_uv(sBin->v1.u), v1v = sfr__unpack_uv(sBin->v1.v);
+    const f32 v2u = sfr__unpack_uv(sBin->v2.u), v2v = sfr__unpack_uv(sBin->v2.v);
+
+    // center pixel perspective correction
     const f32 cinvZ = cw0 * sBin->v0.invZ + cw1 * sBin->v1.invZ + cw2 * sBin->v2.invZ;
     const f32 cz = 1.f / cinvZ;
-    const f32 ccu = (cw0 * sBin->v0.u + cw1 * sBin->v1.u + cw2 * sBin->v2.u) * cz;
-    const f32 ccv = (cw0 * sBin->v0.v + cw1 * sBin->v1.v + cw2 * sBin->v2.v) * cz;
+    const f32 cpW0 = cw0 * sBin->v0.invZ * cz;
+    const f32 cpW1 = cw1 * sBin->v1.invZ * cz;
+    const f32 cpW2 = cw2 * sBin->v2.invZ * cz;
+    const f32 ccu = cpW0 * v0u + cpW1 * v1u + cpW2 * v2u;
+    const f32 ccv = cpW0 * v0v + cpW1 * v1v + cpW2 * v2v;
 
+    // X + 1 pixel perspective correction
     const f32 cinvZX = cw0x * sBin->v0.invZ + cw1x * sBin->v1.invZ + cw2x * sBin->v2.invZ;
-    const f32 cuX = (cw0x * sBin->v0.u + cw1x * sBin->v1.u + cw2x * sBin->v2.u) / cinvZX;
-    const f32 cvX = (cw0x * sBin->v0.v + cw1x * sBin->v1.v + cw2x * sBin->v2.v) / cinvZX;
+    const f32 czX = 1.f / cinvZX;
+    const f32 cpW0x = cw0x * sBin->v0.invZ * czX;
+    const f32 cpW1x = cw1x * sBin->v1.invZ * czX;
+    const f32 cpW2x = cw2x * sBin->v2.invZ * czX;
+    const f32 cuX = cpW0x * v0u + cpW1x * v1u + cpW2x * v2u;
+    const f32 cvX = cpW0x * v0v + cpW1x * v1v + cpW2x * v2v;
 
+    // Y + 1 pixel perspective correction
     const f32 cinvZY = cw0y * sBin->v0.invZ + cw1y * sBin->v1.invZ + cw2y * sBin->v2.invZ;
-    const f32 cuY = (cw0y * sBin->v0.u + cw1y * sBin->v1.u + cw2y * sBin->v2.u) / cinvZY;
-    const f32 cvY = (cw0y * sBin->v0.v + cw1y * sBin->v1.v + cw2y * sBin->v2.v) / cinvZY;
+    const f32 czY = 1.f / cinvZY;
+    const f32 cpW0y = cw0y * sBin->v0.invZ * czY;
+    const f32 cpW1y = cw1y * sBin->v1.invZ * czY;
+    const f32 cpW2y = cw2y * sBin->v2.invZ * czY;
+    const f32 cuY = cpW0y * v0u + cpW1y * v1u + cpW2y * v2u;
+    const f32 cvY = cpW0y * v0v + cpW1y * v1v + cpW2y * v2v;
 
     const f32 dudx = cuX - ccu, dvdx = cvX - ccv;
     const f32 dudy = cuY - ccu, dvdy = cvY - ccv;
@@ -2727,7 +2767,6 @@ static void sfr__resolve_chunk(u32 id, i32 globalX, i32 globalY, i32 globalInd, 
 
     // vv barycentrics and depth vv
     const __m256 vInvDet = _mm256_set1_ps(sBin->invDet);
-
     const __m256 vSteps = _mm256_setr_ps(0.f, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f);
 
     // compute scalar base values for the start of the vector chunk
@@ -2741,33 +2780,54 @@ static void sfr__resolve_chunk(u32 id, i32 globalX, i32 globalY, i32 globalInd, 
     const __m256 vw1 = _mm256_mul_ps(_mm256_fmadd_ps(_mm256_set1_ps(rBin->A2), vSteps, _mm256_set1_ps(w1base)), vInvDet);
     const __m256 vw2 = _mm256_mul_ps(_mm256_fmadd_ps(_mm256_set1_ps(rBin->A0), vSteps, _mm256_set1_ps(w2base)), vInvDet);
 
-    const __m256 vInvZ_val = _mm256_fmadd_ps(vw0, _mm256_set1_ps(sBin->v0.invZ),
-                                _mm256_fmadd_ps(vw1, _mm256_set1_ps(sBin->v1.invZ),
-                                _mm256_mul_ps(vw2, _mm256_set1_ps(sBin->v2.invZ))));
+    const __m256 vInvZ0 = _mm256_set1_ps(sBin->v0.invZ);
+    const __m256 vInvZ1 = _mm256_set1_ps(sBin->v1.invZ);
+    const __m256 vInvZ2 = _mm256_set1_ps(sBin->v2.invZ);
 
-    // approximation (~11 bits)
-    const __m256 vZ_approx = _mm256_rcp_ps(vInvZ_val);
+    const __m256 vInvZ_val = _mm256_fmadd_ps(vw0, vInvZ0,
+                                _mm256_fmadd_ps(vw1, vInvZ1,
+                                _mm256_mul_ps(vw2, vInvZ2)));
 
-    // one step: y = y * (2.f - x * y) to double precision
-    const __m256 vZ = _mm256_mul_ps(vZ_approx, 
-                        _mm256_fnmadd_ps(vInvZ_val, vZ_approx, _mm256_set1_ps(2.f)));
+    // approximation (~11 bits) refined to double precision
+    const __m256 vZapprox = _mm256_rcp_ps(vInvZ_val);
+    const __m256 vZ = _mm256_mul_ps(vZapprox, _mm256_fnmadd_ps(vInvZ_val, vZapprox, _mm256_set1_ps(2.f)));
 
-    // ((w0*a0 + w1*a1 + w2*a2) * vZ)
-    #define INTERP(attr) \
-        _mm256_mul_ps( \
-            _mm256_fmadd_ps(vw0, _mm256_set1_ps(sBin->v0.attr), \
-                _mm256_fmadd_ps(vw1, _mm256_set1_ps(sBin->v1.attr), \
-                    _mm256_mul_ps(vw2, _mm256_set1_ps(sBin->v2.attr)) \
-                ) \
-            ), \
-            vZ \
+    // calculate SIMD perspective weights (pW)
+    const __m256 pW0 = _mm256_mul_ps(_mm256_mul_ps(vw0, vInvZ0), vZ);
+    const __m256 pW1 = _mm256_mul_ps(_mm256_mul_ps(vw1, vInvZ1), vZ);
+    const __m256 pW2 = _mm256_mul_ps(_mm256_mul_ps(vw2, vInvZ2), vZ);
+
+    // unpack UVs and broadcast
+    const __m256 vv0u = _mm256_set1_ps(v0u), vv0v = _mm256_set1_ps(v0v);
+    const __m256 vv1u = _mm256_set1_ps(v1u), vv1v = _mm256_set1_ps(v1v);
+    const __m256 vv2u = _mm256_set1_ps(v2u), vv2v = _mm256_set1_ps(v2v);
+
+    const __m256 v0lu = _mm256_set1_ps(sfr__unpack_uv(sBin->v0.lu)), v0lv = _mm256_set1_ps(sfr__unpack_uv(sBin->v0.lv));
+    const __m256 v1lu = _mm256_set1_ps(sfr__unpack_uv(sBin->v1.lu)), v1lv = _mm256_set1_ps(sfr__unpack_uv(sBin->v1.lv));
+    const __m256 v2lu = _mm256_set1_ps(sfr__unpack_uv(sBin->v2.lu)), v2lv = _mm256_set1_ps(sfr__unpack_uv(sBin->v2.lv));
+
+    // unpack normals and broadcast
+    f32 nx, ny, nz;
+    sfr__unpack_vec3(sBin->v0.n, &nx, &ny, &nz);
+    const __m256 v0nx = _mm256_set1_ps(nx), v0ny = _mm256_set1_ps(ny), v0nz = _mm256_set1_ps(nz);
+    sfr__unpack_vec3(sBin->v1.n, &nx, &ny, &nz);
+    const __m256 v1nx = _mm256_set1_ps(nx), v1ny = _mm256_set1_ps(ny), v1nz = _mm256_set1_ps(nz);
+    sfr__unpack_vec3(sBin->v2.n, &nx, &ny, &nz);
+    const __m256 v2nx = _mm256_set1_ps(nx), v2ny = _mm256_set1_ps(ny), v2nz = _mm256_set1_ps(nz);
+
+    // INTERP macro strictly using pW
+    #define INTERP(v0_attr, v1_attr, v2_attr) \
+        _mm256_fmadd_ps(pW0, v0_attr, \
+            _mm256_fmadd_ps(pW1, v1_attr, \
+                _mm256_mul_ps(pW2, v2_attr) \
+            ) \
         )
 
-    // attribute interpolation 1
-    const __m256 vu = INTERP(u);
-    const __m256 vv = INTERP(v);
-    const __m256 vlu = INTERP(lu);
-    const __m256 vlv = INTERP(lv);
+    // interpolate UVs
+    const __m256 vu = INTERP(vv0u, vv1u, vv2u);
+    const __m256 vv = INTERP(vv0v, vv1v, vv2v);
+    const __m256 vlu = INTERP(v0lu, v1lu, v2lu);
+    const __m256 vlv = INTERP(v0lv, v1lv, v2lv);
 
     // vv base material properties vv
     __m256 vAlbedoR = _mm256_set1_ps((f32)((sBin->col >> 16) & 0xFF) / 255.f);
@@ -2847,13 +2907,31 @@ static void sfr__resolve_chunk(u32 id, i32 globalX, i32 globalY, i32 globalInd, 
     __m256 vFinalG = _mm256_setzero_ps();
     __m256 vFinalB = _mm256_setzero_ps();
 
-    // attribute interpolation 2
-    const __m256 vFragX = INTERP(wx);
-    const __m256 vFragY = INTERP(wy);
-    const __m256 vFragZ = INTERP(wz);
-    __m256 vnx = INTERP(nx);
-    __m256 vny = INTERP(ny);
-    __m256 vnz = INTERP(nz);
+    // vv reconstruct frag pos vv
+    const __m256 vGlobalX = _mm256_add_ps(_mm256_set1_ps((f32)globalX), vSteps);
+    const __m256 vGlobalY = _mm256_set1_ps((f32)globalY);
+
+    const __m256 vNdcX = _mm256_sub_ps(_mm256_div_ps(vGlobalX, _mm256_set1_ps(sfrState.halfWidth)), _mm256_set1_ps(1.0f));
+    const __m256 vNdcY = _mm256_sub_ps(_mm256_set1_ps(1.0f), _mm256_div_ps(vGlobalY, _mm256_set1_ps(sfrState.halfHeight)));
+
+    __m256 vViewX = _mm256_mul_ps(_mm256_mul_ps(vNdcX, vZ), _mm256_set1_ps(1.0f / sfrMatProj.m[0][0]));
+    __m256 vViewY = _mm256_mul_ps(_mm256_mul_ps(vNdcY, vZ), _mm256_set1_ps(1.0f / sfrMatProj.m[1][1]));
+    __m256 vViewZ = vZ;
+
+    const __m256 mI00 = _mm256_set1_ps(sfrState.matInvView.m[0][0]), mI10 = _mm256_set1_ps(sfrState.matInvView.m[1][0]);
+    const __m256 mI20 = _mm256_set1_ps(sfrState.matInvView.m[2][0]), mI30 = _mm256_set1_ps(sfrState.matInvView.m[3][0]);
+    const __m256 mI01 = _mm256_set1_ps(sfrState.matInvView.m[0][1]), mI11 = _mm256_set1_ps(sfrState.matInvView.m[1][1]);
+    const __m256 mI21 = _mm256_set1_ps(sfrState.matInvView.m[2][1]), mI31 = _mm256_set1_ps(sfrState.matInvView.m[3][1]);
+    const __m256 mI02 = _mm256_set1_ps(sfrState.matInvView.m[0][2]), mI12 = _mm256_set1_ps(sfrState.matInvView.m[1][2]);
+    const __m256 mI22 = _mm256_set1_ps(sfrState.matInvView.m[2][2]), mI32 = _mm256_set1_ps(sfrState.matInvView.m[3][2]);
+
+    const __m256 vFragX = _mm256_fmadd_ps(mI00, vViewX, _mm256_fmadd_ps(mI10, vViewY, _mm256_fmadd_ps(mI20, vViewZ, mI30)));
+    const __m256 vFragY = _mm256_fmadd_ps(mI01, vViewX, _mm256_fmadd_ps(mI11, vViewY, _mm256_fmadd_ps(mI21, vViewZ, mI31)));
+    const __m256 vFragZ = _mm256_fmadd_ps(mI02, vViewX, _mm256_fmadd_ps(mI12, vViewY, _mm256_fmadd_ps(mI22, vViewZ, mI32)));
+
+    __m256 vnx = INTERP(v0nx, v1nx, v2nx);
+    __m256 vny = INTERP(v0ny, v1ny, v2ny);
+    __m256 vnz = INTERP(v0nz, v1nz, v2nz);
 
     // vv shadowmapping vv 
     __m256 vShadow = _mm256_set1_ps(1.f);
@@ -2958,9 +3036,9 @@ static void sfr__resolve_chunk(u32 id, i32 globalX, i32 globalY, i32 globalInd, 
     vnz = _mm256_mul_ps(vnz, vnInvLen);
 
     // view vector calculation
-    __m256 vViewX = _mm256_sub_ps(_mm256_set1_ps(sfrCamPos.x), vFragX);
-    __m256 vViewY = _mm256_sub_ps(_mm256_set1_ps(sfrCamPos.y), vFragY);
-    __m256 vViewZ = _mm256_sub_ps(_mm256_set1_ps(sfrCamPos.z), vFragZ);
+    vViewX = _mm256_sub_ps(_mm256_set1_ps(sfrCamPos.x), vFragX);
+    vViewY = _mm256_sub_ps(_mm256_set1_ps(sfrCamPos.y), vFragY);
+    vViewZ = _mm256_sub_ps(_mm256_set1_ps(sfrCamPos.z), vFragZ);
     const __m256 vViewDot = _mm256_fmadd_ps(vViewX, vViewX, _mm256_fmadd_ps(vViewY, vViewY, _mm256_mul_ps(vViewZ, vViewZ)));
     const __m256 vViewLen = _mm256_sqrt_ps(vViewDot);
     const __m256 vViewInvLen = _mm256_div_ps(_mm256_set1_ps(1.f), _mm256_max_ps(vViewLen, _mm256_set1_ps(0.0001f)));
@@ -3250,23 +3328,37 @@ SFR_FUNC i32 sfr__calc_lod(u32 id, i32 globalX, i32 globalY) {
     const f32 w0x = w0 + rBin->A1 * sBin->invDet, w1x = w1 + rBin->A2 * sBin->invDet, w2x = w2 + rBin->A0 * sBin->invDet;
     const f32 w0y = w0 + rBin->B1 * sBin->invDet, w1y = w1 + rBin->B2 * sBin->invDet, w2y = w2 + rBin->B0 * sBin->invDet;
 
+    // unpack UVs
+    const f32 v0u = sfr__unpack_uv(sBin->v0.u), v0v = sfr__unpack_uv(sBin->v0.v);
+    const f32 v1u = sfr__unpack_uv(sBin->v1.u), v1v = sfr__unpack_uv(sBin->v1.v);
+    const f32 v2u = sfr__unpack_uv(sBin->v2.u), v2v = sfr__unpack_uv(sBin->v2.v);
+
     // perspective correction (base)
     const f32 invZ = w0 * sBin->v0.invZ + w1 * sBin->v1.invZ + w2 * sBin->v2.invZ;
     const f32 z = 1.f / invZ;
-    const f32 cu = (w0 * sBin->v0.u + w1 * sBin->v1.u + w2 * sBin->v2.u) * z;
-    const f32 cv = (w0 * sBin->v0.v + w1 * sBin->v1.v + w2 * sBin->v2.v) * z;
+    const f32 pW0 = w0 * sBin->v0.invZ * z;
+    const f32 pW1 = w1 * sBin->v1.invZ * z;
+    const f32 pW2 = w2 * sBin->v2.invZ * z;
+    const f32 cu = pW0 * v0u + pW1 * v1u + pW2 * v2u;
+    const f32 cv = pW0 * v0v + pW1 * v1v + pW2 * v2v;
 
     // perspective correction (X + 1)
     const f32 invZX = w0x * sBin->v0.invZ + w1x * sBin->v1.invZ + w2x * sBin->v2.invZ;
     const f32 zX = 1.f / invZX;
-    const f32 cuX = (w0x * sBin->v0.u + w1x * sBin->v1.u + w2x * sBin->v2.u) * zX;
-    const f32 cvX = (w0x * sBin->v0.v + w1x * sBin->v1.v + w2x * sBin->v2.v) * zX;
+    const f32 pW0x = w0x * sBin->v0.invZ * zX;
+    const f32 pW1x = w1x * sBin->v1.invZ * zX;
+    const f32 pW2x = w2x * sBin->v2.invZ * zX;
+    const f32 cuX = pW0x * v0u + pW1x * v1u + pW2x * v2u;
+    const f32 cvX = pW0x * v0v + pW1x * v1v + pW2x * v2v;
 
     // perspective correction (Y + 1)
     const f32 invZY = w0y * sBin->v0.invZ + w1y * sBin->v1.invZ + w2y * sBin->v2.invZ;
     const f32 zY = 1.f / invZY;
-    const f32 cuY = (w0y * sBin->v0.u + w1y * sBin->v1.u + w2y * sBin->v2.u) * zY;
-    const f32 cvY = (w0y * sBin->v0.v + w1y * sBin->v1.v + w2y * sBin->v2.v) * zY;
+    const f32 pW0y = w0y * sBin->v0.invZ * zY;
+    const f32 pW1y = w1y * sBin->v1.invZ * zY;
+    const f32 pW2y = w2y * sBin->v2.invZ * zY;
+    const f32 cuY = pW0y * v0u + pW1y * v1u + pW2y * v2u;
+    const f32 cvY = pW0y * v0v + pW1y * v1v + pW2y * v2v;
 
     // normalized uv gradients
     const f32 dudx = cuX - cu, dvdx = cvX - cv;
@@ -3311,25 +3403,52 @@ static void sfr__resolve_pixel(u32 id, i32 globalX, i32 globalY, i32 globalInd, 
     // perspective correction (base)
     const f32 invZ = w0 * sBin->v0.invZ + w1 * sBin->v1.invZ + w2 * sBin->v2.invZ;
     const f32 z = 1.f / invZ;
-    const f32 cu = (w0 * sBin->v0.u + w1 * sBin->v1.u + w2 * sBin->v2.u) * z;
-    const f32 cv = (w0 * sBin->v0.v + w1 * sBin->v1.v + w2 * sBin->v2.v) * z;
-    const f32 lu = (w0 * sBin->v0.lu + w1 * sBin->v1.lu + w2 * sBin->v2.lu) * z;
-    const f32 lv = (w0 * sBin->v0.lv + w1 * sBin->v1.lv + w2 * sBin->v2.lv) * z;
+    
+    // calculate perspective correct weights (sum to 1.0)
+    const f32 pW0 = w0 * sBin->v0.invZ * z;
+    const f32 pW1 = w1 * sBin->v1.invZ * z;
+    const f32 pW2 = w2 * sBin->v2.invZ * z;
 
-    // interpolate normal
+    // unpack UVs
+    const f32 v0u = sfr__unpack_uv(sBin->v0.u), v0v = sfr__unpack_uv(sBin->v0.v);
+    const f32 v1u = sfr__unpack_uv(sBin->v1.u), v1v = sfr__unpack_uv(sBin->v1.v);
+    const f32 v2u = sfr__unpack_uv(sBin->v2.u), v2v = sfr__unpack_uv(sBin->v2.v);
+    const f32 v0lu = sfr__unpack_uv(sBin->v0.lu), v0lv = sfr__unpack_uv(sBin->v0.lv);
+    const f32 v1lu = sfr__unpack_uv(sBin->v1.lu), v1lv = sfr__unpack_uv(sBin->v1.lv);
+    const f32 v2lu = sfr__unpack_uv(sBin->v2.lu), v2lv = sfr__unpack_uv(sBin->v2.lv);
+
+    // interpolate raw attributes directly using pW
+    const f32 cu = pW0 * v0u + pW1 * v1u + pW2 * v2u;
+    const f32 cv = pW0 * v0v + pW1 * v1v + pW2 * v2v;
+    const f32 lu = pW0 * v0lu + pW1 * v1lu + pW2 * v2lu;
+    const f32 lv = pW0 * v0lv + pW1 * v1lv + pW2 * v2lv;
+
+    // unpack normals
+    f32 v0nx, v0ny, v0nz;
+    f32 v1nx, v1ny, v1nz;
+    f32 v2nx, v2ny, v2nz;
+    sfr__unpack_vec3(sBin->v0.n, &v0nx, &v0ny, &v0nz);
+    sfr__unpack_vec3(sBin->v1.n, &v1nx, &v1ny, &v1nz);
+    sfr__unpack_vec3(sBin->v2.n, &v2nx, &v2ny, &v2nz);
+
+    // interpolate normals using pW
     sfrvec normal = sfr_vec_normf(
-        (w0 * sBin->v0.nx + w1 * sBin->v1.nx + w2 * sBin->v2.nx) * z,
-        (w0 * sBin->v0.ny + w1 * sBin->v1.ny + w2 * sBin->v2.ny) * z,
-        (w0 * sBin->v0.nz + w1 * sBin->v1.nz + w2 * sBin->v2.nz) * z
+        pW0 * v0nx + pW1 * v1nx + pW2 * v2nx,
+        pW0 * v0ny + pW1 * v1ny + pW2 * v2ny,
+        pW0 * v0nz + pW1 * v1nz + pW2 * v2nz
     );
 
-    // interpolate world pos
-    const sfrvec fragPos = SFR__V(
-        (w0 * sBin->v0.wx + w1 * sBin->v1.wx + w2 * sBin->v2.wx) * z,
-        (w0 * sBin->v0.wy + w1 * sBin->v1.wy + w2 * sBin->v2.wy) * z,
-        (w0 * sBin->v0.wz + w1 * sBin->v1.wz + w2 * sBin->v2.wz) * z,
-        1.f
-    );
+    // convert pixel coordinates to NDC [-1, 1]
+    const f32 ndcX = ((f32)globalX / sfrState.halfWidth) - 1.f;
+    const f32 ndcY = 1.f - ((f32)globalY / sfrState.halfHeight);
+
+    // un project NDC back to veiw space using the projection mat diagonals
+    const f32 viewX = ndcX * z / sfrMatProj.m[0][0];
+    const f32 viewY = ndcY * z / sfrMatProj.m[1][1];
+    const f32 viewZ = z; 
+
+    // convert view space to world space using the inverse view mat
+    const sfrvec fragPos = sfr_mat_mul_vec(sfrState.matInvView, SFR__V(viewX, viewY, viewZ, 1.f));
 
     // shadowmapping
     f32 shadow = 1.f; // 1.0 = fully lit, 0.0 = fully in shadow
@@ -3725,7 +3844,6 @@ static void sfr__resolve_tile(const struct sfrTile* tile, i32* targetIdBuf) {
 
             // gather all target IDs in the 2x2 quad
             for (i32 qy = y; qy < yLimit; qy += 1) {
-                const i32 globalY = tile->minY + qy;
                 #ifdef SFR_MULTITHREADED
                     const i32 rowBase = qy * SFR_TILE_WIDTH;
                 #else
@@ -3743,7 +3861,7 @@ static void sfr__resolve_tile(const struct sfrTile* tile, i32* targetIdBuf) {
                     ids[(qy - y) * 2 + (qx - x)] = id;
                     
                     if (-1 != id) {
-                        idCount++;
+                        idCount += 1;
                         if (-1 == firstId) {
                             firstId = id;
                         } else if (firstId != id) {
@@ -3834,7 +3952,7 @@ static void sfr__triangle_tex_norm(
     const sfrmat matMVP = sfr_mat_mul(sfr_mat_mul(sfrMatModel, sfrMatView), sfrMatProj);
 
     sfr__process_and_bin_triangle(
-        &matMVP, &sfrMatModel, &sfrState.matNormal,
+        &matMVP, &sfrState.matNormal,
         (f32[3]){ax, ay, az}, (f32[2]){au, av}, NULL, (f32[3]){anx, any, anz}, NULL,
         (f32[3]){bx, by, bz}, (f32[2]){bu, bv}, NULL, (f32[3]){bnx, bny, bnz}, NULL,
         (f32[3]){cx, cy, cz}, (f32[2]){cu, cv}, NULL, (f32[3]){cnx, cny, cnz}, NULL,
@@ -4273,6 +4391,7 @@ SFR_FUNC void sfr_shadow_pass_begin(
     // rebuild stabilized matrices
     lightPos = sfr_vec_sub(snappedCenter, sfr_vec_mul(lightDir, distance));
     sfrMatView = sfr_mat_view_look_at(lightPos, snappedCenter, up);
+    sfrState.matInvView = sfr_mat_qinv(sfrMatView);
     sfrMatProj = sfr_mat_ortho(-orthoSize, orthoSize, -orthoSize, orthoSize, 1.f, zFar);
 
     // cache the data for pass 2
@@ -4443,6 +4562,7 @@ SFR_FUNC void sfr_look_at(f32 x, f32 y, f32 z) {
     const sfrvec up = SFR__V(0.f, 1.f, 0.f, 1.f);
     const sfrmat view = sfr_mat_model_look_at(sfrCamPos, SFR__V(x, y, z, 1.f), up);
     sfrMatView = sfr_mat_qinv(view);
+    sfrState.matInvView = view;
 }
 
 SFR_FUNC void sfr_clear(u32 clearCol) {
@@ -5181,7 +5301,6 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrMaterial* mat) {
             job->tangents = mesh->tangents ? &mesh->tangents[i * 12] : NULL;
             job->matNormal = sfrState.matNormal;
             job->matMVP = matMVP;
-            job->matModel = sfrMatModel;
             job->col = col;
             job->mat = mat;
             job->startTriangle = i;
@@ -5547,7 +5666,9 @@ SFR_FUNC void sfr_set_camera(f32 x, f32 y, f32 z, f32 yaw, f32 pitch, f32 roll) 
     sfrCamTarget = sfr_mat_mul_vec(rotY, sfrCamTarget);
     sfrCamTarget = sfr_vec_add(sfrCamPos, sfrCamTarget);
 
-    sfrMatView = sfr_mat_qinv(sfr_mat_model_look_at(sfrCamPos, sfrCamTarget, sfrCamUp));
+    const sfrmat view = sfr_mat_model_look_at(sfrCamPos, sfrCamTarget, sfrCamUp);
+    sfrMatView = sfr_mat_qinv(view);
+    sfrState.matInvView = view;
 }
 
 SFR_FUNC void sfr_set_fov(f32 fovDeg) {
@@ -7248,7 +7369,7 @@ static void* sfr__worker_thread_func(void* arg) {
                 const i32 uvInd = i * 6;
                 const i32 tanInd = i * 12;
                 sfr__process_and_bin_triangle(
-                    &job->matMVP, &job->matModel, &job->matNormal,
+                    &job->matMVP, &job->matNormal,
                     
                     &job->tris[triInd + 0],
                     job->uvs ? &job->uvs[uvInd + 0] : NULL,
