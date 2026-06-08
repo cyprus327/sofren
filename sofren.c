@@ -1,6 +1,3 @@
-#define SFR_IMPL
-// #define SFR_NO_SIMD
-
 #ifndef SFR_H
 #define SFR_H
 
@@ -453,26 +450,42 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
         #define sfrvf_setr(e0, e1, e2, e3) (float32x4_t){e0, e1, e2, e3}
         #define sfrvi_setr(e0, e1, e2, e3) (int32x4_t){e0, e1, e2, e3}
 
-        // NEON lacks hardware gather, emulate using scalar loads via statement expressions
-        // AVX masks check the highest bit (sign bit), so check & 0x80000000
         #define sfrvi_gather(src, base, vindex, mask, scale) ({ \
-            const uint32x4_t m = vreinterpretq_u32_s32(mask); \
-            int32x4_t res = (src); \
-            if (vgetq_lane_u32(m, 0) & 0x80000000) res = vsetq_lane_s32(*(const int*)((const char*)(base) + vgetq_lane_s32((vindex), 0) * (scale)), res, 0); \
-            if (vgetq_lane_u32(m, 1) & 0x80000000) res = vsetq_lane_s32(*(const int*)((const char*)(base) + vgetq_lane_s32((vindex), 1) * (scale)), res, 1); \
-            if (vgetq_lane_u32(m, 2) & 0x80000000) res = vsetq_lane_s32(*(const int*)((const char*)(base) + vgetq_lane_s32((vindex), 2) * (scale)), res, 2); \
-            if (vgetq_lane_u32(m, 3) & 0x80000000) res = vsetq_lane_s32(*(const int*)((const char*)(base) + vgetq_lane_s32((vindex), 3) * (scale)), res, 3); \
-            res; \
+            SFR_ALIGNED(16) int32_t ind[4]; \
+            SFR_ALIGNED(16) uint32_t m[4];  \
+            SFR_ALIGNED(16) int32_t out[4]; \
+            \
+            vst1q_s32(ind, (vindex)); \
+            vst1q_u32(m, vreinterpretq_u32_s32(mask)); \
+            vst1q_s32(out, (src)); \
+            \
+            const char* b = (const char*)(base); \
+            \
+            if (m[0] & 0x80000000) out[0] = *(const int32_t*)(b + ind[0] * (scale)); \
+            if (m[1] & 0x80000000) out[1] = *(const int32_t*)(b + ind[1] * (scale)); \
+            if (m[2] & 0x80000000) out[2] = *(const int32_t*)(b + ind[2] * (scale)); \
+            if (m[3] & 0x80000000) out[3] = *(const int32_t*)(b + ind[3] * (scale)); \
+            \
+            vld1q_s32(out); \
         })
 
         #define sfrvf_gather(src, base, vindex, mask, scale) ({ \
-            const uint32x4_t m = vreinterpretq_u32_f32(mask); \
-            float32x4_t res = (src); \
-            if (vgetq_lane_u32(m, 0) & 0x80000000) res = vsetq_lane_f32(*(const float*)((const char*)(base) + vgetq_lane_s32((vindex), 0) * (scale)), res, 0); \
-            if (vgetq_lane_u32(m, 1) & 0x80000000) res = vsetq_lane_f32(*(const float*)((const char*)(base) + vgetq_lane_s32((vindex), 1) * (scale)), res, 1); \
-            if (vgetq_lane_u32(m, 2) & 0x80000000) res = vsetq_lane_f32(*(const float*)((const char*)(base) + vgetq_lane_s32((vindex), 2) * (scale)), res, 2); \
-            if (vgetq_lane_u32(m, 3) & 0x80000000) res = vsetq_lane_f32(*(const float*)((const char*)(base) + vgetq_lane_s32((vindex), 3) * (scale)), res, 3); \
-            res; \
+            SFR_ALIGNED(16) int32_t ind[4]; \
+            SFR_ALIGNED(16) uint32_t m[4];  \
+            SFR_ALIGNED(16) float out[4];   \
+            \
+            vst1q_s32(ind, (vindex)); \
+            vst1q_u32(m, vreinterpretq_u32_f32(mask)); \
+            vst1q_f32(out, (src)); \
+            \
+            const char* b = (const char*)(base); \
+            \
+            if (m[0] & 0x80000000) out[0] = *(const float*)(b + ind[0] * (scale)); \
+            if (m[1] & 0x80000000) out[1] = *(const float*)(b + ind[1] * (scale)); \
+            if (m[2] & 0x80000000) out[2] = *(const float*)(b + ind[2] * (scale)); \
+            if (m[3] & 0x80000000) out[3] = *(const float*)(b + ind[3] * (scale)); \
+            \
+            vld1q_f32(out); \
         })
 
         #define sfrvi_slli(a, imm) vshlq_n_s32((a), (imm))
@@ -631,10 +644,16 @@ typedef struct sfrtex {
     u32* quadG;
     u32* quadB;
 
-    u32* mipPixels[14]; // levels 1-14, up to 16k x 16k textures
-    i32 mipW[14];
-    i32 mipH[14];
-    i32 mipLevels; // total levels including base, i.e. 1 => no extra levels
+    // index 0 is base texture, index 1-11 are mipmaps
+    u32* allPixels[14];
+    i32 allW[14];
+    i32 allH[14];
+    
+    i32 blocksW[14];     // how many 4x4 blocks across
+    i32 strideShift[14]; // if POT, log2(blocksW) to avoid integer multiplication
+
+    i32 mipLevels; // total levels including base
+    u8 isPot;      // power of 2 flag
 } SfrTexture;
 
 typedef struct sfrMaterial {
@@ -842,6 +861,34 @@ struct sfrTexVert {
     f32 viewZ;       // z in view space for perspective correction
 };
 
+struct sfrGeomTri {
+    const f32* posA;
+    const f32* uvA;
+    const f32* lmUvA;
+    const f32* normA;
+    const f32* tanA;
+    
+    const f32* posB;
+    const f32* uvB;
+    const f32* lmUvB;
+    const f32* normB;
+    const f32* tanB;
+    
+    const f32* posC;
+    const f32* uvC;
+    const f32* lmUvC;
+    const f32* normC;
+    const f32* tanC;
+    
+    u32 col;
+    const SfrMaterial* mat;
+    
+    struct sfrGeomClipBufs {
+        struct sfrTexVert clipTris[16][3];
+        struct sfrTexVert buffer[16][3];
+    }* clipBuf;
+};
+
 // only used during rasterization
 struct sfrRasterBin {
     i32 shadeId;
@@ -899,6 +946,14 @@ struct sfrShadeBin {
     const SfrMaterial* mat;
 
     enum sfrRenderPath renderPathInd;
+};
+
+// structs to easily return the 6 packed/unpacked UV floats
+struct sfrPackedUvs {
+    f16 u0, v0, u1, v1, u2, v2;
+};
+struct sfrUnpackedUvs {
+    f32 u0, v0, u1, v1, u2, v2;
 };
 
 struct sfrTile {
@@ -984,7 +1039,7 @@ struct sfrTile {
         SfrSemaphore rasterStartSem;
         SfrSemaphore rasterDoneSem;
     };
-#endif
+#endif // SFR_MULTITHREADED
 
 struct sfrState {
     u8 lightingEnabled;
@@ -1013,6 +1068,7 @@ struct sfrState {
     sfrmat savedMatLightVP;
 
     enum {
+        SFR_RENDERMODE_UNLIT,
         SFR_RENDERMODE_SHADED,
         SFR_RENDERMODE_NORMALS,
         SFR_RENDERMODE_FRAGPOS,
@@ -1913,13 +1969,13 @@ static inline void sfr__unpack_tangent(u32 packed, f32* x, f32* y, f32* z, f32* 
 
 // uv packing (half floats)
 static inline f16 sfr__pack_uv(f32 val) {
-#if defined(__AVX2__) && defined(SDLFJHGKJRHFAJF)
+#if defined(__AVX2__) && !defined(SFR_NO_SIMD)
     __m128 v = _mm_set_ss(val);
     // _MM_FROUND_TO_NEARE_INT is 0
     __m128i h = _mm_cvtps_ph(v, 0); 
     return (f16)_mm_extract_epi16(h, 0);
 
-#elif defined(__ARM_NEON)
+#elif defined(__ARM_NEON) && !defined(SFR_NO_SIMD)
     // GCC/Clang ARM extension for hardware half float conversion
     __fp16 hwHalf = (__fp16)val;
     
@@ -1960,12 +2016,12 @@ static inline f16 sfr__pack_uv(f32 val) {
 #endif
 }
 static inline f32 sfr__unpack_uv(f16 val) {
-#if defined(__AVX2__) && defined(SDLFJHGKJRHFAJF)
+#if defined(__AVX2__) && !defined(SFR_NO_SIMD)
     __m128i h = _mm_insert_epi16(_mm_setzero_si128(), val, 0);
     __m128 v = _mm_cvtph_ps(h);
     return _mm_cvtss_f32(v);
 
-#elif defined(__ARM_NEON)
+#elif defined(__ARM_NEON) && !defined(SFR_NO_SIMD)
     union { f16 i; __fp16 f; } u;
     u.i = val;
     return (f32)u.f;
@@ -1999,6 +2055,119 @@ static inline f32 sfr__unpack_uv(f16 val) {
     
     return v.f;
 #endif
+}
+
+static inline struct sfrPackedUvs sfr__batch_pack_uvs(f32 u0, f32 v0, f32 u1, f32 v1, f32 u2, f32 v2) {
+    struct sfrPackedUvs out;
+
+    // pack into a contiguous 256 bit aligned block, last two are junk padding
+    SFR_ALIGNED(32) f32 unpacked[8] = { u0, v0, u1, v1, u2, v2, 0.f, 0.f };
+
+#if defined(__AVX2__) && !defined(SFR_NO_SIMD)
+    // load the 8 full floats and convert them into 8 half floats
+    const __m256 v = _mm256_load_ps(unpacked);
+    // 0 = _MM_FROUND_TO_NEAREST_INT (round to nearest even)
+    const __m128i h = _mm256_cvtps_ph(v, 0); 
+    
+    // store back to an f16 array to extract safely without scalar instructions
+    SFR_ALIGNED(16) f16 packed[8];
+    _mm_store_si128((__m128i*)packed, h);
+    
+    out.u0 = packed[0];
+    out.v0 = packed[1];
+    out.u1 = packed[2];
+    out.v1 = packed[3];
+    out.u2 = packed[4];
+    out.v2 = packed[5];
+
+#elif defined(__ARM_NEON) && !defined(SFR_NO_SIMD)
+    // load 4 floats at a time
+    const float32x4_t f0 = vld1q_f32(&unpacked[0]);
+    const float32x4_t f1 = vld1q_f32(&unpacked[4]);
+
+    // convert to half floats
+    const float16x4_t h0 = vcvt_f16_f32(f0);
+    const float16x4_t h1 = vcvt_f16_f32(f1);
+
+    // store them sequentially
+    SFR_ALIGNED(16) f16 packed[8];
+    vst1_f16(&packed[0], h0);
+    vst1_f16(&packed[4], h1);
+
+    out.u0 = packed[0];
+    out.v0 = packed[1];
+    out.u1 = packed[2];
+    out.v1 = packed[3];
+    out.u2 = packed[4];
+    out.v2 = packed[5];
+
+#else
+    // fallback to one at a time
+    out.u0 = sfr__pack_uv(u0);
+    out.v0 = sfr__pack_uv(v0);
+    out.u1 = sfr__pack_uv(u1);
+    out.v1 = sfr__pack_uv(v1);
+    out.u2 = sfr__pack_uv(u2);
+    out.v2 = sfr__pack_uv(v2);
+
+#endif
+
+    return out;
+}
+static inline struct sfrUnpackedUvs sfr__batch_unpack_uvs(f16 u0, f16 v0, f16 u1, f16 v1, f16 u2, f16 v2) {
+    struct sfrUnpackedUvs out;
+
+    // pack into a contiguous 128 bit aligned block (8x f16)
+    // last two are junk padding
+    SFR_ALIGNED(16) f16 packed[8] = { u0, v0, u1, v1, u2, v2, 0.f, 0.f };
+
+#if defined(__AVX2__) && !defined(SFR_NO_SIMD)
+    // load the block and convert all 8 half floats into 8 full floats
+    const __m128i h = _mm_load_si128((const __m128i*)packed);
+    const __m256 v = _mm256_cvtph_ps(h);
+    
+    // store back to a float array to extract safely without scalar instructions
+    SFR_ALIGNED(32) f32 unpacked[8];
+    _mm256_store_ps(unpacked, v);
+    
+    out.u0 = unpacked[0];
+    out.v0 = unpacked[1];
+    out.u1 = unpacked[2];
+    out.v1 = unpacked[3];
+    out.u2 = unpacked[4];
+    out.v2 = unpacked[5];
+
+#elif defined(__ARM_NEON) && !defined(SFR_NO_SIMD)
+    // load 4 at a time
+    const float16x4_t h0 = vld1_f16(&packed[0]);
+    const float16x4_t h1 = vld1_f16(&packed[4]);
+
+    const float32x4_t f0 = vcvt_f32_f16(h0);
+    const float32x4_t f1 = vcvt_f32_f16(h1);
+
+    SFR_ALIGNED(16) f32 unpacked[8];
+    vst1q_f32(&unpacked[0], f0);
+    vst1q_f32(&unpacked[4], f1);
+
+    out.u0 = unpacked[0];
+    out.v0 = unpacked[1];
+    out.u1 = unpacked[2];
+    out.v1 = unpacked[3];
+    out.u2 = unpacked[4];
+    out.v2 = unpacked[5];
+
+#else
+    // fallback to one at a time
+    out.u0 = sfr__unpack_uv(u0);
+    out.v0 = sfr__unpack_uv(v0);
+    out.u1 = sfr__unpack_uv(u1);
+    out.v1 = sfr__unpack_uv(v1);
+    out.u2 = sfr__unpack_uv(u2);
+    out.v2 = sfr__unpack_uv(v2);
+
+#endif
+
+    return out;
 }
 
 static inline void sfr__mesh_swap_tri(SfrMesh* mesh, i32 a, i32 b) {
@@ -2040,7 +2209,27 @@ static inline void sfr__mesh_swap_tri(SfrMesh* mesh, i32 a, i32 b) {
     }
 }
 
-static void sfr__compute_mesh_tangents(SfrMesh* mesh) {
+static void sfr__mesh_ensure_channels(SfrMesh* mesh) {
+    const i32 vertexCount = mesh->vertCount / 3;
+
+    if (!mesh->uvs) {
+        SFR__MALLOC(mesh->uvs, sizeof(f32) * vertexCount * 2);
+    }
+
+    if (!mesh->lmUvs) {
+        SFR__MALLOC(mesh->lmUvs, sizeof(f32) * vertexCount * 2);
+    }
+
+    if (!mesh->normals) {
+        SFR__MALLOC(mesh->normals, sizeof(f32) * vertexCount * 3);
+    }
+
+    if (!mesh->tangents) {
+        SFR__MALLOC(mesh->tangents, sizeof(f32) * vertexCount * 4);
+    }
+}
+
+static void sfr__mesh_compute_tangents(SfrMesh* mesh) {
     if (!mesh->uvs || !mesh->normals) {
         return;
     }
@@ -2048,7 +2237,6 @@ static void sfr__compute_mesh_tangents(SfrMesh* mesh) {
     const i32 vertexCount = mesh->vertCount / 3;
     if (!mesh->tangents) {
         SFR__MALLOC(mesh->tangents, sizeof(f32) * vertexCount * 4);
-        sfr_memset(mesh->tangents, 0, sizeof(f32) * vertexCount * 4);
     }
 
     // arrays to accumulate tangents and bitangents before orthonormalization
@@ -2256,6 +2444,10 @@ static inline enum sfrRenderPath sfr__get_render_path(const SfrMaterial* mat) {
     const u8 hasTex = (mat && NULL != mat->albedoTex);
     const u8 hasPbr = (hasTex && NULL != mat->metallicRoughnessTex);
     const u8 hasShadows = (sfrState.activeShadowmap && NULL != sfrState.activeShadowmap->depth);
+
+    if (SFR_RENDERMODE_UNLIT == sfrState.renderMode) {
+        return hasTex ? SFR_PATH_UNLIT_TEX : SFR_PATH_UNLIT_COLOR;
+    }
 
     if (sfrState.activeLightmap) {
         if (hasShadows) {
@@ -2802,43 +2994,19 @@ static void sfr__bin_triangle(
 #endif
 }
 
-static void sfr__process_and_bin_triangle(
-    const sfrmat* matMVP, const sfrmat* matNormal,
-    const f32* posA, const f32* uvA, const f32* lmUvA, const f32* normA, const f32* tanA,
-    const f32* posB, const f32* uvB, const f32* lmUvB, const f32* normB, const f32* tanB,
-    const f32* posC, const f32* uvC, const f32* lmUvC, const f32* normC, const f32* tanC,
-    u32 col, const SfrMaterial* mat
+static inline void sfr__process_and_bin_triangle(
+    const sfrmat* restrict matMVP, const sfrmat* restrict matNormal,
+    const struct sfrGeomTri* gt
 ) {
-    const sfrvec ap = SFR__V(posA[0], posA[1], posA[2], 1.f);
-    const sfrvec bp = SFR__V(posB[0], posB[1], posB[2], 1.f);
-    const sfrvec cp = SFR__V(posC[0], posC[1], posC[2], 1.f);
+    const sfrvec ap = SFR__V(gt->posA[0], gt->posA[1], gt->posA[2], 1.f);
+    const sfrvec bp = SFR__V(gt->posB[0], gt->posB[1], gt->posB[2], 1.f);
+    const sfrvec cp = SFR__V(gt->posC[0], gt->posC[1], gt->posC[2], 1.f);
 
     const sfrvec aClip = sfr_mat_mul_vec(*matMVP, ap);
     const sfrvec bClip = sfr_mat_mul_vec(*matMVP, bp);
     const sfrvec cClip = sfr_mat_mul_vec(*matMVP, cp);
 
-    // transform normals
-    const sfrvec na = sfr_mat_mul_vec(*matNormal, SFR__V(normA[0], normA[1], normA[2], 0.f));
-    const sfrvec nb = sfr_mat_mul_vec(*matNormal, SFR__V(normB[0], normB[1], normB[2], 0.f));
-    const sfrvec nc = sfr_mat_mul_vec(*matNormal, SFR__V(normC[0], normC[1], normC[2], 0.f));
-
-    // transform tangents and preserve w
-    sfrvec ta = {0}, tb = {0}, tc = {0};
-    if (tanA) { ta = sfr_mat_mul_vec(*matNormal, SFR__V(tanA[0], tanA[1], tanA[2], 0.f)); ta.w = tanA[3]; }
-    if (tanB) { tb = sfr_mat_mul_vec(*matNormal, SFR__V(tanB[0], tanB[1], tanB[2], 0.f)); tb.w = tanB[3]; }
-    if (tanC) { tc = sfr_mat_mul_vec(*matNormal, SFR__V(tanC[0], tanC[1], tanC[2], 0.f)); tc.w = tanC[3]; }
-
-    // extract uvs
-    const f32 uA = uvA ? uvA[0] : 0.f, vA = uvA ? uvA[1] : 0.f;
-    const f32 uB = uvB ? uvB[0] : 0.f, vB = uvB ? uvB[1] : 0.f;
-    const f32 uC = uvC ? uvC[0] : 0.f, vC = uvC ? uvC[1] : 0.f;
-
-    // extract lightmap uvs
-    const f32 luA = lmUvA ? lmUvA[0] : 0.f, lvA = lmUvA ? lmUvA[1] : 0.f;
-    const f32 luB = lmUvB ? lmUvB[0] : 0.f, lvB = lmUvB ? lmUvB[1] : 0.f;
-    const f32 luC = lmUvC ? lmUvC[0] : 0.f, lvC = lmUvC ? lmUvC[1] : 0.f;
-
-    const SfrMaterial* matToUse = mat ? mat : &sfrState.baseMat;
+    const SfrMaterial* matToUse = gt->mat ? gt->mat : &sfrState.baseMat;
 
     // if (aClip.w > SFR_EPSILON && bClip.w > SFR_EPSILON && cClip.w > SFR_EPSILON) {
     //  doesn't work because when only checking W > 0 triangles that intersect the near plane (clipZ < 0)
@@ -2846,10 +3014,22 @@ static void sfr__process_and_bin_triangle(
     //  camera eye (W > 0), but Z >= 0 enforces the near plane, if a triangle intersects the near plane
     //  it fails this check and is routed to the slow path, and Z <= W enforces the far plane, with
     //  X and Y intentionally omitted because they're already hanlded during the guard band clipping
-    if (aClip.z >= 0.f && aClip.z <= aClip.w && 
-        bClip.z >= 0.f && bClip.z <= bClip.w && 
-        cClip.z >= 0.f && cClip.z <= cClip.w
+    if ((aClip.z >= 0.f) & (aClip.z <= aClip.w) &
+        (bClip.z >= 0.f) & (bClip.z <= bClip.w) &
+        (cClip.z >= 0.f) & (cClip.z <= cClip.w)
     ) {
+        #ifndef SFR_NO_CULLING
+            // homogeneous backface culling before the perspective divide
+            const f32 homoArea = 
+                (bClip.x * aClip.w - aClip.x * bClip.w) * (cClip.y * aClip.w - aClip.y * cClip.w) - 
+                (bClip.y * aClip.w - aClip.y * bClip.w) * (cClip.x * aClip.w - aClip.x * cClip.w);
+
+            if (homoArea >= 0.f) {
+                return;
+            }
+        #endif
+
+        // Now we only pay for the division if the triangle is facing the camera!
         const f32 aInvW = 1.f / aClip.w, bInvW = 1.f / bClip.w, cInvW = 1.f / cClip.w;
 
         const f32 sax =  (aClip.x * aInvW + 1.f) * sfrState.halfWidth;
@@ -2861,13 +3041,6 @@ static void sfr__process_and_bin_triangle(
 
         // screen space culling
         const f32 area = (sbx - sax) * (scy - say) - (sby - say) * (scx - sax);
-
-        #ifndef SFR_NO_CULLING
-            // backface culling
-            if (area <= 0.f) {
-                return;
-            }
-        #endif
 
         // small triangle culling
         #ifndef SFR_NO_SMALL_CULLING
@@ -2886,6 +3059,17 @@ static void sfr__process_and_bin_triangle(
             return;
         }
 
+        // transform normals
+        const sfrvec na = sfr_mat_mul_vec(*matNormal, SFR__V(gt->normA[0], gt->normA[1], gt->normA[2], 0.f));
+        const sfrvec nb = sfr_mat_mul_vec(*matNormal, SFR__V(gt->normB[0], gt->normB[1], gt->normB[2], 0.f));
+        const sfrvec nc = sfr_mat_mul_vec(*matNormal, SFR__V(gt->normC[0], gt->normC[1], gt->normC[2], 0.f));
+
+        // transform tangents and preserve w
+        sfrvec ta = {0}, tb = {0}, tc = {0};
+        ta = sfr_mat_mul_vec(*matNormal, SFR__V(gt->tanA[0], gt->tanA[1], gt->tanA[2], 0.f)); ta.w = gt->tanA[3];
+        tb = sfr_mat_mul_vec(*matNormal, SFR__V(gt->tanB[0], gt->tanB[1], gt->tanB[2], 0.f)); tb.w = gt->tanB[3];
+        tc = sfr_mat_mul_vec(*matNormal, SFR__V(gt->tanC[0], gt->tanC[1], gt->tanC[2], 0.f)); tc.w = gt->tanC[3];
+
         // if projection matrix m[3][3] is 1, it is orthogrpahic
         f32 aDepth = aInvW, bDepth = bInvW, cDepth = cInvW;
         if (1.f == sfrMatProj.m[3][3]) {
@@ -2894,55 +3078,68 @@ static void sfr__process_and_bin_triangle(
             cDepth = 1.f - cClip.z;
         }
 
+        const struct sfrPackedUvs luvs = sfr__batch_pack_uvs(
+            gt->lmUvA[0], gt->lmUvA[1], gt->lmUvB[0], gt->lmUvB[1], gt->lmUvC[0], gt->lmUvC[1]);
+
         const struct sfrVertexData v0 = {
             .invZ = aDepth,
-            .u = uA, .v = vA,
-            .lu = sfr__pack_uv(luA), .lv = sfr__pack_uv(lvA),
+            .u = gt->uvA[0], .v = gt->uvA[1],
+            .lu = luvs.u0, .lv = luvs.v0,
             .n = sfr__pack_vec3(na.x, na.y, na.z),
             .t = sfr__pack_tangent(ta.x, ta.y, ta.z, ta.w)
         };
         const struct sfrVertexData v1 = {
             .invZ = bDepth,
-            .u = uB, .v = vB,
-            .lu = sfr__pack_uv(luB), .lv = sfr__pack_uv(lvB),
+            .u = gt->uvB[0], .v = gt->uvB[1],
+            .lu = luvs.u1, .lv = luvs.v1,
             .n = sfr__pack_vec3(nb.x, nb.y, nb.z),
             .t = sfr__pack_tangent(tb.x, tb.y, tb.z, tb.w)
         };
         const struct sfrVertexData v2 = {
             .invZ = cDepth,
-            .u = uC, .v = vC,
-            .lu = sfr__pack_uv(luC), .lv = sfr__pack_uv(lvC),
+            .u = gt->uvC[0], .v = gt->uvC[1],
+            .lu = luvs.u2, .lv = luvs.v2,
             .n = sfr__pack_vec3(nc.x, nc.y, nc.z),
             .t = sfr__pack_tangent(tc.x, tc.y, tc.z, tc.w)
         };
 
-        sfr__bin_triangle(sax, say, sbx, sby, scx, scy, &v0, &v1, &v2, col, matToUse);
+        sfr__bin_triangle(sax, say, sbx, sby, scx, scy, &v0, &v1, &v2, gt->col, matToUse);
         return;
     }
 
     // slow path, intersects near plane and needs clipping
-    struct sfrTexVert clipTris[16][3];
-    struct sfrTexVert (*input)[3] = clipTris;
+    struct sfrTexVert (*input)[3] = gt->clipBuf->clipTris;
     i32 inputCount = 1;
 
-    clipTris[0][0] = (struct sfrTexVert){
+    // transform normals
+    const sfrvec na = sfr_mat_mul_vec(*matNormal, SFR__V(gt->normA[0], gt->normA[1], gt->normA[2], 0.f));
+    const sfrvec nb = sfr_mat_mul_vec(*matNormal, SFR__V(gt->normB[0], gt->normB[1], gt->normB[2], 0.f));
+    const sfrvec nc = sfr_mat_mul_vec(*matNormal, SFR__V(gt->normC[0], gt->normC[1], gt->normC[2], 0.f));
+
+    // transform tangents and preserve w
+    sfrvec ta = {0}, tb = {0}, tc = {0};
+    ta = sfr_mat_mul_vec(*matNormal, SFR__V(gt->tanA[0], gt->tanA[1], gt->tanA[2], 0.f)); ta.w = gt->tanA[3];
+    tb = sfr_mat_mul_vec(*matNormal, SFR__V(gt->tanB[0], gt->tanB[1], gt->tanB[2], 0.f)); tb.w = gt->tanB[3];
+    tc = sfr_mat_mul_vec(*matNormal, SFR__V(gt->tanC[0], gt->tanC[1], gt->tanC[2], 0.f)); tc.w = gt->tanC[3];
+
+    input[0][0] = (struct sfrTexVert){
         .pos = aClip,
-        .u = uA, .v = vA,
-        .lu = luA, .lv = lvA,
+        .u = gt->uvA[0], .v = gt->uvA[1],
+        .lu = gt->lmUvA[0], .lv = gt->lmUvA[1],
         .normal = na, .tangent = ta,
         .viewZ = aClip.w
     };
-    clipTris[0][1] = (struct sfrTexVert){
+    input[0][1] = (struct sfrTexVert){
         .pos = bClip,
-        .u = uB, .v = vB,
-        .lu = luB, .lv = lvB,
+        .u = gt->uvB[0], .v = gt->uvB[1],
+        .lu = gt->lmUvB[0], .lv = gt->lmUvB[1],
         .normal = nb, .tangent = tb,
         .viewZ = bClip.w
     };
-    clipTris[0][2] = (struct sfrTexVert){
+    input[0][2] = (struct sfrTexVert){
         .pos = cClip,
-        .u = uC, .v = vC,
-        .lu = luC, .lv = lvC,
+        .u = gt->uvC[0], .v = gt->uvC[1],
+        .lu = gt->lmUvC[0], .lv = gt->lmUvC[1],
         .normal = nc, .tangent = tc,
         .viewZ = cClip.w
     };
@@ -2957,8 +3154,7 @@ static void sfr__process_and_bin_triangle(
         SFR__V(0.f, -1.f, 0.f, 1.f)  // top
     };
 
-    struct sfrTexVert buffer[SFR_ARRLEN(clipTris)][3];
-    struct sfrTexVert (*output)[3] = buffer;
+    struct sfrTexVert (*output)[3] = gt->clipBuf->buffer;
 
     // process each clipping plane
     for (i32 p = 0; p < 6; p += 1) {
@@ -3014,24 +3210,27 @@ static void sfr__process_and_bin_triangle(
             cDepth = 1.f - cClip.z;
         }
 
+        const struct sfrPackedUvs luvs = sfr__batch_pack_uvs(
+            screen[0].lu, screen[0].lv, screen[1].lu, screen[1].lv, screen[2].lu, screen[2].lv);
+
         const struct sfrVertexData v0 = {
             .invZ = aDepth,
             .u = screen[0].u, .v = screen[0].v,
-            .lu = sfr__pack_uv(screen[0].lu), .lv = sfr__pack_uv(screen[0].lv),
+            .lu = luvs.u0, .lv = luvs.v0,
             .n = sfr__pack_vec3(screen[0].normal.x, screen[0].normal.y, screen[0].normal.z),
             .t = sfr__pack_tangent(screen[0].tangent.x, screen[0].tangent.y, screen[0].tangent.z, screen[0].tangent.w)
         };
         const struct sfrVertexData v1 = {
             .invZ = bDepth,
             .u = screen[1].u, .v = screen[1].v,
-            .lu = sfr__pack_uv(screen[1].lu), .lv = sfr__pack_uv(screen[1].lv),
+            .lu = luvs.u1, .lv = luvs.v1,
             .n = sfr__pack_vec3(screen[1].normal.x, screen[1].normal.y, screen[1].normal.z),
             .t = sfr__pack_tangent(screen[1].tangent.x, screen[1].tangent.y, screen[1].tangent.z, screen[1].tangent.w)
         };
         const struct sfrVertexData v2 = {
             .invZ = cDepth,
             .u = screen[2].u, .v = screen[2].v,
-            .lu = sfr__pack_uv(screen[2].lu), .lv = sfr__pack_uv(screen[2].lv),
+            .lu = luvs.u2, .lv = luvs.v2,
             .n = sfr__pack_vec3(screen[2].normal.x, screen[2].normal.y, screen[2].normal.z),
             .t = sfr__pack_tangent(screen[2].tangent.x, screen[2].tangent.y, screen[2].tangent.z, screen[2].tangent.w)
         };
@@ -3040,15 +3239,12 @@ static void sfr__process_and_bin_triangle(
             screen[0].pos.x, screen[0].pos.y,
             screen[1].pos.x, screen[1].pos.y,
             screen[2].pos.x, screen[2].pos.y,
-            &v0, &v1, &v2, col, matToUse
+            &v0, &v1, &v2, gt->col, matToUse
         );
     }
 }
 
-static inline void sfr__get_bins(
-    u32 id,
-    const struct sfrRasterBin** outRasterBin, const struct sfrShadeBin** outShadeBin
-) {
+static inline void sfr__get_bins(u32 id, const struct sfrRasterBin** outRasterBin, const struct sfrShadeBin** outShadeBin) {
     #ifdef SFR_MULTITHREADED
         // unpack thread index (high 8 bits) and local bin index (low 24 bits)
         const i32 threadInd = (id >> 24) & 0xFF;
@@ -3180,9 +3376,14 @@ static inline void sfr__process_geometry_simd(
     const vf32 vv1u = sfrvf_set1(sBin->v1.u), vv1v = sfrvf_set1(sBin->v1.v);
     const vf32 vv2u = sfrvf_set1(sBin->v2.u), vv2v = sfrvf_set1(sBin->v2.v);
 
-    const vf32 v0lu = sfrvf_set1(sfr__unpack_uv(sBin->v0.lu)), v0lv = sfrvf_set1(sfr__unpack_uv(sBin->v0.lv));
-    const vf32 v1lu = sfrvf_set1(sfr__unpack_uv(sBin->v1.lu)), v1lv = sfrvf_set1(sfr__unpack_uv(sBin->v1.lv));
-    const vf32 v2lu = sfrvf_set1(sfr__unpack_uv(sBin->v2.lu)), v2lv = sfrvf_set1(sfr__unpack_uv(sBin->v2.lv));
+    const struct sfrUnpackedUvs luvs = sfr__batch_unpack_uvs(
+        sBin->v0.lu, sBin->v0.lv,
+        sBin->v1.lu, sBin->v1.lv,
+        sBin->v2.lu, sBin->v2.lv
+    );
+    const vf32 v0lu = sfrvf_set1(luvs.u0), v0lv = sfrvf_set1(luvs.v0);
+    const vf32 v1lu = sfrvf_set1(luvs.u1), v1lv = sfrvf_set1(luvs.v1);
+    const vf32 v2lu = sfrvf_set1(luvs.u2), v2lv = sfrvf_set1(luvs.v2);
 
     // interpolate UVs directly into fragment struct
     fd->cu = sfrvf_fmadd(pW0, vv0u, sfrvf_fmadd(pW1, vv1u, sfrvf_mul(pW2, vv2u)));
@@ -3368,27 +3569,54 @@ static inline void sfr__sample_material_tex_simd(
     }
 
     const SfrTexture* tex = mat->albedoTex;
-    const u32* const mipPixels = (0 == aLod) ? tex->pixels : tex->mipPixels[aLod - 1];
-    const i32 currW = (0 == aLod) ? tex->w : tex->mipW[aLod - 1];
-    const i32 currH = (0 == aLod) ? tex->h : tex->mipH[aLod - 1];
-    const u8 isPot = (0 == (tex->w & (tex->w - 1))) && (0 == (tex->h & (tex->h - 1)));
+    const u32* const mipPixels = tex->allPixels[aLod];
+    const i32 currW = tex->allW[aLod];
+    const i32 currH = tex->allH[aLod];
 
-    vi32 vatx, vaty;
     vf32 vau = sfrvf_mul(fd->cu, sfrvf_set1((f32)currW));
     vf32 vav = sfrvf_mul(fd->cv, sfrvf_set1((f32)currH));
+    
+    vi32 vatx, vaty;
+    vi32 vTexInds;
 
-    if (isPot) {
+    if (tex->isPot) {
         vatx = sfrvi_and(sfrvi_cvttps(vau), sfrvi_set1(currW - 1));
-        vaty = sfrvi_and(sfrvi_cvttps(vav), sfrvi_set1(currH - 1));
+        vaty = sfrvi_and(sfrvi_cvttps(vav), sfrvi_set1(currW - 1));
+
+        // block coords (x / 4, y / 4)
+        const vi32 vBlockX = sfrvi_srli(vatx, 2);
+        const vi32 vBlockY = sfrvi_srli(vaty, 2);
+        
+        // inner block coords (x % 4, y % 4)
+        const vi32 vInBlockX = sfrvi_and(vatx, sfrvi_set1(3));
+        const vi32 vInBlockY = sfrvi_and(vaty, sfrvi_set1(3));
+
+        // block inds
+        const vi32 vBlockInd = sfrvi_add(sfrvi_slli(vBlockY, tex->strideShift[aLod]), vBlockX);
+        const vi32 vInnerInd = sfrvi_add(sfrvi_slli(vInBlockY, 2), vInBlockX);
+        
+        // final ind
+        vTexInds = sfrvi_add(sfrvi_slli(vBlockInd, 4), vInnerInd);
     } else {
+        // fallback
         vau = sfrvf_mul(sfrvf_sub(fd->cu, sfrvf_floor(fd->cu)), sfrvf_set1((f32)currW));
         vav = sfrvf_mul(sfrvf_sub(fd->cv, sfrvf_floor(fd->cv)), sfrvf_set1((f32)currH));
         vatx = sfrvi_min(sfrvi_cvttps(vau), sfrvi_set1(currW - 1));
         vaty = sfrvi_min(sfrvi_cvttps(vav), sfrvi_set1(currH - 1));
+
+        const vi32 vBlockX = sfrvi_srli(vatx, 2);
+        const vi32 vBlockY = sfrvi_srli(vaty, 2);
+        const vi32 vInBlockX = sfrvi_and(vatx, sfrvi_set1(3));
+        const vi32 vInBlockY = sfrvi_and(vaty, sfrvi_set1(3));
+
+        // must use integer mul for NPOT row striding
+        const vi32 vBlocksW = sfrvi_set1(tex->blocksW[aLod]);
+        const vi32 vBlockInd = sfrvi_add(sfrvi_mullo(vBlockY, vBlocksW), vBlockX);
+        
+        const vi32 vInnerInd = sfrvi_add(sfrvi_slli(vInBlockY, 2), vInBlockX);
+        vTexInds = sfrvi_add(sfrvi_slli(vBlockInd, 4), vInnerInd);
     }
 
-    vi32 vTexInds = sfrvi_add(sfrvi_mullo(vaty, sfrvi_set1(currW)), vatx);
-    
     // only fetch active pixels using the mask passed from the chunk resolver
     vi32 vCol = sfrvi_gather(sfrvi_zero(), (const int*)mipPixels, vTexInds, writeMask, 4);
 
@@ -3401,13 +3629,11 @@ static inline void sfr__sample_material_tex_simd(
 
     if (mat->metallicRoughnessTex) {
         const SfrTexture* mrTex = mat->metallicRoughnessTex;
-        const u32* const mrMipPixels = (0 == aLod) ? mrTex->pixels : mrTex->mipPixels[aLod - 1];
+        const u32* const mrMipPixels = mrTex->allPixels[aLod];
         
         const vi32 vMrCol = sfrvi_gather(sfrvi_zero(), (const int*)mrMipPixels, vTexInds, writeMask, 4);
-
         vf32 vTexRoughness = sfrvf_mul(sfrvf_cvtepi32(sfrvi_and(sfrvi_srli(vMrCol, 8), v0xFF)), vInv255);
         props->roughness = sfrvf_max(sfrvf_set1(0.001f), vTexRoughness);
-
         props->metallic = sfrvf_mul(sfrvf_cvtepi32(sfrvi_and(vMrCol, v0xFF)), vInv255);
     }
 }
@@ -3799,9 +4025,15 @@ static inline void sfr__process_geometry(
     const f32 v0u = sBin->v0.u, v0v = sBin->v0.v;
     const f32 v1u = sBin->v1.u, v1v = sBin->v1.v;
     const f32 v2u = sBin->v2.u, v2v = sBin->v2.v;
-    const f32 v0lu = sfr__unpack_uv(sBin->v0.lu), v0lv = sfr__unpack_uv(sBin->v0.lv);
-    const f32 v1lu = sfr__unpack_uv(sBin->v1.lu), v1lv = sfr__unpack_uv(sBin->v1.lv);
-    const f32 v2lu = sfr__unpack_uv(sBin->v2.lu), v2lv = sfr__unpack_uv(sBin->v2.lv);
+
+    const struct sfrUnpackedUvs luvs = sfr__batch_unpack_uvs(
+        sBin->v0.lu, sBin->v0.lv,
+        sBin->v1.lu, sBin->v1.lv,
+        sBin->v2.lu, sBin->v2.lv
+    );
+    const f32 v0lu = luvs.u0, v0lv = luvs.v0;
+    const f32 v1lu = luvs.u1, v1lv = luvs.v1;
+    const f32 v2lu = luvs.u2, v2lv = luvs.v2;
 
     // interpolate raw attributes directly into fragment data
     fd->cu = pW0 * v0u + pW1 * v1u + pW2 * v2u;
@@ -3926,22 +4158,29 @@ static inline void sfr__sample_material_tex(
     }
 
     const SfrTexture* tex = mat->albedoTex;
-    const i32 texW = tex->w, texH = tex->h;
-    const u8 isPot = (0 == (texW & (texW - 1))) && (0 == (texH & (texH - 1)));
 
     // LOD precalculated
-    const u32* const aMipPixels = (0 == aLod) ? tex->pixels : tex->mipPixels[aLod - 1];
-    const i32 currW = (0 == aLod) ? tex->w : tex->mipW[aLod - 1];
-    const i32 currH = (0 == aLod) ? tex->h : tex->mipH[aLod - 1];
+    const u32* const aMipPixels = tex->allPixels[aLod];
+    const i32 currW = tex->allW[aLod];
+    const i32 currH = tex->allH[aLod];
 
     // sample albedo map
     f32 acu = fd->cu, acv = fd->cv;
     i32 atx, aty;
-    if (isPot) {
+    i32 texInd;
+
+    if (tex->isPot) {
         acu *= (f32)currW;
         acv *= (f32)currH;
         atx = (i32)acu & (currW - 1);
         aty = (i32)acv & (currH - 1);
+        const i32 blockX = atx / 4;
+        const i32 blockY = aty / 4;
+        const i32 inBlockX = atx % 4;
+        const i32 inBlockY = aty % 4;
+        const i32 blockInd = (blockY << tex->strideShift[aLod]) + blockX;
+        const i32 innerInd = inBlockY * 4 + inBlockX;
+        texInd = blockInd * 16 + innerInd;
     } else {
         acu -= sfr_floorf(acu);
         acv -= sfr_floorf(acv);
@@ -3949,9 +4188,17 @@ static inline void sfr__sample_material_tex(
         aty = (i32)(acv * currH);
         if (atx >= currW) atx = currW - 1;
         if (aty >= currH) aty = currH - 1;
+        const i32 blockX = atx / 4;
+        const i32 blockY = aty / 4;
+        const i32 inBlockX = atx % 4;
+        const i32 inBlockY = aty % 4;
+        const i32 blocksW = tex->blocksW[aLod];
+        const i32 blockInd = blockY * blocksW + blockX;
+        const i32 innerInd = inBlockY * 4 + inBlockX;
+        texInd = blockInd * 16 + innerInd;
     }
 
-    const u32 col = aMipPixels[aty * currW + atx];
+    const u32 col = aMipPixels[texInd];
     const f32 i255 = 1.f / 255.f;
     props->albedoR *= (f32)((col >> 16) & 0xFF) * i255;
     props->albedoG *= (f32)((col >> 8)  & 0xFF) * i255;
@@ -3960,12 +4207,12 @@ static inline void sfr__sample_material_tex(
     // assume metallicRoughnessTex and albedoTex have the same dimensions
     if (mat->metallicRoughnessTex) {
         const SfrTexture* mrTex = mat->metallicRoughnessTex;
-        const u32* const mrMipPixels = (0 == aLod) ? mrTex->pixels : mrTex->mipPixels[aLod - 1];
+        const u32* const mrMipPixels = mrTex->allPixels[aLod];
 
         // g = roughness, b = metallic
-        const u32 mrCol = mrMipPixels[aty * currW + atx];
-        props->roughness = sfr_fmaxf(0.001f, (f32)((mrCol >> 8)  & 0xFF) * i255);
-        props->metallic = (f32)((mrCol >> 0)  & 0xFF) * i255;
+        const u32 mrCol = mrMipPixels[texInd];
+        props->roughness = sfr_fmaxf(0.001f, (f32)((mrCol >> 8) & 0xFF) * i255);
+        props->metallic = (f32)((mrCol >> 0) & 0xFF) * i255;
     }
 }
 
@@ -4512,15 +4759,35 @@ static void sfr__triangle_tex_norm(
         sfr__update_normal_mat();
     }
 
+    struct sfrGeomClipBufs clipBuf;
+    struct sfrGeomTri gt = {
+        .posA  = (f32[3]){ax, ay, az},
+        .uvA   = (f32[2]){au, av},
+        .lmUvA = (f32[2]){0.f, 0.f},
+        .normA = (f32[3]){anx, any, anz},
+        .tanA  = (f32[4]){0.f, 0.f, 0.f, 0.f},
+
+        .posB  = (f32[3]){bx, by, bz},
+        .uvB   = (f32[2]){bu, bv},
+        .lmUvB = (f32[2]){0.f, 0.f},
+        .normB = (f32[3]){bnx, bny, bnz},
+        .tanB  = (f32[4]){0.f, 0.f, 0.f, 0.f},
+
+        .posC  = (f32[3]){cx, cy, cz},
+        .uvC   = (f32[2]){cu, cv},
+        .lmUvC = (f32[2]){0.f, 0.f},
+        .normC = (f32[3]){cnx, cny, cnz},
+        .tanC  = (f32[4]){0.f, 0.f, 0.f, 0.f},
+
+        .col = col,
+        .mat = mat,
+
+        .clipBuf = &clipBuf
+    };
+
     const sfrmat matMVP = sfr_mat_mul(sfr_mat_mul(sfrMatModel, sfrMatView), sfrMatProj);
 
-    sfr__process_and_bin_triangle(
-        &matMVP, &sfrState.matNormal,
-        (f32[3]){ax, ay, az}, (f32[2]){au, av}, NULL, (f32[3]){anx, any, anz}, NULL,
-        (f32[3]){bx, by, bz}, (f32[2]){bu, bv}, NULL, (f32[3]){bnx, bny, bnz}, NULL,
-        (f32[3]){cx, cy, cz}, (f32[2]){cu, cv}, NULL, (f32[3]){cnx, cny, cnz}, NULL,
-        col, mat
-    );
+    sfr__process_and_bin_triangle(&matMVP, &sfrState.matNormal, &gt);
 }
 
 // slab method
@@ -4627,48 +4894,126 @@ static u32 sfr__lerp_col(u32 c1, u32 c2, f32 t) {
 }
 
 static void sfr__generate_mipmaps(SfrTexture* tex) {
-    tex->mipLevels = 1;
-    i32 cw = tex->w;
-    i32 ch = tex->h;
-    u32* src = tex->pixels;
+    tex->isPot = (0 == (tex->w & (tex->w - 1))) && (0 == (tex->h & (tex->h - 1)));
+    
+    // calculate total memory needed for all levels (including 0) padded to 4x4
+    i32 cw = tex->w, ch = tex->h;
+    i32 totalPaddedPixels = 0;
+    i32 levels = 0;
+    
+    while (levels < (i32)SFR_ARRLEN(tex->allPixels)) {
+        // pad to multiple of 4
+        const i32 pw = (cw + 3) & ~3;
+        const i32 ph = (ch + 3) & ~3;
+        totalPaddedPixels += pw * ph;
+        
+        levels += 1;
+        if (1 == cw && 1 == ch) {
+            break;
+        }
+        
+        cw = (cw > 1) ? cw / 2 : 1;
+        ch = (ch > 1) ? ch / 2 : 1;
+    }
+    tex->mipLevels = levels;
+    
+    // allocate one contiguous block for all swizzled mips
+    u32* mipMemory;
+    SFR__MALLOC(mipMemory, sizeof(u32) * totalPaddedPixels);
+    u32* currSwizzleDest = mipMemory;
 
-    // loop until 1x1
-    while ((cw > 1 || ch > 1) && tex->mipLevels <= 14) {
-        const i32 nw = cw > 1 ? cw / 2 : 1;
-        const i32 nh = ch > 1 ? ch / 2 : 1;
+    // helper macro to swizzle linear data into the 4x4 block layout
+    #define DO_SWIZZLE(lvl, srcW, srcH, linearSrc) { \
+        const i32 pw = (srcW + 3) & ~3; \
+        const i32 ph = (srcH + 3) & ~3; \
+        const i32 bw = pw / 4; \
+        tex->allPixels[lvl] = currSwizzleDest; \
+        tex->allW[lvl] = srcW; \
+        tex->allH[lvl] = srcH; \
+        tex->blocksW[lvl] = bw; \
+        tex->strideShift[lvl] = tex->isPot ? sfr__fast_log2(bw) : 0; \
+        for (i32 y = 0; y < srcH; y += 1) { \
+            for (i32 x = 0; x < srcW; x += 1) { \
+                const i32 bX = x / 4, bY = y / 4, inX = x % 4, inY = y % 4; \
+                const i32 dInd = (bY * bw + bX) * 16 + (inY * 4) + inX; \
+                currSwizzleDest[dInd] = linearSrc[y * srcW + x]; \
+            } \
+        } \
+        currSwizzleDest += (pw * ph); \
+    }
 
-        u32* dest;
-        SFR__MALLOC(dest, sizeof(u32) * nw * nh);
+    // swizzle level 0
+    DO_SWIZZLE(0, tex->w, tex->h, tex->pixels);
 
-        const i32 mipInd = tex->mipLevels - 1;
-        tex->mipPixels[mipInd] = dest;
-        tex->mipW[mipInd] = nw;
-        tex->mipH[mipInd] = nh;
+    // generate subsequent mips using linear temp buffers
+    cw = tex->w; ch = tex->h;
+    u32* srcLinear = tex->pixels;
+    u32* tempLinear = NULL;
 
+    for (i32 currLevel = 1; currLevel < tex->mipLevels; currLevel += 1) {
+        const i32 nw = (cw > 1) ? cw / 2 : 1;
+        const i32 nh = (ch > 1) ? ch / 2 : 1;
+
+        u32* destLinear;
+        SFR__MALLOC(destLinear, sizeof(u32) * nw * nh);
+
+        // tent filter
         for (i32 y = 0; y < nh; y += 1) {
             for (i32 x = 0; x < nw; x += 1) {
-                const i32 sx = x * 2;
-                const i32 sy = y * 2;
+                const i32 cx = x * 2;
+                const i32 cy = y * 2;
 
-                const u32 c00 = src[sy * cw + sx];
-                const u32 c01 = (sx + 1 < cw) ? src[sy * cw + (sx + 1)] : c00;
-                const u32 c10 = (sy + 1 < ch) ? src[(sy + 1) * cw + sx] : c00;
-                const u32 c11 = ((sx + 1 < cw) && (sy + 1 < ch)) ? src[(sy + 1) * cw + (sx + 1)] : c00;
+                u32 r = 0, g = 0, b = 0, a = 0;
+                u32 wsum = 0;
 
-                const u32 r = (((c00 >> 16) & 0xFF) + ((c01 >> 16) & 0xFF) + ((c10 >> 16) & 0xFF) + ((c11 >> 16) & 0xFF)) / 4;
-                const u32 g = (((c00 >> 8)  & 0xFF) + ((c01 >> 8)  & 0xFF) + ((c10 >> 8)  & 0xFF) + ((c11 >> 8)  & 0xFF)) / 4;
-                const u32 b = (((c00 >> 0)  & 0xFF) + ((c01 >> 0)  & 0xFF) + ((c10 >> 0)  & 0xFF) + ((c11 >> 0)  & 0xFF)) / 4;
-                const u32 a = (((c00 >> 24) & 0xFF) + ((c01 >> 24) & 0xFF) + ((c10 >> 24) & 0xFF) + ((c11 >> 24) & 0xFF)) / 4;
+                for (i32 ky = -1; ky <= 2; ky += 1) {
+                    const i32 sy = SFR_CLAMP(cy + ky, 0, ch - 1);
 
-                dest[y * nw + x] = (a << 24) | (r << 16) | (g << 8) | b;
+                    const u32 wy = (-1 == ky || 2 == ky) ? 1 : 2;
+
+                    for (i32 kx = -1; kx <= 2; kx += 1) {
+                        const i32 sx = SFR_CLAMP(cx + kx, 0, cw - 1);
+
+                        const u32 wx = (-1 == kx || 2 == kx) ? 1 : 2;
+
+                        const u32 w = wx * wy;
+                        const u32 c = srcLinear[sy * cw + sx];
+
+                        r += ((c >> 16) & 255) * w;
+                        g += ((c >> 8)  & 255) * w;
+                        b += ((c >> 0)  & 255) * w;
+                        a += ((c >> 24) & 255) * w;
+
+                        wsum += w;
+                    }
+                }
+
+                r /= wsum;
+                g /= wsum;
+                b /= wsum;
+                a /= wsum;
+
+                destLinear[y * nw + x] = (a << 24) | (r << 16) | (g << 8) | b;
             }
         }
 
-        src = dest;
+        // swizzle generated mip and prep for next iteration
+        DO_SWIZZLE(currLevel, nw, nh, destLinear);
+
+        if (tempLinear) {
+            SFR__FREE(tempLinear);
+        }
+        tempLinear = destLinear;
+        srcLinear = tempLinear;
         cw = nw;
         ch = nh;
-        tex->mipLevels += 1;
     }
+
+    if (tempLinear) {
+        SFR__FREE(tempLinear);
+    }
+    
+    #undef DO_SWIZZLE
 }
 
 #ifdef SFR_MULTITHREADED
@@ -4784,7 +5129,8 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
     sfrState.baseMat.albedoTex = &baseTex;
     sfrState.baseMat.baseColor = 0xFFFFFFFF;
     sfrState.baseMat.roughnessFactor = 0.8f;
-    sfrState.baseMat.metallicFactor = 0.3f;
+    sfrState.baseMat.metallicFactor = 0.1f;
+    sfr__generate_mipmaps(&baseTex);
 
     sfrState.renderMode = SFR_RENDERMODE_SHADED;
 
@@ -5883,10 +6229,10 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrMaterial* mat) {
             // create and populate the job
             struct sfrMeshChunkJob* job = &sfrThreadBuf->meshJobPool[jobInd];
             job->tris = &mesh->tris[i * 9];
-            job->uvs = mesh->uvs ? &mesh->uvs[i * 6] : NULL;
-            job->lmUvs = mesh->lmUvs ? &mesh->lmUvs[i * 6] : NULL;
+            job->uvs = &mesh->uvs[i * 6];
+            job->lmUvs = &mesh->lmUvs[i * 6];
             job->normals = &mesh->normals[i * 9];
-            job->tangents = mesh->tangents ? &mesh->tangents[i * 12] : NULL;
+            job->tangents = &mesh->tangents[i * 12];
             job->matNormal = sfrState.matNormal;
             job->matMVP = matMVP;
             job->col = col;
@@ -5916,32 +6262,35 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, u32 col, const SfrMaterial* mat) {
             sfrThreadBuf->geometryWorkQueue[queueInd] = jobInd;
         }
     #else
+        struct sfrGeomClipBufs clipBuf;
+        struct sfrGeomTri gt = { .clipBuf = &clipBuf };
+
         for (i32 i = 0; i < mesh->vertCount; i += 9) {
             const i32 uvInd = (i / 9) * 6;
             const i32 tanInd = (i / 9) * 12;
-            sfr__process_and_bin_triangle(
-                &matMVP, &sfrState.matNormal,
-                
-                &mesh->tris[i + 0],
-                mesh->uvs ? &mesh->uvs[uvInd + 0] : NULL,
-                mesh->lmUvs ? &mesh->lmUvs[uvInd + 0] : NULL,
-                &mesh->normals[i + 0],
-                mesh->tangents ? &mesh->tangents[tanInd + 0] : NULL,
-                
-                &mesh->tris[i + 3],
-                mesh->uvs ? &mesh->uvs[uvInd + 2] : NULL,
-                mesh->lmUvs ? &mesh->lmUvs[uvInd + 2] : NULL,
-                &mesh->normals[i + 3],
-                mesh->tangents ? &mesh->tangents[tanInd + 4] : NULL,
-                
-                &mesh->tris[i + 6],
-                mesh->uvs ? &mesh->uvs[uvInd + 4] : NULL,
-                mesh->lmUvs ? &mesh->lmUvs[uvInd + 4] : NULL,
-                &mesh->normals[i + 6],
-                mesh->tangents ? &mesh->tangents[tanInd + 8] : NULL,
-                
-                col, mat
-            );
+
+            gt.posA = &mesh->tris[i + 0];
+            gt.uvA = &mesh->uvs[uvInd + 0];
+            gt.lmUvA = &mesh->lmUvs[uvInd + 0];
+            gt.normA = &mesh->normals[i + 0];
+            gt.tanA = &mesh->tangents[tanInd + 0];
+
+            gt.posB = &mesh->tris[i + 3];
+            gt.uvB = &mesh->uvs[uvInd + 2];
+            gt.lmUvB = &mesh->lmUvs[uvInd + 2];
+            gt.normB = &mesh->normals[i + 3];
+            gt.tanB = &mesh->tangents[tanInd + 4];
+            
+            gt.posC = &mesh->tris[i + 6];
+            gt.uvC = &mesh->uvs[uvInd + 4];
+            gt.lmUvC = &mesh->lmUvs[uvInd + 4];
+            gt.normC = &mesh->normals[i + 6];
+            gt.tanC = &mesh->tangents[tanInd + 8];
+            
+            gt.col = col;
+            gt.mat = mat;
+
+            sfr__process_and_bin_triangle(&matMVP, &sfrState.matNormal, &gt);
         }
     #endif
 }
@@ -6270,8 +6619,8 @@ SFR_FUNC void sfr_set_lighting(u8 enabled) {
 }
 
 SFR_FUNC void sfr_set_rendermode(i32 mode) {
-    if (mode < SFR_RENDERMODE_SHADED || mode >= SFR_RENDERMODE_COUNT) {
-        SFR__ERR_RET(, "invalid mode (%d), expected in the range [%d, %d)\n", mode, SFR_RENDERMODE_SHADED, SFR_RENDERMODE_COUNT);
+    if (mode < SFR_RENDERMODE_UNLIT || mode >= SFR_RENDERMODE_COUNT) {
+        SFR__ERR_RET(, "invalid mode (%d), expected in the range [%d, %d)\n", mode, SFR_RENDERMODE_UNLIT, SFR_RENDERMODE_COUNT);
     }
     sfrState.renderMode = mode;
 }
@@ -6800,7 +7149,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
             }
 
             if (!tanA) {
-                sfr__compute_mesh_tangents(sm);
+                sfr__mesh_compute_tangents(sm);
             }
 
             // vv assign to model node vv
@@ -6817,6 +7166,8 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel) {
                     }
                 }
             #endif
+
+            sfr__mesh_ensure_channels(sm);
 
             model->_allMeshes[currentNodeInd] = sm;
             currentNodeInd += 1;
@@ -7203,7 +7554,8 @@ SFR_FUNC SfrMesh* sfr_load_mesh(const char* filename) {
     SFR__FREE(computedNormals);
 
     // tangents aren't stored anywhere in obj files
-    sfr__compute_mesh_tangents(mesh);
+    sfr__mesh_compute_tangents(mesh);
+    sfr__mesh_ensure_channels(mesh);
 
     return mesh;
 }
@@ -7436,9 +7788,7 @@ SFR_FUNC void sfr_release_texture(SfrTexture** tex) {
     SFR__FREE((*tex)->quadG);
     SFR__FREE((*tex)->quadB);
 
-    for (i32 i = 0; i < (*tex)->mipLevels - 1; i += 1) {
-        SFR__FREE((*tex)->mipPixels[i]);
-    }
+    SFR__FREE((*tex)->allPixels[0]);
 
     SFR__FREE(*tex);
 }
@@ -7630,7 +7980,8 @@ SFR_FUNC SfrScene* sfr_load_scene(const char* filename) {
                 fread(mesh->uvs, sizeof(f32), vertCount * 2, file);
                 fread(mesh->lmUvs, sizeof(f32), vertCount * 2, file);
                 fread(mesh->normals, sizeof(f32), vertCount * 3, file);
-                sfr__compute_mesh_tangents(mesh); 
+                sfr__mesh_compute_tangents(mesh);
+                sfr__mesh_ensure_channels(mesh);
             }
 
             SfrSceneObject* obj = &scene->objects[i];
@@ -7924,6 +8275,10 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max) {
 #ifdef SFR_MULTITHREADED
 
 static void sfr__process_geometry_jobs(void) {
+    // allocate once per thread lifecycle
+    struct sfrGeomClipBufs clipBuf;
+    struct sfrGeomTri gt = { .clipBuf = &clipBuf };
+
     while (1) {
         // get the next geometry job from the queue
         const i32 head = sfr_atomic_add(&sfrThreadBuf->geometryWorkQueueHead, 1) - 1;
@@ -7940,29 +8295,28 @@ static void sfr__process_geometry_jobs(void) {
             const i32 uvInd = i * 6;
             const i32 tanInd = i * 12;
 
-            sfr__process_and_bin_triangle(
-                &job->matMVP, &job->matNormal,
-                
-                &job->tris[triInd + 0],
-                job->uvs ? &job->uvs[uvInd + 0] : NULL,
-                job->lmUvs ? &job->lmUvs[uvInd + 0] : NULL,
-                &job->normals[triInd + 0],
-                job->tangents ? &job->tangents[tanInd + 0] : NULL,
-                
-                &job->tris[triInd + 3],
-                job->uvs ? &job->uvs[uvInd + 2] : NULL,
-                job->lmUvs ? &job->lmUvs[uvInd + 2] : NULL,
-                &job->normals[triInd + 3],
-                job->tangents ? &job->tangents[tanInd + 4] : NULL,
-                
-                &job->tris[triInd + 6],
-                job->uvs ? &job->uvs[uvInd + 4] : NULL,
-                job->lmUvs ? &job->lmUvs[uvInd + 4] : NULL,
-                &job->normals[triInd + 6],
-                job->tangents ? &job->tangents[tanInd + 8] : NULL,
-                
-                job->col, job->mat
-            );
+            gt.posA = &job->tris[triInd + 0];
+            gt.uvA = &job->uvs[uvInd + 0];
+            gt.lmUvA = &job->lmUvs[uvInd + 0];
+            gt.normA = &job->normals[triInd + 0];
+            gt.tanA = &job->tangents[tanInd + 0];
+
+            gt.posB = &job->tris[triInd + 3];
+            gt.uvB = &job->uvs[uvInd + 2];
+            gt.lmUvB = &job->lmUvs[uvInd + 2];
+            gt.normB = &job->normals[triInd + 3];
+            gt.tanB = &job->tangents[tanInd + 4];
+            
+            gt.posC = &job->tris[triInd + 6];
+            gt.uvC = &job->uvs[uvInd + 4];
+            gt.lmUvC = &job->lmUvs[uvInd + 4];
+            gt.normC = &job->normals[triInd + 6];
+            gt.tanC = &job->tangents[tanInd + 8];
+            
+            gt.col = job->col;
+            gt.mat = job->mat;
+
+            sfr__process_and_bin_triangle(&job->matMVP, &job->matNormal, &gt);
         }
     }
 }
