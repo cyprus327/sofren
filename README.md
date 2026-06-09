@@ -50,22 +50,67 @@ For examples and good starting points rendering to an SDL2 window or console win
 ## Features
 - Single file with as few a 0 other headers, can be 100% standalone
 - Cross platform multithreading (Windows or pthreads)
-- Perspective correct texture mapping (currently only .bmp image support unless `optional/stb_image.h` is used)
 - Deferred rendering with a visibility buffer
 - SIMD rasterizing and geometry pipelines (or scalar fallback if SIMD is unavailable)
+- SIMD wrappers supporting AVX/AVX2 (`immintrin.h`) and ARM NEON (`arm_neon.h`) intrinsics
 - Blinn-Phong shading with point and directional lights
-- Realtime static and dynamic shadowmaps
+- Realtime dynamic and static shadowmaps
 - Baked lighting support (if UVs are unwrapped already)
+- Smooth mipmaps auto generated and used for all loaded textures
+- Perspective correct texture mapping (currently only .bmp image support unless `optional/stb_image.h` is used)
 - Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
 - OBJ mesh loading (requires `stdio.h`)
 - GLB / GLTF model loading (requires `optional/cgltf.h` (with `optional/stb_image.h` for textures))
 - Customizable math implementations (system or bundled)
 - Primitive drawing (triangles, cubes, spheres, cylinders, billboards, etc.)
 - Skyboxes (cubemaps not spheremaps)
-- Efficient static scene rendering with fast raycasting (BVH)
+- Efficient static scene rendering with fast raycasting via a BVH
 - ARGB8888 color format support (alpha currently unused)
 - Backface culling, depth buffering, and clipping
 - Left handed and row major
+
+## Windows Compilation (with SIMD)
+
+If you're compiling on Windows using MinGW/GCC with SIMD enabled (the default) and optimization flags
+like `-O2` or `-O3`, you must include specific compiler flags to prevent segfaults.
+
+The Windows x64 ABI mandates a 16 byte stack alignment, but GCC's AVX implementation strictly requires a
+32 byte alignment. When GCC omits the frame pointer in release mode, its internal stack offset math can
+break across function pointer boundaries, overwriting return addresses and corrupting the stack.
+Also, GCC can aggressively optimize unaligned SIMD memory stores into strict aligned instructions,
+which will instantly crash if your heap isn't 32 byte aligned.
+
+This isn't technically needed if run your program through some debugger like gdb since when Windows
+detects a debugger it will replace malloc/free with the debug heap, which adds padding around each allocation.
+
+**Required Compiler Flags for Windows Release Builds:**
+```bash
+-fno-omit-frame-pointer
+```
+
+## Windows Memory Allocation
+
+Standard `malloc` on Windows only guarantees 16 byte alignment, and since sofren uses 256 bit SIMD intrinsics
+(unless you're using an older ARM processor, in which case it will use 128 bit), passing standard malloc
+to sfr_init will cause a crash on Windows. You must provide 32 byte aligned allocators on Windows:
+
+```c
+#ifdef _WIN32
+    #include <malloc.h>
+    static void* sfr_malloc(u64 size) { return _aligned_malloc(size, 32); }
+    static void* sfr_realloc(void* ptr, u64 size) { return _aligned_realloc(ptr, size, 32); }
+    static void sfr_free(void* ptr) { _aligned_free(ptr); }
+#else
+    #include <stdlib.h>
+    static void* sfr_malloc(u64 size) { return malloc(size); }
+    static void* sfr_realloc(void* ptr, u64 size) { return realloc(ptr, size); }
+    static void sfr_free(void* ptr) { free(ptr); }
+#endif
+
+// ... later
+
+sfr_init(width, height, fov, sfr_malloc, sfr_free, sfr_realloc);
+```
 
 ## Pre Processing Configuration 
 ```c
@@ -170,11 +215,12 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A current
 ## TODO / Upcoming Features / Known Bugs
 - Skeletal animation / some improved animation system
 - Get normal maps working
-- Further optimized rasterizing
+- Improved shadows
 
 ## Gallery
 
-Some more baked lighting images, these are much older than the one at the top of this README
+Some more baked lighting images, these are much older than the one at the top of this README,
+and contain lots of noise and splotchyness that has since been fixed.
 
 <img width="1280" height="720" alt="baked room 2" src="https://github.com/user-attachments/assets/abd6ebf6-047c-4fee-bacd-22878eadbe9e" />
 
