@@ -14,10 +14,13 @@ small example showing usage of a SfrFont struct and .srft file
 */
 
 #define SFR_IMPL
+#define SFR_NO_SIMD
+#define SFR_THREAD_COUNT 1
 #include "../sofren.c"
 
 #include <string.h>
 
+#define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
 
 #define RES_SCALE 1.f
@@ -42,7 +45,7 @@ i32 main() {
     // load font
     SfrFont* font = sfr_load_font("examples/res/basic-font.srft");
     if (!font) {
-        SFR__ERR_RET(1, "Failed to load font\n");
+        return 1;
     }
 
     // main loop
@@ -96,7 +99,7 @@ i32 main() {
                 sfr_translate(0.3f, 0.f, 0.f);
             }
 
-            sfr_flush_and_wait();
+            sfr_present();
         }
 
         { // update SDL window
