@@ -47,11 +47,7 @@ i32 main() {
         sfr_init(w, h, 80.f, malloc, free, realloc);
     
         const sfrvec l = sfr_vec_normf(-0.5f, 0.1f, -1.f);
-        sfrLight = (SfrLight){
-            .dirX = l.x, .dirY = l.y, .dirZ = l.z,
-            .ambient = 0.4f, .intensity = 1.f,
-            .r = 1.f, .g = 1.f, .b = 1.f
-        };
+        sfr_light_add_directional(l.x, l.y, l.z, 0.4f, 0.6f, 1.f, 1.f, 1.f);
         sfr_set_lighting(1);
     }
 
@@ -102,7 +98,7 @@ i32 main() {
                 sfr_cube(sfr_rand_int(0, 0xFFFFFF), NULL);
             }
 
-            sfr_flush_and_wait();
+            sfr_present();
         }
 
         { // draw scene
