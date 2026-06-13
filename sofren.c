@@ -411,7 +411,7 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
         #define SFR_SIMD_LANES 4
         #define SFR_SIMD_LANE_MAX_OFFSET 3.f
         #define SFR_SIMD_FULL_LANE_MASK  0x0F
-        #define SFR_SIMD_FULL_BYTE_MASK  0x0F
+        #define SFR_SIMD_FULL_BYTE_MASK  0xFFFF
 
         #define SFR_SIMD_SET_STEPS()      sfrvf_setr(0.f, 1.f, 2.f, 3.f)
         #define SFR_SIMD_SET_HALF_STEPS() sfrvf_setr(0.5f, 1.5f, 2.5f, 3.5f)
@@ -430,6 +430,16 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
     #define SFR_SIMD_LANE_MAX_OFFSET 7.f
 #endif
 #ifndef SFR_NO_SIMD
+    enum sfrCmpMode {
+        SFR_CMP_UNORD_Q = 0x03, // isnan(a) || isnan(b)
+
+        SFR_CMP_LT_OQ   = 0x11, // a <  b
+        SFR_CMP_LE_OQ   = 0x12, // a <= b
+
+        SFR_CMP_GE_OQ   = 0x1D, // a >= b
+        SFR_CMP_GT_OQ   = 0x1E, // a >  b
+    };
+
     #define SFR_SHUFFLE(z, y, x, w) (((z) << 6) | ((y) << 4) | ((x) << 2) | (w))
 
     #if defined(__AVX2__)
@@ -490,19 +500,26 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
             vld1q_f32(out); \
         })
 
-        #define sfrvi_slli(a, imm) vshlq_n_s32((a), (imm))
-        #define sfrvi_srli(a, imm) vreinterpretq_s32_u32(vshrq_n_u32(vreinterpretq_u32_s32(a), (imm)))
+        #define sfrvi_slli(a, imm) vshlq_s32((a), vdupq_n_s32((imm)))
+        #define sfrvi_srli(a, imm) vreinterpretq_s32_u32(vshlq_u32(vreinterpretq_u32_s32(a), vdupq_n_s32(-(imm))))
 
-        // AVX uses immediates for cmp (e.g. _CMP_EQ_OQ = 0),
-        // NEON uses distinct instructions, emulate standard AVX immediates here
         #define sfrvf_cmp(a, b, imm) \
-            ( (imm) == 0 ? vreinterpretq_f32_u32(vceqq_f32((a), (b))) : \
-              (imm) == 1 ? vreinterpretq_f32_u32(vcltq_f32((a), (b))) : \
-              (imm) == 2 ? vreinterpretq_f32_u32(vcleq_f32((a), (b))) : \
-              (imm) == 4 ? vreinterpretq_f32_u32(vmvnq_u32(vceqq_u32(vreinterpretq_u32_f32(a), vreinterpretq_u32_f32(b)))) : \
-              (imm) == 5 ? vreinterpretq_f32_u32(vcgeq_f32((a), (b))) : \
-              (imm) == 6 ? vreinterpretq_f32_u32(vcgtq_f32((a), (b))) : \
-              vdupq_n_f32(0.f) )
+            ( (imm) == SFR_CMP_UNORD_Q ? \
+                vreinterpretq_f32_u32( \
+                    vorrq_u32( \
+                        vmvnq_u32(vceqq_f32((a), (a))), \
+                        vmvnq_u32(vceqq_f32((b), (b))) \
+                    ) \
+                ) : \
+            (imm) == SFR_CMP_LT_OQ ? \
+                vreinterpretq_f32_u32(vcltq_f32((a), (b))) : \
+            (imm) == SFR_CMP_LE_OQ ? \
+                vreinterpretq_f32_u32(vcleq_f32((a), (b))) : \
+            (imm) == SFR_CMP_GE_OQ ? \
+                vreinterpretq_f32_u32(vcgeq_f32((a), (b))) : \
+            (imm) == SFR_CMP_GT_OQ ? \
+                vreinterpretq_f32_u32(vcgtq_f32((a), (b))) : \
+            vdupq_n_f32(0.f) )
 
         #define sfrvfs_shuffle(a, b, imm) \
             (float32x4_t){ \
@@ -2495,10 +2512,10 @@ static void sfr__rasterize_bin(const struct sfrRasterBin* bin, struct sfrTile* t
             for (i32 y = yBase; y < yLimit; y += 1) {
                 // determine coverage
                 vf32 mask = sfrvf_and(
-                    sfrvf_cmp(vE0, sfrvf_zero(), _CMP_GE_OQ),
+                    sfrvf_cmp(vE0, sfrvf_zero(), SFR_CMP_GE_OQ),
                     sfrvf_and(
-                        sfrvf_cmp(vE1, sfrvf_zero(), _CMP_GE_OQ),
-                        sfrvf_cmp(vE2, sfrvf_zero(), _CMP_GE_OQ)
+                        sfrvf_cmp(vE1, sfrvf_zero(), SFR_CMP_GE_OQ),
+                        sfrvf_cmp(vE2, sfrvf_zero(), SFR_CMP_GE_OQ)
                     )
                 );
 
@@ -2506,8 +2523,8 @@ static void sfr__rasterize_bin(const struct sfrRasterBin* bin, struct sfrTile* t
                 if (xBase < minX || xBase + SFR_SIMD_LANES > maxX) {
                     const vi32 vGlobalX = sfrvi_add(sfrvi_set1(xBase), vIndex);
                     const vf32 vBoundMask = sfrvf_and(
-                        sfrvf_cmp(sfrvf_cvtepi32(vGlobalX), sfrvf_set1((f32)minX), _CMP_GE_OQ),
-                        sfrvf_cmp(sfrvf_cvtepi32(vGlobalX), sfrvf_set1((f32)maxX), _CMP_LT_OQ)
+                        sfrvf_cmp(sfrvf_cvtepi32(vGlobalX), sfrvf_set1((f32)minX), SFR_CMP_GE_OQ),
+                        sfrvf_cmp(sfrvf_cvtepi32(vGlobalX), sfrvf_set1((f32)maxX), SFR_CMP_LT_OQ)
                     );
                     mask = sfrvf_and(mask, vBoundMask);
                 }
@@ -2524,7 +2541,7 @@ static void sfr__rasterize_bin(const struct sfrRasterBin* bin, struct sfrTile* t
                     const vf32 vOldDepth = sfrvf_loadu(&targetDepthBuf[pixelInd]);
 
                     // closer objects have larger 1/Z values
-                    const vf32 depthMask = sfrvf_cmp(vz, vOldDepth, _CMP_GT_OQ);
+                    const vf32 depthMask = sfrvf_cmp(vz, vOldDepth, SFR_CMP_GT_OQ);
                     mask = sfrvf_and(mask, depthMask);
                     maskInt = sfrvf_movemask(mask);
 
@@ -3295,8 +3312,8 @@ static inline void sfr__sample_shadowmap_simd(
     const vf32 vZero = sfrvf_zero();
     const vf32 vOne = sfrvf_set1(1.f);
     const vf32 vBoundsMask = sfrvf_and(
-        sfrvf_and(sfrvf_cmp(vUvX, vZero, _CMP_GE_OQ), sfrvf_cmp(vUvX, vOne, _CMP_LE_OQ)),
-        sfrvf_and(sfrvf_cmp(vUvY, vZero, _CMP_GE_OQ), sfrvf_cmp(vUvY, vOne, _CMP_LE_OQ))
+        sfrvf_and(sfrvf_cmp(vUvX, vZero, SFR_CMP_GE_OQ), sfrvf_cmp(vUvX, vOne, SFR_CMP_LE_OQ)),
+        sfrvf_and(sfrvf_cmp(vUvY, vZero, SFR_CMP_GE_OQ), sfrvf_cmp(vUvY, vOne, SFR_CMP_LE_OQ))
     );
 
     // calculate base indices for the 2x2 PCF grid
@@ -3332,10 +3349,10 @@ static inline void sfr__sample_shadowmap_simd(
     // compare depths (fragDepth < closestDepth means it's in shadow)
     const vf32 vShadowVal = sfrvf_set1(1.f - sfrState.activeShadowmap->shadowStrength);
     
-    const vf32 vRes00 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth00, _CMP_LT_OQ));
-    const vf32 vRes10 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth10, _CMP_LT_OQ));
-    const vf32 vRes01 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth01, _CMP_LT_OQ));
-    const vf32 vRes11 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth11, _CMP_LT_OQ));
+    const vf32 vRes00 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth00, SFR_CMP_LT_OQ));
+    const vf32 vRes10 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth10, SFR_CMP_LT_OQ));
+    const vf32 vRes01 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth01, SFR_CMP_LT_OQ));
+    const vf32 vRes11 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth11, SFR_CMP_LT_OQ));
 
     // average the 4 samples
     const vf32 vSum1 = sfrvf_add(vRes00, vRes10);
@@ -3573,14 +3590,14 @@ static inline void sfr__apply_directionmap_simd(
     vhz = sfrvf_mul(vhz, vhInvLen);
 
     const vf32 vnDotL = sfrvf_fmadd(fd->nx, vLDirX, sfrvf_fmadd(fd->ny, vLDirY, sfrvf_mul(fd->nz, vLDirZ)));
-    const vf32 vDiffMask = sfrvf_cmp(vnDotL, sfrvf_zero(), _CMP_GT_OQ);
+    const vf32 vDiffMask = sfrvf_cmp(vnDotL, sfrvf_zero(), SFR_CMP_GT_OQ);
 
     vf32 vnDotH = sfrvf_fmadd(fd->nx, vhx, sfrvf_fmadd(fd->ny, vhy, sfrvf_mul(fd->nz, vhz)));
     vnDotH = sfrvf_max(sfrvf_set1(0.00001f), sfrvf_min(vnDotH, sfrvf_set1(1.f)));
     
     vf32 vSpec = sfrvf_pow(vnDotH, props->shininess);
 
-    vf32 vIsNaN = sfrvf_cmp(vSpec, vSpec, _CMP_UNORD_Q);
+    vf32 vIsNaN = sfrvf_cmp(vSpec, vSpec, SFR_CMP_UNORD_Q);
     vSpec = sfrvf_blendv(vSpec, sfrvf_zero(), vIsNaN);
     vSpec = sfrvf_min(vSpec, sfrvf_set1(1000.f));
 
@@ -3594,7 +3611,7 @@ static inline void sfr__apply_directionmap_simd(
     const vf32 vSpecG = sfrvf_mul(vSpecIntensity, sfrvf_mul(lmState->lmG, vInv255));
     const vf32 vSpecB = sfrvf_mul(vSpecIntensity, sfrvf_mul(lmState->lmB, vInv255));
 
-    const vf32 vDirMask = sfrvf_cmp(vDirLen, sfrvf_set1(0.01f), _CMP_GT_OQ);
+    const vf32 vDirMask = sfrvf_cmp(vDirLen, sfrvf_set1(0.01f), SFR_CMP_GT_OQ);
     *vFinalR = sfrvf_blendv(*vFinalR, sfrvf_fmadd(vSpecR, props->f0R, *vFinalR), vDirMask);
     *vFinalG = sfrvf_blendv(*vFinalG, sfrvf_fmadd(vSpecG, props->f0G, *vFinalG), vDirMask);
     *vFinalB = sfrvf_blendv(*vFinalB, sfrvf_fmadd(vSpecB, props->f0B, *vFinalB), vDirMask);
@@ -3652,7 +3669,7 @@ static inline void sfr__apply_dynamic_lights_simd(
         vf32 vSpec = sfrvf_pow(vnDotH, props->shininess);
 
         vSpec = sfrvf_mul(vSpec, props->energyConservation);
-        vSpec = sfrvf_blendv(vZero, vSpec, sfrvf_cmp(vDiff, vZero, _CMP_GT_OQ));
+        vSpec = sfrvf_blendv(vZero, vSpec, sfrvf_cmp(vDiff, vZero, SFR_CMP_GT_OQ));
 
         const vf32 vIntensity = sfrvf_mul(sfrvf_set1(light->intensity), vAtten);
         const vf32 vDiffuseIntensity = sfrvf_mul(vDiff, vIntensity);
@@ -8578,7 +8595,7 @@ SFR_FUNC vi32 sfrvi_loadu(const vi32* mem) {
         return _mm256_loadu_si256((const __m256i*)mem);
     #endif
 #elif defined(__ARM_NEON)
-    return vld1q_s32(mem);
+    return vld1q_s32((const int32_t*)mem);
 #endif
 }
 
@@ -8591,7 +8608,7 @@ SFR_FUNC void sfrvi_storeu(vi32* mem, vi32 a) {
         _mm256_storeu_si256((__m256i*)mem, a);
     #endif
 #elif defined(__ARM_NEON)
-    vst1q_s32(mem, a);
+    vst1q_s32((int32_t*)mem, a);
 #endif
 }
 
@@ -8655,8 +8672,7 @@ SFR_FUNC vf32s sfrvfs_sqrt_ss(vf32s a) {
 #if defined(__AVX2__)
     return _mm_sqrt_ss(a);
 #elif defined(__ARM_NEON)
-    const f32 f = vgetq_lane_f32(a, 0);
-    return vsetq_lane_f32(sfr_sqrtf(f), a, 0);
+    return vsetq_lane_f32(vgetq_lane_f32(vsqrtq_f32(a), 0), a, 0);
 #endif
 }
 
@@ -8850,7 +8866,14 @@ SFR_FUNC i32 sfrvi_movemask_epi8(vi32 a) {
         return _mm256_movemask_epi8(a);
     #endif
 #elif defined(__ARM_NEON)
-    return sfrvf_movemask(vreinterpretq_f32_s32(a));
+    const int8x16_t input = vreinterpretq_s8_s32(a);
+    const uint8x16_t msbMask = vcltzq_s8(input);
+    const uint8x16_t bitWeights = { 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128 };
+    const uint8x16_t weighted = vandq_u8(msbMask, bitWeights);
+    const uint8x8_t p0 = vpadd_u8(vget_low_u8(weighted), vget_high_u8(weighted));
+    const uint8x8_t p1 = vpadd_u8(p0, p0);
+    const uint8x8_t p2 = vpadd_u8(p1, p1);
+    return (vget_lane_u8(p2, 1) << 8) | vget_lane_u8(p2, 0);
 #endif
 }
 
@@ -8921,13 +8944,11 @@ SFR_FUNC void sfrvi_maskstore(int* mem, vi32 mask, vi32 a) {
     #endif
     _mm256_maskstore_epi32(mem, mask, a);
 #elif defined(__ARM_NEON)
-    const vi32 oldMem = vld1q_s32(mem);
-    const vi32 newMem = vreinterpretq_s32_u32(vbslq_u32(
-        vreinterpretq_u32_s32(mask),
-        vreinterpretq_u32_s32(a),
-        vreinterpretq_u32_s32(oldMem)
-    ));
-    vst1q_s32(mem, newMem);
+    const uint32x4_t m = vreinterpretq_u32_s32(mask);
+    if (vgetq_lane_u32(m, 0) & 0x80000000) mem[0] = vgetq_lane_s32(a, 0);
+    if (vgetq_lane_u32(m, 1) & 0x80000000) mem[1] = vgetq_lane_s32(a, 1);
+    if (vgetq_lane_u32(m, 2) & 0x80000000) mem[2] = vgetq_lane_s32(a, 2);
+    if (vgetq_lane_u32(m, 3) & 0x80000000) mem[3] = vgetq_lane_s32(a, 3);
 #endif
 }
 
@@ -8935,11 +8956,12 @@ SFR_FUNC vf32 sfrvf_blendv(vf32 a, vf32 b, vf32 mask) {
 #if defined(__AVX2__)
     return _mm256_blendv_ps(a, b, mask);
 #elif defined(__ARM_NEON)
-    // vbslq works bitwise, make sure mask is pure 0x00000000 or 0xFFFFFFFF per lane
+    const uint32x4_t msbMask = vcltzq_s32(vreinterpretq_s32_f32(mask));
     return vreinterpretq_f32_u32(vbslq_u32(
-        vreinterpretq_u32_f32(mask),
+        msbMask,
         vreinterpretq_u32_f32(b),
-        vreinterpretq_u32_f32(a))); 
+        vreinterpretq_u32_f32(a)
+    ));
 #endif
 }
 
