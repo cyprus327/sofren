@@ -136,7 +136,6 @@ typedef union sfrmat sfrmat;
 
 typedef struct sfrmesh     SfrMesh;
 typedef struct sfrdmesh    SfrDynamicMesh;
-typedef struct sfrdmesh    SfrDynamicMesh;
 typedef struct sfrtex      SfrTexture;
 typedef struct sfrMaterial SfrMaterial;
 typedef struct sfrfont     SfrFont;
@@ -317,7 +316,6 @@ SFR_FUNC SfrLight* sfr_light_add_point(f32 posX, f32 posY, f32 posZ, f32 ambient
 SFR_FUNC SfrLight* sfr_light_add_directional(f32 dirX, f32 dirY, f32 dirZ, f32 ambient, f32 intensity, f32 r, f32 g, f32 b);
 SFR_FUNC void sfr_light_remove(SfrLight* light);
 SFR_FUNC void sfr_light_clear_all(void);
-SFR_FUNC void sfr_light_clear_all(void);
 
 #ifdef SFR_USE_CGLTF
     SFR_FUNC void sfr_model_animate(SfrModel* model, i32 animInd, f32 time);
@@ -412,7 +410,6 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
         #define SFR_SIMD_LANE_MAX_OFFSET 3.f
         #define SFR_SIMD_FULL_LANE_MASK  0x0F
         #define SFR_SIMD_FULL_BYTE_MASK  0xFFFF
-        #define SFR_SIMD_FULL_BYTE_MASK  0xFFFF
 
         #define SFR_SIMD_SET_STEPS()      sfrvf_setr(0.f, 1.f, 2.f, 3.f)
         #define SFR_SIMD_SET_HALF_STEPS() sfrvf_setr(0.5f, 1.5f, 2.5f, 3.5f)
@@ -431,16 +428,6 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
     #define SFR_SIMD_LANE_MAX_OFFSET 7.f
 #endif
 #ifndef SFR_NO_SIMD
-    enum sfrCmpMode {
-        SFR_CMP_UNORD_Q = 0x03, // isnan(a) || isnan(b)
-
-        SFR_CMP_LT_OQ   = 0x11, // a <  b
-        SFR_CMP_LE_OQ   = 0x12, // a <= b
-
-        SFR_CMP_GE_OQ   = 0x1D, // a >= b
-        SFR_CMP_GT_OQ   = 0x1E, // a >  b
-    };
-
     enum sfrCmpMode {
         SFR_CMP_UNORD_Q = 0x03, // isnan(a) || isnan(b)
 
@@ -513,26 +500,8 @@ SFR_FUNC f32 sfr_rand_flt(f32 min, f32 max); // random f32 in range [min, max)
 
         #define sfrvi_slli(a, imm) vshlq_s32((a), vdupq_n_s32((imm)))
         #define sfrvi_srli(a, imm) vreinterpretq_s32_u32(vshlq_u32(vreinterpretq_u32_s32(a), vdupq_n_s32(-(imm))))
-        #define sfrvi_slli(a, imm) vshlq_s32((a), vdupq_n_s32((imm)))
-        #define sfrvi_srli(a, imm) vreinterpretq_s32_u32(vshlq_u32(vreinterpretq_u32_s32(a), vdupq_n_s32(-(imm))))
 
         #define sfrvf_cmp(a, b, imm) \
-            ( (imm) == SFR_CMP_UNORD_Q ? \
-                vreinterpretq_f32_u32( \
-                    vorrq_u32( \
-                        vmvnq_u32(vceqq_f32((a), (a))), \
-                        vmvnq_u32(vceqq_f32((b), (b))) \
-                    ) \
-                ) : \
-            (imm) == SFR_CMP_LT_OQ ? \
-                vreinterpretq_f32_u32(vcltq_f32((a), (b))) : \
-            (imm) == SFR_CMP_LE_OQ ? \
-                vreinterpretq_f32_u32(vcleq_f32((a), (b))) : \
-            (imm) == SFR_CMP_GE_OQ ? \
-                vreinterpretq_f32_u32(vcgeq_f32((a), (b))) : \
-            (imm) == SFR_CMP_GT_OQ ? \
-                vreinterpretq_f32_u32(vcgtq_f32((a), (b))) : \
-            vdupq_n_f32(0.f) )
             ( (imm) == SFR_CMP_UNORD_Q ? \
                 vreinterpretq_f32_u32( \
                     vorrq_u32( \
@@ -695,17 +664,6 @@ typedef struct sfrdmesh {
     SfrMesh _mesh; // underlying mesh passed to the rasterizer
 } SfrDynamicMesh;
 
-typedef struct sfrdmesh {
-    // pointing into sfrDynamicArena
-    f32* positions;
-    f32* uvs;
-    f32* lmUvs;
-    f32* normals;
-    f32* tangents;
-    i32 vertCount;
-    SfrMesh _mesh; // underlying mesh passed to the rasterizer
-} SfrDynamicMesh;
-
 typedef struct sfrtex {
     u32* pixels;
     i32 w, h;
@@ -807,7 +765,6 @@ typedef struct sfrRayHit {
 
     sfrvec pos;          // world space hit position
     sfrvec normal;       // geometric normal of the triangle hit
-    f32 u, v;            // barycentric coords of the hit
     f32 u, v;            // barycentric coords of the hit
 
     i32 objectInd;       // index of the object in the scene->objects array
@@ -946,9 +903,6 @@ struct sfrGeomTri {
     
     i32 renderMode;
 
-    
-    i32 renderMode;
-
     struct sfrGeomClipBufs {
         struct sfrTexVert clipTris[16][3];
         struct sfrTexVert buffer[16][3];
@@ -997,7 +951,6 @@ enum sfrRenderLightType {
     SFR_RLT_UNLIT,
     SFR_RLT_LIGHTMAP,
     SFR_RLT_DYNAMIC,
-    SFR_RLT_LIGHTMAP_DYNAMIC,
     SFR_RLT_LIGHTMAP_DYNAMIC,
     SFR_RLT_DEBUG_NORMALS,
     SFR_RLT_DEBUG_FRAGPOS
@@ -1090,7 +1043,6 @@ struct sfrTile {
         i32 startTriangle;
         i32 triangleCount;
         i32 renderMode;
-        i32 renderMode;
     };
 
     struct sfrThreadBuf {
@@ -1150,12 +1102,6 @@ struct sfrState {
     sfrmat savedMatLightVP;
 
     enum {
-        SFR_RENDERMODE_UNLIT,        // no lighting, fullbright
-        SFR_RENDERMODE_SHADED,       // dynamic lights or lightmap, lightmap takes priority
-        SFR_RENDERMODE_SHADED_MIXED, // dynamic lights and lightmap
-        SFR_RENDERMODE_NORMALS,      // unlit normals
-        SFR_RENDERMODE_FRAGPOS,      // show frag position
-        SFR_RENDERMODE_DEPTH_ONLY,   // for shadowmapping
         SFR_RENDERMODE_UNLIT,        // no lighting, fullbright
         SFR_RENDERMODE_SHADED,       // dynamic lights or lightmap, lightmap takes priority
         SFR_RENDERMODE_SHADED_MIXED, // dynamic lights and lightmap
@@ -1249,12 +1195,6 @@ struct sfrLightmapState {
 static u32* sfrPixelBuf;
 static f32* sfrDepthBuf;
 static i32 sfrWidth, sfrHeight;
-
-// for SfrDynamicMesh
-static u8* sfrDynamicArena = NULL;
-static u64 sfrDynamicArenaCap = 0;
-static u64 sfrPendingArenaCap = 0; // tracks deferred growth to safely resize arena post present
-static u64 sfrDynamicArenaOffset = 0;
 
 // for SfrDynamicMesh
 static u8* sfrDynamicArena = NULL;
@@ -2356,9 +2296,6 @@ static inline f32 sfr__fast_pow(f32 x, f32 y) {
 static inline enum sfrRenderPath sfr__get_render_path(const SfrMaterial* mat, i32 renderMode) {
     if (SFR_RENDERMODE_NORMALS == renderMode) return SFR_PATH_DEBUG_NORMALS;
     if (SFR_RENDERMODE_FRAGPOS == renderMode) return SFR_PATH_DEBUG_FRAGPOS;
-static inline enum sfrRenderPath sfr__get_render_path(const SfrMaterial* mat, i32 renderMode) {
-    if (SFR_RENDERMODE_NORMALS == renderMode) return SFR_PATH_DEBUG_NORMALS;
-    if (SFR_RENDERMODE_FRAGPOS == renderMode) return SFR_PATH_DEBUG_FRAGPOS;
 
     const u8 hasPbr = (NULL != mat->metallicRoughnessTex);
     const u8 hasShadows = (sfrState.activeShadowmap && NULL != sfrState.activeShadowmap->depth);
@@ -2616,10 +2553,7 @@ static inline void sfr__rasterize_bin_impl(
                 // determine coverage
                 vf32 mask = sfrvf_and(
                     sfrvf_cmp(vE0, sfrvf_zero(), SFR_CMP_GE_OQ),
-                    sfrvf_cmp(vE0, sfrvf_zero(), SFR_CMP_GE_OQ),
                     sfrvf_and(
-                        sfrvf_cmp(vE1, sfrvf_zero(), SFR_CMP_GE_OQ),
-                        sfrvf_cmp(vE2, sfrvf_zero(), SFR_CMP_GE_OQ)
                         sfrvf_cmp(vE1, sfrvf_zero(), SFR_CMP_GE_OQ),
                         sfrvf_cmp(vE2, sfrvf_zero(), SFR_CMP_GE_OQ)
                     )
@@ -2629,8 +2563,6 @@ static inline void sfr__rasterize_bin_impl(
                 if (xBase < minX || xBase + SFR_SIMD_LANES > maxX) {
                     const vi32 vGlobalX = sfrvi_add(sfrvi_set1(xBase), vIndex);
                     const vf32 vBoundMask = sfrvf_and(
-                        sfrvf_cmp(sfrvf_cvtepi32(vGlobalX), sfrvf_set1((f32)minX), SFR_CMP_GE_OQ),
-                        sfrvf_cmp(sfrvf_cvtepi32(vGlobalX), sfrvf_set1((f32)maxX), SFR_CMP_LT_OQ)
                         sfrvf_cmp(sfrvf_cvtepi32(vGlobalX), sfrvf_set1((f32)minX), SFR_CMP_GE_OQ),
                         sfrvf_cmp(sfrvf_cvtepi32(vGlobalX), sfrvf_set1((f32)maxX), SFR_CMP_LT_OQ)
                     );
@@ -2649,7 +2581,6 @@ static inline void sfr__rasterize_bin_impl(
                     const vf32 vOldDepth = sfrvf_loadu(&targetDepthBuf[pixelInd]);
 
                     // closer objects have larger 1/Z values
-                    const vf32 depthMask = sfrvf_cmp(vz, vOldDepth, SFR_CMP_GT_OQ);
                     const vf32 depthMask = sfrvf_cmp(vz, vOldDepth, SFR_CMP_GT_OQ);
                     mask = sfrvf_and(mask, depthMask);
                     maskInt = sfrvf_movemask(mask);
@@ -2897,7 +2828,6 @@ static void sfr__bin_triangle(
         .invDet = invDet,
         .v0 = *v0, .v1 = *v1, .v2 = *v2,
         .mat = mat,
-        .renderPathInd = sfr__get_render_path(mat, renderMode)
         .renderPathInd = sfr__get_render_path(mat, renderMode)
     };
 
@@ -3487,8 +3417,6 @@ static inline void sfr__sample_shadowmap_simd(
     const vf32 vBoundsMask = sfrvf_and(
         sfrvf_and(sfrvf_cmp(vUvX, vZero, SFR_CMP_GE_OQ), sfrvf_cmp(vUvX, vOne, SFR_CMP_LE_OQ)),
         sfrvf_and(sfrvf_cmp(vUvY, vZero, SFR_CMP_GE_OQ), sfrvf_cmp(vUvY, vOne, SFR_CMP_LE_OQ))
-        sfrvf_and(sfrvf_cmp(vUvX, vZero, SFR_CMP_GE_OQ), sfrvf_cmp(vUvX, vOne, SFR_CMP_LE_OQ)),
-        sfrvf_and(sfrvf_cmp(vUvY, vZero, SFR_CMP_GE_OQ), sfrvf_cmp(vUvY, vOne, SFR_CMP_LE_OQ))
     );
 
     // calculate base indices for the 2x2 PCF grid
@@ -3524,10 +3452,6 @@ static inline void sfr__sample_shadowmap_simd(
     // compare depths (fragDepth < closestDepth means it's in shadow)
     const vf32 vShadowVal = sfrvf_set1(1.f - sfrState.activeShadowmap->shadowStrength);
     
-    const vf32 vRes00 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth00, SFR_CMP_LT_OQ));
-    const vf32 vRes10 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth10, SFR_CMP_LT_OQ));
-    const vf32 vRes01 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth01, SFR_CMP_LT_OQ));
-    const vf32 vRes11 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth11, SFR_CMP_LT_OQ));
     const vf32 vRes00 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth00, SFR_CMP_LT_OQ));
     const vf32 vRes10 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth10, SFR_CMP_LT_OQ));
     const vf32 vRes01 = sfrvf_blendv(vOne, vShadowVal, sfrvf_cmp(vFragDepth, vDepth01, SFR_CMP_LT_OQ));
@@ -3831,14 +3755,12 @@ static inline void sfr__apply_directionmap_simd(
 
     const vf32 vnDotL = sfrvf_fmadd(fd->nx, vLDirX, sfrvf_fmadd(fd->ny, vLDirY, sfrvf_mul(fd->nz, vLDirZ)));
     const vf32 vDiffMask = sfrvf_cmp(vnDotL, sfrvf_zero(), SFR_CMP_GT_OQ);
-    const vf32 vDiffMask = sfrvf_cmp(vnDotL, sfrvf_zero(), SFR_CMP_GT_OQ);
 
     vf32 vnDotH = sfrvf_fmadd(fd->nx, vhx, sfrvf_fmadd(fd->ny, vhy, sfrvf_mul(fd->nz, vhz)));
     vnDotH = sfrvf_max(sfrvf_set1(0.00001f), sfrvf_min(vnDotH, sfrvf_set1(1.f)));
     
     vf32 vSpec = sfrvf_pow(vnDotH, props->shininess);
 
-    vf32 vIsNaN = sfrvf_cmp(vSpec, vSpec, SFR_CMP_UNORD_Q);
     vf32 vIsNaN = sfrvf_cmp(vSpec, vSpec, SFR_CMP_UNORD_Q);
     vSpec = sfrvf_blendv(vSpec, sfrvf_zero(), vIsNaN);
     vSpec = sfrvf_min(vSpec, sfrvf_set1(1000.f));
@@ -3853,7 +3775,6 @@ static inline void sfr__apply_directionmap_simd(
     const vf32 vSpecG = sfrvf_mul(vSpecIntensity, sfrvf_mul(lmState->lmG, vInv255));
     const vf32 vSpecB = sfrvf_mul(vSpecIntensity, sfrvf_mul(lmState->lmB, vInv255));
 
-    const vf32 vDirMask = sfrvf_cmp(vDirLen, sfrvf_set1(0.01f), SFR_CMP_GT_OQ);
     const vf32 vDirMask = sfrvf_cmp(vDirLen, sfrvf_set1(0.01f), SFR_CMP_GT_OQ);
     *vFinalR = sfrvf_blendv(*vFinalR, sfrvf_fmadd(vSpecR, props->f0R, *vFinalR), vDirMask);
     *vFinalG = sfrvf_blendv(*vFinalG, sfrvf_fmadd(vSpecG, props->f0G, *vFinalG), vDirMask);
@@ -3913,7 +3834,6 @@ static inline void sfr__apply_dynamic_lights_simd(
 
         vSpec = sfrvf_mul(vSpec, props->energyConservation);
         vSpec = sfrvf_blendv(vZero, vSpec, sfrvf_cmp(vDiff, vZero, SFR_CMP_GT_OQ));
-        vSpec = sfrvf_blendv(vZero, vSpec, sfrvf_cmp(vDiff, vZero, SFR_CMP_GT_OQ));
 
         const vf32 vIntensity = sfrvf_mul(sfrvf_set1(light->intensity), vAtten);
         const vf32 vDiffuseIntensity = sfrvf_mul(vDiff, vIntensity);
@@ -3953,18 +3873,6 @@ static inline void sfr__pack_and_write_shaded_simd(
     vf32 vFinalB = *pFinalB;
     vf32 vShadow = *pShadow;
 
-    #ifndef SFR_NO_GAMMA_CORRECT
-        // sqrt used as a fast approximation for the gamma LUT
-        #define SFR_GAMMA_CORRECT(v) sfrvf_sqrt(v)
-    #else
-        #define SFR_GAMMA_CORRECT(v) (v)
-    #endif
-
-    vFinalR = SFR_GAMMA_CORRECT(sfrvf_mul(vFinalR, vShadow));
-    vFinalG = SFR_GAMMA_CORRECT(sfrvf_mul(vFinalG, vShadow));
-    vFinalB = SFR_GAMMA_CORRECT(sfrvf_mul(vFinalB, vShadow));
-
-    #undef SFR_GAMMA_CORRECT
     #ifndef SFR_NO_GAMMA_CORRECT
         // sqrt used as a fast approximation for the gamma LUT
         #define SFR_GAMMA_CORRECT(v) sfrvf_sqrt(v)
@@ -4107,7 +4015,6 @@ static inline void _sfr__resolve_chunk_impl_##NAME(const struct sfrResolveChunkA
     \
     vf32 vFinalR, vFinalG, vFinalB; \
     if (LIGHT_MODE == SFR_RLT_LIGHTMAP || LIGHT_MODE == SFR_RLT_LIGHTMAP_DYNAMIC) { \
-    if (LIGHT_MODE == SFR_RLT_LIGHTMAP || LIGHT_MODE == SFR_RLT_LIGHTMAP_DYNAMIC) { \
         static SFR_THREAD_LOCAL struct sfrLightmapStateSimd lmState; \
         vFinalR = sfrvf_zero(), vFinalG = sfrvf_zero(), vFinalB = sfrvf_zero(); \
         sfr__apply_lightmap_simd(&fd, &props, &lmState, &vFinalR, &vFinalG, &vFinalB); \
@@ -4144,13 +4051,6 @@ SFR__DEF_CHUNK_RESOLVER(dynamic_color,          0, 1, 0, SFR_RLT_DYNAMIC)
 SFR__DEF_CHUNK_RESOLVER(dynamic_tex,            1, 1, 0, SFR_RLT_DYNAMIC)
 SFR__DEF_CHUNK_RESOLVER(dynamic_color_shadow,   0, 1, 1, SFR_RLT_DYNAMIC)
 SFR__DEF_CHUNK_RESOLVER(dynamic_tex_shadow,     1, 1, 1, SFR_RLT_DYNAMIC)
-
-SFR__DEF_CHUNK_RESOLVER(lightmap_dynamic_color,         0, 1, 0, SFR_RLT_LIGHTMAP_DYNAMIC)
-SFR__DEF_CHUNK_RESOLVER(lightmap_dynamic_tex,           1, 1, 0, SFR_RLT_LIGHTMAP_DYNAMIC)
-SFR__DEF_CHUNK_RESOLVER(lightmap_dynamic_color_shadow,  0, 1, 1, SFR_RLT_LIGHTMAP_DYNAMIC)
-SFR__DEF_CHUNK_RESOLVER(lightmap_dynamic_tex_shadow,    1, 1, 1, SFR_RLT_LIGHTMAP_DYNAMIC)
-SFR__DEF_CHUNK_RESOLVER(lightmap_dynamic_pbr,           1, 1, 0, SFR_RLT_LIGHTMAP_DYNAMIC)
-SFR__DEF_CHUNK_RESOLVER(lightmap_dynamic_pbr_shadow,    1, 1, 1, SFR_RLT_LIGHTMAP_DYNAMIC)
 
 SFR__DEF_CHUNK_RESOLVER(lightmap_dynamic_color,         0, 1, 0, SFR_RLT_LIGHTMAP_DYNAMIC)
 SFR__DEF_CHUNK_RESOLVER(lightmap_dynamic_tex,           1, 1, 0, SFR_RLT_LIGHTMAP_DYNAMIC)
@@ -4599,15 +4499,6 @@ static inline void sfr__pack_and_write_shaded(i32 globalInd, f32 finalR, f32 fin
         const u8 fg = finalG * 255.f;
         const u8 fb = finalB * 255.f;
     #endif
-    #ifndef SFR_NO_GAMMA_CORRECT
-        const u8 fr = sfrGammaLUT[(i32)(finalR * 255.f)];
-        const u8 fg = sfrGammaLUT[(i32)(finalG * 255.f)];
-        const u8 fb = sfrGammaLUT[(i32)(finalB * 255.f)];
-    #else
-        const u8 fr = finalR * 255.f;
-        const u8 fg = finalG * 255.f;
-        const u8 fb = finalB * 255.f;
-    #endif
 
     sfrPixelBuf[globalInd] = (0xFF << 24) | (fr << 16) | (fg << 8) | fb;
 }
@@ -4683,8 +4574,6 @@ static inline void _sfr__resolve_pixel_impl_##NAME(const struct sfrRasterBin* rB
     if (LIGHT_MODE == SFR_RLT_LIGHTMAP || LIGHT_MODE == SFR_RLT_LIGHTMAP_DYNAMIC) { \
         struct sfrLightmapState lmState; finalR = 0.f; finalG = 0.f; finalB = 0.f; \
         sfr__apply_lightmap(&fd, &props, &lmState, &finalR, &finalG, &finalB); \
-        if (CALC_SURFACE) sfr__apply_directionmap(&fd, &props, &lmState, &finalR, &finalG, &finalB); \
-        if (LIGHT_MODE == SFR_RLT_LIGHTMAP_DYNAMIC) sfr__apply_dynamic_lights(&fd, &props, &finalR, &finalG, &finalB); \
         if (CALC_SURFACE) sfr__apply_directionmap(&fd, &props, &lmState, &finalR, &finalG, &finalB); \
         if (LIGHT_MODE == SFR_RLT_LIGHTMAP_DYNAMIC) sfr__apply_dynamic_lights(&fd, &props, &finalR, &finalG, &finalB); \
     } else if (LIGHT_MODE == SFR_RLT_DYNAMIC) { \
@@ -5153,8 +5042,6 @@ static void sfr__triangle_mat_norm(
 
         .renderMode = sfrState.renderMode,
 
-        .renderMode = sfrState.renderMode,
-
         .clipBuf = &clipBuf
     };
 
@@ -5526,9 +5413,6 @@ SFR_FUNC void sfr_init(i32 w, i32 h, f32 fovDeg, void* (*mallocFunc)(u64), void 
     sfrDynamicArenaCap = 1024 * 8;
     SFR__MALLOC(sfrDynamicArena, sfrDynamicArenaCap);
 
-    sfrDynamicArenaCap = 1024 * 8;
-    SFR__MALLOC(sfrDynamicArena, sfrDynamicArenaCap);
-
     #ifdef SFR_MULTITHREADED
         SFR__MALLOC(sfrThreadBuf, sizeof(struct sfrThreadBuf));
 
@@ -5632,7 +5516,6 @@ SFR_FUNC void sfr__shutdown(void); // I dont wanna move sfr__shutdown to here
 SFR_FUNC void sfr_release(void) {
     SFR__FREE(sfrPixelBuf);
     SFR__FREE(sfrDepthBuf);
-    SFR__FREE(sfrDynamicArena);
     SFR__FREE(sfrDynamicArena);
     #ifdef SFR_MULTITHREADED
         sfr__shutdown();
@@ -5781,22 +5664,6 @@ SFR_FUNC void sfr_present(void) {
         }
     }
 #endif
-
-    if (sfrPendingArenaCap > sfrDynamicArenaCap) {
-        u8* newArena = (u8*)sfrRealloc(sfrDynamicArena, sfrPendingArenaCap);
-        if (!newArena) {
-            SFR__ERR_EXIT("failed to reallocate sfrDynamicArena (%u bytes)\n", (u32)sfrPendingArenaCap);
-        }
-
-        // ensure unused memory is zerod
-        sfr_memset(newArena + sfrDynamicArenaCap, 0, sfrPendingArenaCap - sfrDynamicArenaCap);
-        
-        sfrDynamicArena = newArena;
-        sfrDynamicArenaCap = sfrPendingArenaCap;
-        sfrPendingArenaCap = 0;
-    }
-
-    sfrDynamicArenaOffset = 0;
 
     if (sfrPendingArenaCap > sfrDynamicArenaCap) {
         u8* newArena = (u8*)sfrRealloc(sfrDynamicArena, sfrPendingArenaCap);
@@ -6129,10 +5996,8 @@ SFR_FUNC void sfr_skybox(const SfrMaterial* faces[6]) {
     const sfrmat savedModel = sfrMatModel;
     const sfrmat savedNormal = sfrState.matNormal;
     const i32 savedRenderMode = sfrState.renderMode;
-    const i32 savedRenderMode = sfrState.renderMode;
     const u8 savedDirty = sfrState.normalMatDirty;
 
-    sfrState.renderMode = SFR_RENDERMODE_UNLIT;
     sfrState.renderMode = SFR_RENDERMODE_UNLIT;
 
     sfrMatModel = SFR__MAT_IDENTITY;
@@ -6197,7 +6062,6 @@ SFR_FUNC void sfr_skybox(const SfrMaterial* faces[6]) {
 
     sfrMatModel = savedModel;
     sfrState.matNormal = savedNormal;
-    sfrState.renderMode = savedRenderMode;
     sfrState.renderMode = savedRenderMode;
     sfrState.normalMatDirty = savedDirty;
 }
@@ -6721,7 +6585,6 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, const SfrMaterial* mat) {
             job->startTriangle = i;
             job->triangleCount = SFR_MIN(SFR_GEOMETRY_JOB_SIZE, triangleCount - i);
             job->renderMode = sfrState.renderMode;
-            job->renderMode = sfrState.renderMode;
 
             // add job to the queue
             const i32 queueInd = sfr_atomic_add(&sfrThreadBuf->geometryWorkQueueCount, 1) - 1;
@@ -6747,7 +6610,6 @@ SFR_FUNC void sfr_mesh(const SfrMesh* mesh, const SfrMaterial* mat) {
     #else
         struct sfrGeomClipBufs clipBuf;
         struct sfrGeomTri gt = { .clipBuf = &clipBuf };
-        const i32 renderMode = sfrState.renderMode;
         const i32 renderMode = sfrState.renderMode;
 
         for (i32 i = 0; i < mesh->vertCount; i += 9) {
@@ -7076,7 +6938,6 @@ SFR_FUNC SfrRayHit sfr_scene_raycast(const SfrScene* scene, f32 ox, f32 oy, f32 
         );
 
         i32 stack[512];
-        i32 stack[512];
         i32 stackPtr = 0;
         stack[stackPtr++] = 0; // push root
 
@@ -7125,7 +6986,6 @@ SFR_FUNC SfrRayHit sfr_scene_raycast(const SfrScene* scene, f32 ox, f32 oy, f32 
                     if (sfr__intersect_triangle(rayOrigin, rayDir, v0, v1, v2, &hit.distance, &u, &v)) {
                         hit.hit = 1;
                         hit.u = u, hit.v = v;
-                        hit.u = u, hit.v = v;
                         hit.objectInd = i;
                         hit.triangleInd = node->leftFirst + t;
                         hit.obj = obj;
@@ -7134,10 +6994,6 @@ SFR_FUNC SfrRayHit sfr_scene_raycast(const SfrScene* scene, f32 ox, f32 oy, f32 
                     }
                 }
             } else { // internal
-                if (stackPtr >= 510) {
-                    continue;
-                }
-
                 if (stackPtr >= 510) {
                     continue;
                 }
@@ -7329,10 +7185,6 @@ SFR_FUNC void sfr_light_remove(SfrLight* light) {
     }
 
     sfrState.lightCount -= 1;
-}
-
-SFR_FUNC void sfr_light_clear_all(void) {
-    sfrState.lightCount = 0;
 }
 
 SFR_FUNC void sfr_light_clear_all(void) {
@@ -8140,8 +7992,6 @@ SFR_FUNC SfrMesh* sfr_load_mesh(const char* filename) {
     // store face data as indices
     struct sfrMeshFaceInds { i32 v[4], vt[4], vn[4], count; };
     struct sfrMeshFaceInds* tempFaces = NULL; i32 tempFacesCap = 0; i32 faceCount = 0;
-    struct sfrMeshFaceInds { i32 v[4], vt[4], vn[4], count; };
-    struct sfrMeshFaceInds* tempFaces = NULL; i32 tempFacesCap = 0; i32 faceCount = 0;
 
     // TODO handle failing and free
     char line[256];
@@ -8182,12 +8032,10 @@ SFR_FUNC SfrMesh* sfr_load_mesh(const char* filename) {
             if (faceCount >= tempFacesCap) {
                 tempFacesCap = (0 == tempFacesCap) ? 128 : tempFacesCap * 2;
                 tempFaces = (struct sfrMeshFaceInds*)realloc(tempFaces, tempFacesCap * sizeof(struct sfrMeshFaceInds));
-                tempFaces = (struct sfrMeshFaceInds*)realloc(tempFaces, tempFacesCap * sizeof(struct sfrMeshFaceInds));
                 if (!tempFaces) {
                     SFR__ERR_EXIT("realloc failed for tempFaces\n");
                 }
             }
-            struct sfrMeshFaceInds* f = &tempFaces[faceCount];
             struct sfrMeshFaceInds* f = &tempFaces[faceCount];
             f->count = 0;
             char* token = strtok(line + 1, " \t\n");
@@ -8231,7 +8079,6 @@ SFR_FUNC SfrMesh* sfr_load_mesh(const char* filename) {
         SFR__MALLOC(computedNormals, sizeof(sfrvec) * vertCount);
         for (i32 i = 0; i < faceCount; i += 1) {
             const struct sfrMeshFaceInds* f = &tempFaces[i];
-            const struct sfrMeshFaceInds* f = &tempFaces[i];
             const sfrvec v0 = tempVerts[f->v[0]];
             const sfrvec v1 = tempVerts[f->v[1]];
             const sfrvec v2 = tempVerts[f->v[2]];
@@ -8247,7 +8094,6 @@ SFR_FUNC SfrMesh* sfr_load_mesh(const char* filename) {
 
     i32 triInd = 0;
     for (i32 i = 0; i < faceCount; i += 1) {
-        const struct sfrMeshFaceInds* f = &tempFaces[i];
         const struct sfrMeshFaceInds* f = &tempFaces[i];
         const i32 indices[6] = {0, 1, 2, 0, 2, 3};
         const i32 n = (f->count < 4) ? 1 : 2;
@@ -8347,8 +8193,6 @@ SFR_FUNC SfrMaterial* sfr_load_material(const char* albedoPath, const char* metR
     mat->albedoTex = albedo;
     mat->metallicRoughnessTex = metRough;
     mat->baseColor = 0xFFFFFFFF;
-    mat->roughnessFactor = metRough ? 0.f : 0.8f;
-    mat->metallicFactor  = metRough ? 0.f : 0.1f;
     mat->roughnessFactor = metRough ? 0.f : 0.8f;
     mat->metallicFactor  = metRough ? 0.f : 0.1f;
 
@@ -9323,7 +9167,6 @@ SFR_FUNC vi32 sfrvi_loadu(const vi32* mem) {
     #endif
 #elif defined(__ARM_NEON)
     return vld1q_s32((const int32_t*)mem);
-    return vld1q_s32((const int32_t*)mem);
 #endif
 }
 
@@ -9336,7 +9179,6 @@ SFR_FUNC void sfrvi_storeu(vi32* mem, vi32 a) {
         _mm256_storeu_si256((__m256i*)mem, a);
     #endif
 #elif defined(__ARM_NEON)
-    vst1q_s32((int32_t*)mem, a);
     vst1q_s32((int32_t*)mem, a);
 #endif
 }
@@ -9401,7 +9243,6 @@ SFR_FUNC vf32s sfrvfs_sqrt_ss(vf32s a) {
 #if defined(__AVX2__)
     return _mm_sqrt_ss(a);
 #elif defined(__ARM_NEON)
-    return vsetq_lane_f32(vgetq_lane_f32(vsqrtq_f32(a), 0), a, 0);
     return vsetq_lane_f32(vgetq_lane_f32(vsqrtq_f32(a), 0), a, 0);
 #endif
 }
@@ -9612,14 +9453,6 @@ SFR_FUNC i32 sfrvi_movemask_epi8(vi32 a) {
     const uint8x8_t p1 = vpadd_u8(p0, p0);
     const uint8x8_t p2 = vpadd_u8(p1, p1);
     return (vget_lane_u8(p2, 1) << 8) | vget_lane_u8(p2, 0);
-    const int8x16_t input = vreinterpretq_s8_s32(a);
-    const uint8x16_t msbMask = vcltzq_s8(input);
-    const uint8x16_t bitWeights = { 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128 };
-    const uint8x16_t weighted = vandq_u8(msbMask, bitWeights);
-    const uint8x8_t p0 = vpadd_u8(vget_low_u8(weighted), vget_high_u8(weighted));
-    const uint8x8_t p1 = vpadd_u8(p0, p0);
-    const uint8x8_t p2 = vpadd_u8(p1, p1);
-    return (vget_lane_u8(p2, 1) << 8) | vget_lane_u8(p2, 0);
 #endif
 }
 
@@ -9695,11 +9528,6 @@ SFR_FUNC void sfrvi_maskstore(int* mem, vi32 mask, vi32 a) {
     if (vgetq_lane_u32(m, 1) & 0x80000000) mem[1] = vgetq_lane_s32(a, 1);
     if (vgetq_lane_u32(m, 2) & 0x80000000) mem[2] = vgetq_lane_s32(a, 2);
     if (vgetq_lane_u32(m, 3) & 0x80000000) mem[3] = vgetq_lane_s32(a, 3);
-    const uint32x4_t m = vreinterpretq_u32_s32(mask);
-    if (vgetq_lane_u32(m, 0) & 0x80000000) mem[0] = vgetq_lane_s32(a, 0);
-    if (vgetq_lane_u32(m, 1) & 0x80000000) mem[1] = vgetq_lane_s32(a, 1);
-    if (vgetq_lane_u32(m, 2) & 0x80000000) mem[2] = vgetq_lane_s32(a, 2);
-    if (vgetq_lane_u32(m, 3) & 0x80000000) mem[3] = vgetq_lane_s32(a, 3);
 #endif
 }
 
@@ -9708,13 +9536,9 @@ SFR_FUNC vf32 sfrvf_blendv(vf32 a, vf32 b, vf32 mask) {
     return _mm256_blendv_ps(a, b, mask);
 #elif defined(__ARM_NEON)
     const uint32x4_t msbMask = vcltzq_s32(vreinterpretq_s32_f32(mask));
-    const uint32x4_t msbMask = vcltzq_s32(vreinterpretq_s32_f32(mask));
     return vreinterpretq_f32_u32(vbslq_u32(
         msbMask,
-        msbMask,
         vreinterpretq_u32_f32(b),
-        vreinterpretq_u32_f32(a)
-    ));
         vreinterpretq_u32_f32(a)
     ));
 #endif
