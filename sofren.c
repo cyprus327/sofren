@@ -1,3 +1,7 @@
+#define SFR_IMPL
+#define SFR_USE_CGLTF
+#define SFR_USE_STB_IMAGE
+
 #ifndef SFR_H
 #define SFR_H
 
@@ -34,10 +38,6 @@ extern "C" {
     #ifndef SFR_GEOMETRY_JOB_SIZE
         // number of triangles per geometry job
         #define SFR_GEOMETRY_JOB_SIZE 64
-    #endif
-    #ifndef SFR_BIN_PAGE_SIZE
-        // number of triangles per page
-        #define SFR_BIN_PAGE_SIZE 4096
     #endif
 #endif
 
@@ -319,6 +319,7 @@ SFR_FUNC void sfr_light_clear_all(void);
 
 #ifdef SFR_USE_CGLTF
     SFR_FUNC void sfr_model_animate(SfrModel* model, i32 animInd, f32 time);
+    SFR_FUNC void sfr_model_animate_blend(SfrModel* model, i32 animAInd, f32 timeA, i32 animBInd, f32 timeB, f32 blendFactor);
     SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMaxWidth, i32 texMaxHeight);
     SFR_FUNC void sfr_model_draw(const SfrModel* model, sfrmat transform, const SfrMaterial* overrideMat);
     SFR_FUNC SfrScene* sfr_scene_from_model(const SfrModel* model);
@@ -327,6 +328,7 @@ SFR_FUNC void sfr_light_clear_all(void);
 
 // material / texture helpers
 SFR_FUNC SfrMaterial* sfr_material_request_color(u32 col); // allocates a temporary arena pointer, doesn't need to be freed
+SFR_FUNC SfrMaterial* sfr_material_request_clone(const SfrMaterial* baseMat); // ^^^^^
 SFR_FUNC void sfr_material_resize_textures(SfrMaterial* mat, i32 newW, i32 newH);
 SFR_FUNC SfrTexture* sfr_load_texture_raw(i32 w, i32 h, const u32* pixels);
 
@@ -348,8 +350,9 @@ SFR_FUNC void sfr_release_texture(SfrTexture** texture);     // release loaded t
 SFR_FUNC SfrFont* sfr_load_font(const char* filename); // load a .srft (sofren font type) font, see 'sfr-fontmaker'
 SFR_FUNC void sfr_release_font(SfrFont** font);        // release loaded font's memory
 
-// NOTE: the editor to create .cmp files is not public yet, but there are some .cmp files in examples/res/maps/
-SFR_FUNC SfrScene* sfr_load_scene(const char* filename);           // load a .cmp (compiled map) file
+// NOTE: the editor to create .qsf files is not public yet
+//       if the editor is public on GitHub and this comment is still here then I just forgot to remove it
+SFR_FUNC SfrScene* sfr_load_scene(const char* filename);           // load a .qsf (TrenchBroom to sofren) file
 SFR_FUNC void sfr_release_scene(SfrScene** scene, u8 freeObjects); // release a loaded scene's memory
 
 SFR_FUNC void sfr_rand_seed(u32 seed);       // seed random number generator
@@ -649,7 +652,11 @@ typedef struct sfrmesh {
     f32* uvs;      // uv coordinates (2 floats per vert)
     f32* lmUvs;    // lightmap uvs (2 floats per vert)
     f32* normals;  // vertex normals (3 floats per vert)
-    f32* tangents; // vertex tangents (4 floats per vert (x, y, z, sign))
+    f32* tangents; // vertex tangents (4 floats per vert (x, y, z, sign)) currently unused but will be used when normals are implemented
+
+    u16* joints;  // joint indices (4 inds per vert)
+    f32* weights; // joint weights (4 floats per vert)
+
     i32 vertCount; // total number of floats in tris array
 } SfrMesh;
 
@@ -791,6 +798,8 @@ struct sfrAnimSampler {
     f32* inputs;  // times
     f32* outputs; // values
     i32 count;
+    u8 isCubic; // if the sampler requires Hermite interp
+    u8 isStep;
 };
 
 struct sfrAnimChannel {
@@ -816,17 +825,38 @@ struct sfrTransformNode {
     sfrvec localRot; // quaternion
     sfrvec localScale;
 
+    // base pose for blending fallbacks
+    sfrvec basePos;
+    sfrvec baseRot;
+    sfrvec baseScale;
+
     i32 parentInd;
+    u8 isAnimated; // protects static matrices from destruction
 
     // cached matrices
     sfrmat localMatrix;
     sfrmat worldMatrix;
 };
 
+// for evaluating tracks safely
+struct sfrBlendState {
+    sfrvec posA, rotA, scaleA;
+    sfrvec posB, rotB, scaleB;
+    u8 maskA, maskB;
+};
+
+struct sfrSkin {
+    i32* jointNodes;             // inds mapping into model->transforms
+    sfrmat* inverseBindMatrices; // inverse bind matrix for each joint
+    sfrmat* jointMatrices;        // per frame computed joint matrices
+    i32 jointCount;
+};
+
 struct sfrModelNode {
     SfrMesh* mesh;
     SfrMaterial* mat;
     i32 transformInd; // link to the scene graph hierarchy
+    i32 skinInd;      // link to the skin array (-1 if not skinned)
 };
 
 typedef struct sfrModel {
@@ -838,6 +868,12 @@ typedef struct sfrModel {
 
     struct sfrAnimation* animations;
     i32 animCount;
+
+    // pre calculated topological sort of transforms
+    i32* sortedNodes;
+
+    struct sfrSkin* skins;
+    i32 skinCount;
 
     // resource tracking for cleanup
     SfrMesh** _allMeshes;
@@ -1903,17 +1939,17 @@ SFR_FUNC sfrmat sfr_mat_from_quat(sfrvec q) {
     const f32 wx = w * x2, wy = w * y2, wz = w * z2;
 
     m.m[0][0] = 1.f - (yy + zz);
-    m.m[0][1] = xy - wz;
-    m.m[0][2] = xz + wy;
+    m.m[0][1] = xy + wz;
+    m.m[0][2] = xz - wy;
     m.m[0][3] = 0.f;
 
-    m.m[1][0] = xy + wz;
+    m.m[1][0] = xy - wz;
     m.m[1][1] = 1.f - (xx + zz);
-    m.m[1][2] = yz - wx;
+    m.m[1][2] = yz + wx;
     m.m[1][3] = 0.f;
 
-    m.m[2][0] = xz - wy;
-    m.m[2][1] = yz + wx;
+    m.m[2][0] = xz + wy;
+    m.m[2][1] = yz - wx;
     m.m[2][2] = 1.f - (xx + yy);
     m.m[2][3] = 0.f;
 
@@ -1931,15 +1967,24 @@ SFR_FUNC sfrvec sfr_quat_mul(sfrvec a, sfrvec b) {
 }
 
 SFR_FUNC sfrvec sfr_quat_slerp(sfrvec a, sfrvec b, f32 t) {
-    f32 dot = sfr_vec_dot(a, b);
+    // sfr_vec_dot ignores w
+    f32 dot = a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w;
     if (dot < 0.f) {
-        b = sfr_vec_mul(b, -1.f);
+        b.x = -b.x;
+        b.y = -b.y;
+        b.z = -b.z;
+        b.w = -b.w;
         dot = -dot;
     }
 
     if (dot > 0.9995f) {
-        // lerp for close angles
-        return sfr_vec_norm(sfr_vec_lerp(a, b, t));
+        // lerp and 4D norm (sfr_quat_norm)
+        sfrvec res;
+        res.x = SFR__LERPF(a.x, b.x, t);
+        res.y = SFR__LERPF(a.y, b.y, t);
+        res.z = SFR__LERPF(a.z, b.z, t);
+        res.w = SFR__LERPF(a.w, b.w, t);
+        return sfr_quat_norm(res);
     }
 
     const f32 theta0 = acosf(dot);
@@ -1950,7 +1995,13 @@ SFR_FUNC sfrvec sfr_quat_slerp(sfrvec a, sfrvec b, f32 t) {
     const f32 s0 = cosf(theta) - dot * sinTheta * sinTheta0;
     const f32 s1 = sinTheta * sinTheta0;
 
-    return sfr_vec_add(sfr_vec_mul(a, s0), sfr_vec_mul(b, s1));
+    sfrvec res;
+    res.x = a.x * s0 + b.x * s1;
+    res.y = a.y * s0 + b.y * s1;
+    res.z = a.z * s0 + b.z * s1;
+    res.w = a.w * s0 + b.w * s1;
+    
+    return sfr_quat_norm(res);
 }
 
 SFR_FUNC sfrvec sfr_quat_invert(sfrvec q) {
@@ -1984,6 +2035,24 @@ SFR_FUNC sfrvec sfr_quat_norm(sfrvec q) {
 //================================================
 //: PRIVATE FUNCTIONS
 //================================================
+
+// helper to request from the frame-transient arena, aligned to 32 bytes
+static void* sfr__arena_request(u64 size) {
+    const u64 needed = (size + 31) & ~31;
+
+    if (sfrDynamicArenaOffset + needed > sfrDynamicArenaCap) {
+        u64 newCap = (0 == sfrDynamicArenaCap) ? (1024 * 8) : sfrDynamicArenaCap * 2;
+        while (sfrDynamicArenaOffset + needed > newCap) {
+            newCap *= 2;
+        }
+        sfrPendingArenaCap = newCap;
+        return NULL; // signals caller that capacity was exceeded this frame
+    }
+
+    void* ptr = sfrDynamicArena + sfrDynamicArenaOffset;
+    sfrDynamicArenaOffset += needed;
+    return ptr;
+}
 
 // map [-1.0, 1.0] -> [0, 1023]
 static inline u32 sfr__pack_vec3(f32 x, f32 y, f32 z) {
@@ -2063,6 +2132,20 @@ static inline void sfr__mesh_swap_tri(SfrMesh* mesh, i32 a, i32 b) {
             SFR__SWAP(f32, mesh->tangents[a * 12 + i], mesh->tangents[b * 12 + i]);
         }
     }
+
+    // swap joints
+    if (mesh->joints) {
+        for (i32 i = 0; i < 12; i += 1) {
+            SFR__SWAP(u16, mesh->joints[a * 12 + i], mesh->joints[b * 12 + i]);
+        }
+    }
+
+    // swap weights
+    if (mesh->weights) {
+        for (i32 i = 0; i < 12; i += 1) {
+            SFR__SWAP(f32, mesh->weights[a * 12 + i], mesh->weights[b * 12 + i]);
+        }
+    }
 }
 
 static void sfr__mesh_ensure_channels(SfrMesh* mesh) {
@@ -2082,6 +2165,14 @@ static void sfr__mesh_ensure_channels(SfrMesh* mesh) {
 
     if (!mesh->tangents) {
         SFR__MALLOC(mesh->tangents, sizeof(f32) * vertexCount * 4);
+    }
+
+    if (!mesh->joints) {
+        SFR__MALLOC(mesh->joints, sizeof(u16) * vertexCount * 4);
+    }
+
+    if (!mesh->weights) {
+        SFR__MALLOC(mesh->weights, sizeof(f32) * vertexCount * 4);
     }
 }
 
@@ -3993,7 +4084,6 @@ static inline void sfr__pack_and_write_fragpos_simd(
     sfrvi_maskstore((int*)&sfrPixelBuf[globalInd], vWriteMask, vFinalPixel);
 }
 
-#ifndef SFR_NO_SIMD
 #define SFR__DEF_CHUNK_RESOLVER(NAME, HAS_TEX, CALC_SURFACE, HAS_SHADOW, LIGHT_MODE) \
 static inline void _sfr__resolve_chunk_impl_##NAME(const struct sfrResolveChunkArgs* args, const u8 isTrans) { \
     const struct sfrRasterBin* rBin = args->rBin; const struct sfrShadeBin* sBin = args->sBin; \
@@ -4034,7 +4124,6 @@ static inline void _sfr__resolve_chunk_impl_##NAME(const struct sfrResolveChunkA
 } \
 static void _sfr__resolve_chunk_##NAME(const struct sfrResolveChunkArgs* args) { _sfr__resolve_chunk_impl_##NAME(args, 0); } \
 static void _sfr__resolve_chunk_trans_##NAME(const struct sfrResolveChunkArgs* args) { _sfr__resolve_chunk_impl_##NAME(args, 1); }
-#endif // !SFR_NO_SIMD
 
 // (NAME, HAS_TEX, CALC_SURFACE, HAS_SHADOW, LIGHT_MODE)
 SFR__DEF_CHUNK_RESOLVER(unlit_color,            0, 0, 0, SFR_RLT_UNLIT)
@@ -6748,26 +6837,17 @@ SFR_FUNC SfrDynamicMesh* sfr_dmesh_request(i32 vertCount) {
     // positions (3) + uvs (2) + lmUvs (2) + normals (3) + tangents (4) = 14 floats
     const u64 bytesNeeded = (u64)vertCount * 14 * sizeof(f32);
     
-    // include the size of SfrDynamicMesh struct and 32 byte alignment padding
-    const u64 totalNeeded = ((bytesNeeded + sizeof(SfrDynamicMesh)) + 31) & ~31;
-
-    // grow the arena if the requested frame data exceeds capacity
-    if (sfrDynamicArenaOffset + totalNeeded > sfrDynamicArenaCap) {
-        u64 newCap = (0 == sfrDynamicArenaCap) ? (1024 * 8) : sfrDynamicArenaCap * 2;
-        while (sfrDynamicArenaOffset + totalNeeded > newCap) {
-            newCap *= 2;
-        }
-
-        sfrPendingArenaCap = newCap;
-
+    // Request the memory block using the DRY helper (which handles 32-byte alignment internally)
+    SfrDynamicMesh* dmesh = (SfrDynamicMesh*)sfr__arena_request(sizeof(SfrDynamicMesh) + bytesNeeded);
+    
+    // if the aren areached capacity and needs to grow
+    if (!dmesh) {
         return NULL;
     }
 
-    // carve out the SfrDynamicMesh handle
-    SfrDynamicMesh* dmesh = (SfrDynamicMesh*)(sfrDynamicArena + sfrDynamicArenaOffset);
-    u8* dataPtr = (u8*)dmesh + sizeof(SfrDynamicMesh);
-
     // map internal pointers linearly across the allocated memory slice
+    u8* dataPtr = (u8*)dmesh + sizeof(SfrDynamicMesh);
+    
     dmesh->positions = (f32*)dataPtr;
     dmesh->uvs       = dmesh->positions + (vertCount * 3);
     dmesh->lmUvs     = dmesh->uvs       + (vertCount * 2);
@@ -6782,10 +6862,7 @@ SFR_FUNC SfrDynamicMesh* sfr_dmesh_request(i32 vertCount) {
     dmesh->_mesh.normals   = dmesh->normals;
     dmesh->_mesh.tangents  = dmesh->tangents;
     dmesh->_mesh.vertCount = vertCount * 3;
-
-    // advance the frame allocation offset
-    sfrDynamicArenaOffset += totalNeeded;
-
+    
     return dmesh;
 }
 
@@ -7193,6 +7270,109 @@ SFR_FUNC void sfr_light_clear_all(void) {
 
 #ifdef SFR_USE_CGLTF
 
+static void sfr__evaluate_anim_track(const SfrModel* model, i32 animInd, f32 time, struct sfrBlendState* states, u8 isTrackB) {
+    const struct sfrAnimation* const anim = &model->animations[animInd];
+
+    if (anim->duration > SFR_EPSILON) {
+        time = sfr_fmodf(time, anim->duration);
+    }
+
+    for (i32 i = 0; i < anim->channelCount; i += 1) {
+        const struct sfrAnimChannel* const channel = &anim->channels[i];
+        const struct sfrAnimSampler* const sampler = &anim->samplers[channel->samplerInd];
+        const i32 nodeInd = channel->transformNodeInd;
+
+        i32 f0 = 0, f1 = 0;
+        f32 t = 0.f;
+
+        // binary search for keyframes
+        if (time <= sampler->inputs[0]) {
+            f0 = f1 = 0;
+        } else if (time >= sampler->inputs[sampler->count - 1]) {
+            f0 = f1 = sampler->count - 1;
+        } else {
+            i32 low = 0, high = sampler->count - 1;
+            while (low <= high) {
+                const i32 mid = low + (high - low) / 2;
+                if (time < sampler->inputs[mid]) {
+                    high = mid - 1;
+                } else if (time >= sampler->inputs[mid + 1]) {
+                    low = mid + 1;
+                } else {
+                    f0 = mid;
+                    f1 = mid + 1;
+                    break;
+                }
+            }
+            const f32 dt = sampler->inputs[f1] - sampler->inputs[f0];
+            t = (dt > 0.0001f) ? (time - sampler->inputs[f0]) / dt : 0.f;
+        }
+
+        const sfrvec* const values = (const sfrvec* const)sampler->outputs;
+        sfrvec finalVal;
+
+        if (sampler->isCubic) {
+            const f32 dt = sampler->inputs[f1] - sampler->inputs[f0];
+            const f32 t2 = t * t;
+            const f32 t3 = t2 * t;
+
+            const f32 p0 = 2.f * t3 - 3.f * t2 + 1.f;
+            const f32 m0 = (t3 - 2.f * t2 + t) * dt;
+            const f32 p1 = -2.f * t3 + 3.f * t2;
+            const f32 m1 = (t3 - t2) * dt;
+
+            const sfrvec val0 = values[f0 * 3 + 1];
+            const sfrvec out0 = values[f0 * 3 + 2];
+            sfrvec val1 = values[f1 * 3 + 1];
+            sfrvec in1  = values[f1 * 3 + 0];
+
+            if (SFR_ANIM_PATH_ROTATION == channel->path) {
+                if (sfr_vec_dot(val0, val1) < 0.f) {
+                    val1 = sfr_vec_mul(val1, -1.f);
+                    in1 = sfr_vec_mul(in1, -1.f);
+                }
+            }
+
+            finalVal.x = p0 * val0.x + m0 * out0.x + p1 * val1.x + m1 * in1.x;
+            finalVal.y = p0 * val0.y + m0 * out0.y + p1 * val1.y + m1 * in1.y;
+            finalVal.z = p0 * val0.z + m0 * out0.z + p1 * val1.z + m1 * in1.z;
+            finalVal.w = p0 * val0.w + m0 * out0.w + p1 * val1.w + m1 * in1.w;
+
+            if (SFR_ANIM_PATH_ROTATION == channel->path) {
+                finalVal = sfr_quat_norm(finalVal);
+            }
+        } else if (sampler->isStep) {
+            finalVal = values[f0];
+        } else {
+            const sfrvec v0 = values[f0];
+            const sfrvec v1 = values[f1];
+
+            if (SFR_ANIM_PATH_ROTATION == channel->path) {
+                finalVal = sfr_quat_slerp(v0, v1, t);
+            } else {
+                finalVal = sfr_vec_lerp(v0, v1, t);
+            }
+        }
+
+        // map the result
+        if (!isTrackB) {
+            states[nodeInd].maskA = 1;
+            switch (channel->path) {
+                case SFR_ANIM_PATH_ROTATION:    states[nodeInd].rotA = finalVal; break;
+                case SFR_ANIM_PATH_TRANSLATION: states[nodeInd].posA = finalVal; break;
+                case SFR_ANIM_PATH_SCALE:       states[nodeInd].scaleA = finalVal; break;
+            }
+        } else {
+            states[nodeInd].maskB = 1;
+            switch (channel->path) {
+                case SFR_ANIM_PATH_ROTATION:    states[nodeInd].rotB = finalVal; break;
+                case SFR_ANIM_PATH_TRANSLATION: states[nodeInd].posB = finalVal; break;
+                case SFR_ANIM_PATH_SCALE:       states[nodeInd].scaleB = finalVal; break;
+            }
+        }
+    }
+}
+
 SFR_FUNC void sfr_model_animate(SfrModel* model, i32 animInd, f32 time) {
     if (!model) {
         SFR__ERR_RET(, "model is NULL\n");
@@ -7201,77 +7381,124 @@ SFR_FUNC void sfr_model_animate(SfrModel* model, i32 animInd, f32 time) {
         SFR__ERR_RET(, "animInd (%d) out of bounds [%d, %d)\n", animInd, 0, model->animCount);
     }
 
-    const struct sfrAnimation* const anim = &model->animations[animInd];
-
-    // loop
-    if (anim->duration > SFR_EPSILON) {
-        time = sfr_fmodf(time, anim->duration);
+    struct sfrBlendState* states = (struct sfrBlendState*)sfr__arena_request(sizeof(struct sfrBlendState) * model->transformCount);
+    if (!states) {
+        return; // memory full
     }
 
-    // vv update local transforms from channels vv
-    for (i32 i = 0; i < anim->channelCount; i += 1) {
-        const struct sfrAnimChannel* const channel = &anim->channels[i];
-        const struct sfrAnimSampler* const sampler = &anim->samplers[channel->samplerInd];
-        struct sfrTransformNode* const node = &model->transforms[channel->transformNodeInd];
-
-        // find frame
-        i32 f0 = 0, f1 = 0;
-        f32 t = 0.f;
-
-        if (time <= sampler->inputs[0]) {
-            f0 = f1 = 0;
-        } else if (time >= sampler->inputs[sampler->count - 1]) {
-            f0 = f1 = sampler->count - 1;
-        } else {
-            for (i32 k = 0; k < sampler->count - 1; k += 1) {
-                if (time >= sampler->inputs[k] && time < sampler->inputs[k+1]) {
-                    f0 = k;
-                    f1 = k + 1;
-                    t = (time - sampler->inputs[k]) / (sampler->inputs[k+1] - sampler->inputs[k]);
-                    break;
-                }
-            }
-        }
-
-        const sfrvec* const values = (const sfrvec* const)sampler->outputs;
-        const sfrvec v0 = values[f0];
-        const sfrvec v1 = values[f1];
-
-        switch (channel->path) {
-            case SFR_ANIM_PATH_ROTATION: {
-                node->localRot = sfr_quat_slerp(v0, v1, t);
-            } break;
-            case SFR_ANIM_PATH_TRANSLATION: {
-                node->localPos = sfr_vec_lerp(v0, v1, t);
-            } break;
-            case SFR_ANIM_PATH_SCALE: {
-                node->localScale = sfr_vec_lerp(v0, v1, t);
-            } break;
-        }
-    }
-
-    // vv recompute hierarchy vv
+    // initialize state mask
     for (i32 i = 0; i < model->transformCount; i += 1) {
+        states[i].maskA = 0;
+        states[i].posA = model->transforms[i].basePos;
+        states[i].rotA = model->transforms[i].baseRot;
+        states[i].scaleA = model->transforms[i].baseScale;
+    }
+
+    // evaluate the single track
+    sfr__evaluate_anim_track(model, animInd, time, states, 0);
+
+    // apply and rebuild local matrices
+    for (i32 i = 0; i < model->transformCount; i += 1) {
+        struct sfrBlendState* state = &states[i];
         struct sfrTransformNode* node = &model->transforms[i];
 
-        // reconstruct local matrix
-        const sfrmat scale = sfr_mat_scale(node->localScale.x, node->localScale.y, node->localScale.z);
-        const sfrmat rot   = sfr_mat_from_quat(node->localRot);
-        const sfrmat trans = sfr_mat_translate(node->localPos.x, node->localPos.y, node->localPos.z);
+        if (state->maskA) {
+            node->isAnimated = 1;
+            node->localPos = state->posA;
+            node->localRot = state->rotA;
+            node->localScale = state->scaleA;
 
-        // multiply order S * R * T
-        node->localMatrix = sfr_mat_mul(scale, sfr_mat_mul(rot, trans));
+            const sfrmat scale = sfr_mat_scale(node->localScale.x, node->localScale.y, node->localScale.z);
+            const sfrmat rot   = sfr_mat_from_quat(node->localRot);
+            const sfrmat trans = sfr_mat_translate(node->localPos.x, node->localPos.y, node->localPos.z);
+            node->localMatrix = sfr_mat_mul(scale, sfr_mat_mul(rot, trans));
+        }
+    }
 
-        if (node->parentInd >= 0) {
-            node->worldMatrix = sfr_mat_mul(node->localMatrix, model->transforms[node->parentInd].worldMatrix);
-        } else {
+    // flat hierarchy update
+    for (i32 i = 0; i < model->transformCount; i += 1) {
+        const i32 nodeInd = model->sortedNodes[i];
+        struct sfrTransformNode* const node = &model->transforms[nodeInd];
+
+        if (node->parentInd < 0) {
             node->worldMatrix = node->localMatrix;
+        } else {
+            node->worldMatrix = sfr_mat_mul(node->localMatrix, model->transforms[node->parentInd].worldMatrix);
+        }
+    }
+}
+
+SFR_FUNC void sfr_model_animate_blend(SfrModel* model, i32 animAInd, f32 timeA, i32 animBInd, f32 timeB, f32 blendFactor) {
+    if (!model) {
+        SFR__ERR_RET(, "model is NULL\n");
+    }
+    if (animAInd < 0 || animAInd >= model->animCount || animBInd < 0 || animBInd >= model->animCount) {
+        SFR__ERR_RET(, "animInd out of bounds\n");
+    }
+
+    blendFactor = SFR_CLAMP(blendFactor, 0.f, 1.f);
+
+    struct sfrBlendState* states = (struct sfrBlendState*)sfr__arena_request(sizeof(struct sfrBlendState) * model->transformCount);
+    if (!states) {
+        return;
+    }
+
+    // initialize states with the bind pose
+    for (i32 i = 0; i < model->transformCount; i += 1) {
+        states[i].posA = model->transforms[i].basePos;
+        states[i].rotA = model->transforms[i].baseRot;
+        states[i].scaleA = model->transforms[i].baseScale;
+        states[i].posB = model->transforms[i].basePos;
+        states[i].rotB = model->transforms[i].baseRot;
+        states[i].scaleB = model->transforms[i].baseScale;
+        states[i].maskA = 0;
+        states[i].maskB = 0;
+    }
+
+    // evaluate both tracks into the transient buffer
+    sfr__evaluate_anim_track(model, animAInd, timeA, states, 0);
+    sfr__evaluate_anim_track(model, animBInd, timeB, states, 1);
+
+    // mix and apply to local transforms
+    for (i32 i = 0; i < model->transformCount; i += 1) {
+        struct sfrBlendState* state = &states[i];
+        struct sfrTransformNode* node = &model->transforms[i];
+
+        if (state->maskA || state->maskB) {
+            node->isAnimated = 1;
+
+            node->localPos = sfr_vec_lerp(state->posA, state->posB, blendFactor);
+            node->localScale = sfr_vec_lerp(state->scaleA, state->scaleB, blendFactor);
+
+            // shortest path interpolation for the crossfade
+            if (sfr_vec_dot(state->rotA, state->rotB) < 0.f) {
+                state->rotB = sfr_vec_mul(state->rotB, -1.f);
+            }
+            node->localRot = sfr_quat_slerp(state->rotA, state->rotB, blendFactor);
+
+            // reconstruct local matrix
+            const sfrmat scale = sfr_mat_scale(node->localScale.x, node->localScale.y, node->localScale.z);
+            const sfrmat rot   = sfr_mat_from_quat(node->localRot);
+            const sfrmat trans = sfr_mat_translate(node->localPos.x, node->localPos.y, node->localPos.z);
+            node->localMatrix = sfr_mat_mul(scale, sfr_mat_mul(rot, trans));
+        }
+    }
+
+    // flat hierarchy update
+    for (i32 i = 0; i < model->transformCount; i += 1) {
+        const i32 nodeInd = model->sortedNodes[i];
+        struct sfrTransformNode* const node = &model->transforms[nodeInd];
+
+        if (node->parentInd < 0) {
+            node->worldMatrix = node->localMatrix;
+        } else {
+            node->worldMatrix = sfr_mat_mul(node->localMatrix, model->transforms[node->parentInd].worldMatrix);
         }
     }
 }
 
 SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMaxWidth, i32 texMaxHeight) {
-    // vv read file vv
+    // vv  read file  vv
     FILE* file = fopen(filename, "rb");
     if (!file) {
         SFR__ERR_RET(NULL, "failed to open '%s'\n", filename);
@@ -7291,7 +7518,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
     }
     fclose(file);
 
-    // vv parse gltf vv
+    // vv  parse gltf  vv
     cgltf_options options = {0};
     options.memory.alloc_func = sfr__cgltf_alloc;
     options.memory.free_func  = sfr__cgltf_free;
@@ -7303,7 +7530,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
         SFR__ERR_RET(NULL, "parse error %d\n", parseRes);
     }
 
-    // vv load buffers vv
+    // vv  load buffers  vv
     const cgltf_result loadBufRes = cgltf_load_buffers(&options, data, filename);
     if (cgltf_result_success != loadBufRes) {
         cgltf_free(data);
@@ -7313,9 +7540,8 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
 
     SfrModel* model;
     SFR__MALLOC(model, sizeof(SfrModel));
-    sfr_memset(model, 0, sizeof(SfrModel));
 
-    // vv load textures if possible vv
+    // vv  load textures if possible  vv
     #ifdef SFR_USE_STB_IMAGE
         SfrTexture** loadedTextures = NULL;
 
@@ -7324,7 +7550,6 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
         }
 
         SFR__MALLOC(loadedTextures, sizeof(SfrTexture*) * data->textures_count);
-        sfr_memset(loadedTextures, 0, sizeof(SfrTexture*) * data->textures_count);
 
         for (i32 i = 0; i < (i32)data->textures_count; i += 1) {
             const cgltf_image* const img = data->textures[i].image;
@@ -7356,22 +7581,14 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
                 tex->w = w;
                 tex->h = h;
                 SFR__MALLOC(tex->pixels, sizeof(u32) * w * h);
-                if (!tex->pixels) {
-                    // TODO memory leak
-                    SFR__ERR_RET(NULL, "failed to allocate pixel buffer for texture %d (%ld bytes)\n",
-                        i, (u64)(w * h * 4));
-                }
 
                 sfr_memcpy(tex->pixels, rawData, w * h * 4);
-
                 stbi_image_free(rawData);
-
                 sfr__swizzle_stb(tex->pixels, w * h);
                 
                 if (w > texMaxWidth || h > texMaxHeight) {
                     sfr__resize_texture_in_place(tex, texMaxWidth, texMaxHeight);
                 } else {
-                    // avoid generating mipmaps twice for no reason (called in resize anyway)
                     sfr__generate_mipmaps(tex);
                 }
                 loadedTextures[i] = tex;
@@ -7386,7 +7603,6 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
         }
 
         SFR__MALLOC(model->_allMaterials, sizeof(SfrMaterial*) * model->_matCount);
-        sfr_memset(model->_allMaterials, 0, sizeof(SfrMaterial*) * model->_matCount);
 
         for (i32 i = 0; i < model->_matCount; i += 1) {
             const cgltf_material* const cmat = &data->materials[i];
@@ -7395,7 +7611,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
 
             *mat = (SfrMaterial){
                 .albedoTex = NULL, .metallicRoughnessTex = NULL,
-                .baseColor = 0xFFFFFFFF, .metallicFactor = 0.3f, .roughnessFactor = 0.8f
+                .baseColor = 0xFFFFFFFF, .metallicFactor = 0.f, .roughnessFactor = 0.8f
             };
 
             if (cmat->has_pbr_metallic_roughness) {
@@ -7420,7 +7636,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
         model->_texCount = (i32)data->textures_count;
     #endif
 
-    // vv build transform hierarchy (1:1 with gltf nodes) vv
+    // vv  build transform hierarchy (1:1 with gltf nodes)  vv
     SFR__MALLOC(model->transforms, sizeof(struct sfrTransformNode) * data->nodes_count);
     model->transformCount = (i32)data->nodes_count;
 
@@ -7437,52 +7653,85 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
             sfrmat m;
             const f32* cm = cnode->matrix;
 
-            // gltf is col major sofren is row major so transpose
-            m.m[0][0] = cm[0];
-            m.m[0][1] = cm[4];
-            m.m[0][2] = cm[8];
-            m.m[0][3] = cm[12];
-            m.m[1][0] = cm[1];
-            m.m[1][1] = cm[5];
-            m.m[1][2] = cm[9];
-            m.m[1][3] = cm[13];
-            m.m[2][0] = cm[2];
-            m.m[2][1] = cm[6];
-            m.m[2][2] = cm[10];
-            m.m[2][3] = cm[14];
-            m.m[3][0] = cm[3];
-            m.m[3][1] = cm[7];
-            m.m[3][2] = cm[11];
-            m.m[3][3] = cm[15];
+            // extract raw matrix without transposing to protect translations
+            m.m[0][0] = cm[0],  m.m[0][1] = cm[1],  m.m[0][2] = cm[2],  m.m[0][3] = cm[3];
+            m.m[1][0] = cm[4],  m.m[1][1] = cm[5],  m.m[1][2] = cm[6],  m.m[1][3] = cm[7];
+            m.m[2][0] = cm[8],  m.m[2][1] = cm[9],  m.m[2][2] = cm[10], m.m[2][3] = cm[11];
+            m.m[3][0] = cm[12], m.m[3][1] = cm[13], m.m[3][2] = cm[14], m.m[3][3] = cm[15];
 
-            // convert right handed y up matrix to sofren's left handed flipped z space
+            // convert right handed Y up matrix to left handed flipped Z space
             const sfrmat flipZ = sfr_mat_scale(1.f, 1.f, -1.f);
             tnode->localMatrix = sfr_mat_mul(flipZ, sfr_mat_mul(m, flipZ));
 
-            // extract approximate TRS to satisfy struct
+            // extract decomposed properties
             tnode->localPos = SFR__V(tnode->localMatrix.m[3][0], tnode->localMatrix.m[3][1], tnode->localMatrix.m[3][2], 1.f);
-            tnode->localRot = SFR__V(0.f, 0.f, 0.f, 1.f);
-            tnode->localScale = SFR__V(
-                sfr_sqrtf(tnode->localMatrix.m[0][0] * tnode->localMatrix.m[0][0] +
-                          tnode->localMatrix.m[0][1] * tnode->localMatrix.m[0][1] +
-                          tnode->localMatrix.m[0][2] * tnode->localMatrix.m[0][2]),
-                sfr_sqrtf(tnode->localMatrix.m[1][0] * tnode->localMatrix.m[1][0] +
-                          tnode->localMatrix.m[1][1] * tnode->localMatrix.m[1][1] +
-                          tnode->localMatrix.m[1][2] * tnode->localMatrix.m[1][2]),
-                sfr_sqrtf(tnode->localMatrix.m[2][0] * tnode->localMatrix.m[2][0] +
-                          tnode->localMatrix.m[2][1] * tnode->localMatrix.m[2][1] +
-                          tnode->localMatrix.m[2][2] * tnode->localMatrix.m[2][2]),
-                1.f
-            );
+            
+            const f32 sx = sfr_sqrtf(
+                tnode->localMatrix.m[0][0] * tnode->localMatrix.m[0][0] +
+                tnode->localMatrix.m[0][1] * tnode->localMatrix.m[0][1] +
+                tnode->localMatrix.m[0][2] * tnode->localMatrix.m[0][2]);
+            const f32 sy = sfr_sqrtf(
+                tnode->localMatrix.m[1][0] * tnode->localMatrix.m[1][0] +
+                tnode->localMatrix.m[1][1] * tnode->localMatrix.m[1][1] +
+                tnode->localMatrix.m[1][2] * tnode->localMatrix.m[1][2]);
+            const f32 sz = sfr_sqrtf(
+                tnode->localMatrix.m[2][0] * tnode->localMatrix.m[2][0] +
+                tnode->localMatrix.m[2][1] * tnode->localMatrix.m[2][1] +
+                tnode->localMatrix.m[2][2] * tnode->localMatrix.m[2][2]);
+            tnode->localScale = SFR__V(sx, sy, sz, 1.f);
+
+            const f32 isx = sx > 0.0001f ? 1.f / sx : 1.f;
+            const f32 isy = sy > 0.0001f ? 1.f / sy : 1.f;
+            const f32 isz = sz > 0.0001f ? 1.f / sz : 1.f;
+            
+            const f32 m00 = tnode->localMatrix.m[0][0] * isx;
+            const f32 m01 = tnode->localMatrix.m[0][1] * isx;
+            const f32 m02 = tnode->localMatrix.m[0][2] * isx;
+            const f32 m10 = tnode->localMatrix.m[1][0] * isy;
+            const f32 m11 = tnode->localMatrix.m[1][1] * isy;
+            const f32 m12 = tnode->localMatrix.m[1][2] * isy;
+            const f32 m20 = tnode->localMatrix.m[2][0] * isz;
+            const f32 m21 = tnode->localMatrix.m[2][1] * isz;
+            const f32 m22 = tnode->localMatrix.m[2][2] * isz;
+
+            const f32 tr = m00 + m11 + m22;
+            sfrvec q;
+            if (tr > 0.f) {
+                f32 S = sfr_sqrtf(tr + 1.f) * 2.f;
+                q.w = 0.25f * S;
+                q.x = (m12 - m21) / S;
+                q.y = (m20 - m02) / S;
+                q.z = (m01 - m10) / S;
+            } else if ((m00 > m11) && (m00 > m22)) {
+                f32 S = sfr_sqrtf(1.f + m00 - m11 - m22) * 2.f;
+                q.w = (m12 - m21) / S;
+                q.x = 0.25f * S;
+                q.y = (m01 + m10) / S;
+                q.z = (m02 + m20) / S;
+            } else if (m11 > m22) {
+                f32 S = sfr_sqrtf(1.f + m11 - m00 - m22) * 2.f;
+                q.w = (m20 - m02) / S;
+                q.x = (m01 + m10) / S;
+                q.y = 0.25f * S;
+                q.z = (m12 + m21) / S;
+            } else {
+                f32 S = sfr_sqrtf(1.f + m22 - m00 - m11) * 2.f;
+                q.w = (m01 - m10) / S;
+                q.x = (m02 + m20) / S;
+                q.y = (m12 + m21) / S;
+                q.z = 0.25f * S;
+            }
+            tnode->localRot = sfr_quat_norm(q);
         } else {
-            // init transforms from TRS
+            // init transforms from explicit TRS
             if (cnode->has_translation) {
                 tnode->localPos = SFR__V(cnode->translation[0], cnode->translation[1], -cnode->translation[2], 1.f);
             } else {
                 tnode->localPos = SFR__V(0.f, 0.f, 0.f, 1.f);
             }
             if (cnode->has_rotation) {
-                tnode->localRot = SFR__V(-cnode->rotation[0], -cnode->rotation[1], cnode->rotation[2], cnode->rotation[3]);
+                sfrvec q = SFR__V(-cnode->rotation[0], -cnode->rotation[1], cnode->rotation[2], cnode->rotation[3]);
+                tnode->localRot = sfr_quat_norm(q);
             } else {
                 tnode->localRot = SFR__V(0.f, 0.f, 0.f, 1.f);
             }
@@ -7498,14 +7747,19 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
 
             tnode->localMatrix = sfr_mat_mul(scale, sfr_mat_mul(rot, trans));
         }
+
+        // save the extracted values as the bind pose for this node
+        tnode->basePos = tnode->localPos;
+        tnode->baseRot = tnode->localRot;
+        tnode->baseScale = tnode->localScale;
     }
 
-    { // vv safely resolve world matrices vv
+    { // safely resolve world matrices top down and cache the evaluation order
         u8* computed;
         SFR__MALLOC(computed, model->transformCount);
-        sfr_memset(computed, 0, model->transformCount);
+        SFR__MALLOC(model->sortedNodes, sizeof(i32) * model->transformCount);
 
-        // gltf doesn't guarantee parents appear before children in the array
+        i32 sortedCount = 0;
         for (i32 computedCount = 0; computedCount < model->transformCount;) {
             for (i32 i = 0; i < model->transformCount; i += 1) {
                 if (computed[i]) {
@@ -7515,17 +7769,16 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
                 struct sfrTransformNode* const tnode = &model->transforms[i];
 
                 if (tnode->parentInd < 0) {
-                    // root node
                     tnode->worldMatrix = tnode->localMatrix;
                     computed[i] = 1;
+                    model->sortedNodes[sortedCount++] = i;
                     computedCount += 1;
                 } else if (computed[tnode->parentInd]) {
-                    // parent is fully calculated, safe to compute child
                     const sfrmat local = tnode->localMatrix;
                     const sfrmat parentWorld = model->transforms[tnode->parentInd].worldMatrix;
                     tnode->worldMatrix = sfr_mat_mul(local, parentWorld);
-
                     computed[i] = 1;
+                    model->sortedNodes[sortedCount++] = i;
                     computedCount += 1;
                 }
             }
@@ -7533,7 +7786,47 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
         SFR__FREE(computed);
     }
 
-    // vv count primitives with each becoming an struct sfrModelNode vv
+    // vv  load skeleton skins  vv
+    model->skinCount = (i32)data->skins_count;
+    if (model->skinCount > 0) {
+        SFR__MALLOC(model->skins, sizeof(struct sfrSkin) * model->skinCount);
+        for (i32 i = 0; i < model->skinCount; i += 1) {
+            const cgltf_skin* const cskin = &data->skins[i];
+            struct sfrSkin* const sskin = &model->skins[i];
+
+            sskin->jointCount = (i32)cskin->joints_count;
+            SFR__MALLOC(sskin->jointNodes, sizeof(i32) * sskin->jointCount);
+            SFR__MALLOC(sskin->inverseBindMatrices, sizeof(sfrmat) * sskin->jointCount);
+            SFR__MALLOC(sskin->jointMatrices, sizeof(sfrmat) * sskin->jointCount);
+
+            for (i32 j = 0; j < sskin->jointCount; j += 1) {
+                sskin->jointNodes[j] = (i32)(cskin->joints[j] - data->nodes);
+            }
+
+            if (cskin->inverse_bind_matrices) {
+                for (i32 j = 0; j < sskin->jointCount; j += 1) {
+                    f32 mat[16];
+                    cgltf_accessor_read_float(cskin->inverse_bind_matrices, j, mat, 16);
+
+                    // extract raw matrix without transposing to protect translations
+                    sfrmat m;
+                    m.m[0][0] = mat[0],  m.m[0][1] = mat[1],  m.m[0][2] = mat[2],  m.m[0][3] = mat[3];
+                    m.m[1][0] = mat[4],  m.m[1][1] = mat[5],  m.m[1][2] = mat[6],  m.m[1][3] = mat[7];
+                    m.m[2][0] = mat[8],  m.m[2][1] = mat[9],  m.m[2][2] = mat[10], m.m[2][3] = mat[11];
+                    m.m[3][0] = mat[12], m.m[3][1] = mat[13], m.m[3][2] = mat[14], m.m[3][3] = mat[15];
+
+                    const sfrmat flipZ = sfr_mat_scale(1.f, 1.f, -1.f);
+                    sskin->inverseBindMatrices[j] = sfr_mat_mul(flipZ, sfr_mat_mul(m, flipZ));
+                }
+            } else {
+                for (i32 j = 0; j < sskin->jointCount; j += 1) {
+                    sskin->inverseBindMatrices[j] = sfr_mat_identity();
+                }
+            }
+        }
+    }
+
+    // count primitives for allocation
     i32 totalPrimitives = 0;
     for (cgltf_size i = 0; i < data->nodes_count; i += 1) {
         if (data->nodes[i].mesh) {
@@ -7543,13 +7836,12 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
 
     SFR__MALLOC(model->nodes, sizeof(struct sfrModelNode) * totalPrimitives);
     model->nodeCount = totalPrimitives;
-    // allocate pointers for all meshes even though they map 1:1 with nodes now
     SFR__MALLOC(model->_allMeshes, sizeof(SfrMesh*) * totalPrimitives);
     model->_meshCount = totalPrimitives;
 
     i32 currentNodeInd = 0;
 
-    // vv process nodes (flattening hierarchy + splitting prims) vv
+    // vv  process nodes (flattening hierarchy and splitting primitives)  vv
     for (cgltf_size i = 0; i < data->nodes_count; i += 1) {
         const cgltf_node* const node = &data->nodes[i];
         if (!node->mesh) {
@@ -7559,27 +7851,34 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
         for (cgltf_size p = 0; p < node->mesh->primitives_count; p += 1) {
             const cgltf_primitive* const prim = &node->mesh->primitives[p];
             if (cgltf_primitive_type_triangles != prim->type) {
-                continue; // TODO handle all / more types
+                continue; 
             }
 
-            // extract mesh data for this primitive
             cgltf_accessor *posA = NULL, *normA = NULL, *uvA = NULL, *tanA = NULL;
+            cgltf_accessor *jointsA = NULL, *weightsA = NULL;
             for (cgltf_size a = 0; a < prim->attributes_count; a += 1) {
                 switch (prim->attributes[a].type) {
-                    case cgltf_attribute_type_position: {
-                        posA = prim->attributes[a].data;
-                    } break;
-                    case cgltf_attribute_type_normal: {
-                        normA = prim->attributes[a].data;
-                    } break;
-                    case cgltf_attribute_type_texcoord: {
+                    case cgltf_attribute_type_position:
+                        posA = prim->attributes[a].data; break;
+                    case cgltf_attribute_type_normal:
+                        normA = prim->attributes[a].data; break;
+                    case cgltf_attribute_type_texcoord: 
                         if (uvChannel == prim->attributes[a].index) {
-                            uvA = prim->attributes[a].data;
+                            uvA = prim->attributes[a].data; 
                         }
-                    } break;
-                    case cgltf_attribute_type_tangent: {
-                        tanA = prim->attributes[a].data;
-                    } break;
+                        break;
+                    case cgltf_attribute_type_tangent:
+                        tanA = prim->attributes[a].data; break;
+                    case cgltf_attribute_type_joints:
+                        if (0 == prim->attributes[a].index) {
+                            jointsA = prim->attributes[a].data;
+                        }
+                        break;
+                    case cgltf_attribute_type_weights:
+                        if (0 == prim->attributes[a].index) {
+                            weightsA = prim->attributes[a].data;
+                        }
+                        break;
                     default: break;
                 }
             }
@@ -7592,20 +7891,19 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
 
             SfrMesh* sm;
             SFR__MALLOC(sm, sizeof(SfrMesh));
-            sfr_memset(sm, 0, sizeof(SfrMesh));
             sm->vertCount = count * 3;
             SFR__MALLOC(sm->tris, sizeof(f32) * sm->vertCount);
             SFR__MALLOC(sm->normals, sizeof(f32) * sm->vertCount);
             SFR__MALLOC(sm->uvs, sizeof(f32) * count * 2);
             SFR__MALLOC(sm->tangents, sizeof(f32) * count * 4);
-            if (!sm->tris || !sm->normals || !sm->uvs || !sm->tangents) {
-                // TODO memory leak
-                SFR__ERR_RET(NULL, "failed to allocate mesh buffers (%ld, %ld, %ld, %ld bytes)\n",
-                    (u64)(sizeof(f32) * sm->vertCount), (u64)(sizeof(f32) * sm->vertCount), (u64)(sizeof(f32) * count * 2), (u64)(sizeof(f32) * count * 4));
+
+            if (jointsA && weightsA) {
+                SFR__MALLOC(sm->joints, sizeof(u16) * count * 4);
+                SFR__MALLOC(sm->weights, sizeof(f32) * count * 4);
             }
 
             for (i32 k = 0; k < count; k += 1) {
-                // flip winding order and negate z and xy rotation
+                // flip winding order and negate z rotation
                 const i32 kr = k - (k % 3) + (i32[3]){0, 2, 1}[k % 3];
                 const i32 ind = prim->indices ? (i32)cgltf_accessor_read_index(prim->indices, kr) : kr;
 
@@ -7618,9 +7916,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
                 if (normA) {
                     cgltf_accessor_read_float(normA, ind, buf, 3);
                 } else {
-                    buf[0] = 0;
-                    buf[1] = 1;
-                    buf[2] = 0;
+                    buf[0] = 0, buf[1] = 1, buf[2] = 0;
                 }
                 sm->normals[k * 3 + 0] = buf[0];
                 sm->normals[k * 3 + 1] = buf[1];
@@ -7629,8 +7925,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
                 if (uvA) {
                     cgltf_accessor_read_float(uvA, ind, buf, 2);
                 } else {
-                    buf[0] = 0;
-                    buf[1] = 0;
+                    buf[0] = 0, buf[1] = 0;
                 }
                 sm->uvs[k * 2 + 0] = buf[0];
                 sm->uvs[k * 2 + 1] = buf[1];
@@ -7638,18 +7933,39 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
                 if (tanA) {
                     cgltf_accessor_read_float(tanA, ind, buf, 4);
                 }
+
+                if (jointsA && weightsA) {
+                    cgltf_uint jBuf[4] = {0, 0, 0, 0};
+                    cgltf_accessor_read_uint(jointsA, ind, jBuf, 4);
+                    sm->joints[k * 4 + 0] = (u16)jBuf[0];
+                    sm->joints[k * 4 + 1] = (u16)jBuf[1];
+                    sm->joints[k * 4 + 2] = (u16)jBuf[2];
+                    sm->joints[k * 4 + 3] = (u16)jBuf[3];
+
+                    f32 wBuf[4] = {0.f, 0.f, 0.f, 0.f};
+                    cgltf_accessor_read_float(weightsA, ind, wBuf, 4);
+                    sm->weights[k * 4 + 0] = wBuf[0];
+                    sm->weights[k * 4 + 1] = wBuf[1];
+                    sm->weights[k * 4 + 2] = wBuf[2];
+                    sm->weights[k * 4 + 3] = wBuf[3];
+                }
             }
 
             if (!tanA) {
                 sfr__mesh_compute_tangents(sm);
             }
 
-            // vv assign to model node vv
             model->nodes[currentNodeInd].mesh = sm;
             model->nodes[currentNodeInd].mat = NULL;
             model->nodes[currentNodeInd].transformInd = i;
+            
+            if (node->skin) {
+                model->nodes[currentNodeInd].skinInd = (i32)(node->skin - data->skins);
+            } else {
+                model->nodes[currentNodeInd].skinInd = -1;
+            }
 
-            // vv assign material for this specific primitive vv
+            // assign material for this primitive
             #ifdef SFR_USE_STB_IMAGE
                 if (prim->material && model->_allMaterials) {
                     const ptrdiff_t matInd = prim->material - data->materials;
@@ -7660,7 +7976,6 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
             #endif
 
             sfr__mesh_ensure_channels(sm);
-
             model->_allMeshes[currentNodeInd] = sm;
             currentNodeInd += 1;
         }
@@ -7669,7 +7984,7 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
     model->nodeCount = currentNodeInd;
     model->_meshCount = currentNodeInd;
 
-    // vv load animations vv
+    // vv  load animations  vv
     model->animCount = (i32)data->animations_count;
     if (model->animCount > 0) {
         SFR__MALLOC(model->animations, sizeof(struct sfrAnimation) * model->animCount);
@@ -7690,10 +8005,19 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
 
                 ss->count = (i32)cs->input->count;
                 SFR__MALLOC(ss->inputs, sizeof(f32) * ss->count);
-                SFR__MALLOC(ss->outputs, sizeof(f32) * ss->count * 4);
+
+                // identify required interpolation curves
+                ss->isCubic = (cgltf_interpolation_type_cubic_spline == cs->interpolation);
+                ss->isStep = (cgltf_interpolation_type_step == cs->interpolation);
+
+                // cubic splines require 3x the output data (in-tangent, value, out-tangent)
+                i32 outputCount = ss->isCubic ? (ss->count * 3) : ss->count;
+                SFR__MALLOC(ss->outputs, sizeof(f32) * outputCount * 4);
 
                 for (i32 k = 0; k < ss->count; k += 1) {
                     cgltf_accessor_read_float(cs->input, k, &ss->inputs[k], 1);
+                }
+                for (i32 k = 0; k < outputCount; k += 1) {
                     cgltf_accessor_read_float(cs->output, k, &ss->outputs[k * 4], 4);
                 }
 
@@ -7709,24 +8033,19 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
                 sc->transformNodeInd = (i32)(cc->target_node - data->nodes);
                 sc->samplerInd = (i32)(cc->sampler - ca->samplers);
 
+                model->transforms[sc->transformNodeInd].isAnimated = 1;
+
                 switch (cc->target_path) {
-                    case cgltf_animation_path_type_translation: {
-                        sc->path = SFR_ANIM_PATH_TRANSLATION;
-                    } break;
-                    case cgltf_animation_path_type_rotation: {
-                        sc->path = SFR_ANIM_PATH_ROTATION;
-                    } break;
-                    case cgltf_animation_path_type_scale: {
-                        sc->path = SFR_ANIM_PATH_SCALE;
-                    } break;
+                    case cgltf_animation_path_type_translation: sc->path = SFR_ANIM_PATH_TRANSLATION; break;
+                    case cgltf_animation_path_type_rotation:    sc->path = SFR_ANIM_PATH_ROTATION; break;
+                    case cgltf_animation_path_type_scale:       sc->path = SFR_ANIM_PATH_SCALE; break;
                     default: break;
                 }
             }
 
-            { // vv fix animations vv
+            { // clean animation coordinates and normalize properties
                 u8* patchedSamplers;
                 SFR__MALLOC(patchedSamplers, sa->samplerCount);
-                sfr_memset(patchedSamplers, 0, sa->samplerCount);
 
                 for (i32 j = 0; j < sa->channelCount; j += 1) {
                     struct sfrAnimChannel* const sc = &sa->channels[j];
@@ -7736,15 +8055,26 @@ SFR_FUNC SfrModel* sfr_load_gltf(const char* filename, i32 uvChannel, i32 texMax
                     patchedSamplers[sc->samplerInd] = 1;
 
                     struct sfrAnimSampler* const ss = &sa->samplers[sc->samplerInd];
+                    const i32 numOutputs = ss->isCubic ? ss->count * 3 : ss->count;
 
                     if (SFR_ANIM_PATH_TRANSLATION == sc->path) {
-                        for (i32 k = 0; k < ss->count; k += 1) {
+                        for (i32 k = 0; k < numOutputs; k += 1) {
                             ss->outputs[k * 4 + 2] = -ss->outputs[k * 4 + 2]; // negate z translation
                         }
                     } else if (SFR_ANIM_PATH_ROTATION == sc->path) {
-                        for (i32 k = 0; k < ss->count; k += 1) {
+                        for (i32 k = 0; k < numOutputs; k += 1) {
                             ss->outputs[k * 4 + 0] = -ss->outputs[k * 4 + 0]; // negate x rotation
                             ss->outputs[k * 4 + 1] = -ss->outputs[k * 4 + 1]; // negate y rotation
+                            
+                            // normalize actual values to prevent matrix shearing
+                            if (!ss->isCubic || (k % 3 == 1)) {
+                                sfrvec q = SFR__V(ss->outputs[k * 4 + 0], ss->outputs[k * 4 + 1], ss->outputs[k * 4 + 2], ss->outputs[k * 4 + 3]);
+                                q = sfr_quat_norm(q);
+                                ss->outputs[k * 4 + 0] = q.x;
+                                ss->outputs[k * 4 + 1] = q.y;
+                                ss->outputs[k * 4 + 2] = q.z;
+                                ss->outputs[k * 4 + 3] = q.w;
+                            }
                         }
                     }
                 }
@@ -7772,14 +8102,102 @@ SFR_FUNC void sfr_model_draw(const SfrModel* model, sfrmat transform, const SfrM
     const u8 savedDirty = sfrState.normalMatDirty;
 
     for (i32 i = 0; i < model->nodeCount; i += 1) {
-        const sfrmat localWorld = model->transforms[model->nodes[i].transformInd].worldMatrix;
-
-        const sfrmat m = sfr_mat_mul(localWorld, transform);
-        sfrMatModel = sfr_mat_mul(m, savedModel);
-        sfrState.normalMatDirty = 1;
-
+        const i32 skinInd = model->nodes[i].skinInd;
         const SfrMaterial* mat = overrideMat ? overrideMat : (model->nodes[i].mat ? model->nodes[i].mat : &sfrState.baseMat);
-        sfr_mesh(model->nodes[i].mesh, mat);
+        SfrMesh* baseMesh = model->nodes[i].mesh;
+
+        if (skinInd >= 0 && baseMesh->joints && baseMesh->weights) { // skeletal animation path
+            // node transforms are ignored for skinned meshes, they exist in world space via joints
+            sfrMatModel = sfr_mat_mul(transform, savedModel);
+            sfrState.normalMatDirty = 1;
+
+            struct sfrSkin* skin = &model->skins[skinInd];
+
+            // vv  compute joint matrices for this frame: M = invBind * jointWorld  vv
+            for (i32 j = 0; j < skin->jointCount; j += 1) {
+                const sfrmat jointWorld = model->transforms[skin->jointNodes[j]].worldMatrix;
+                skin->jointMatrices[j] = sfr_mat_mul(skin->inverseBindMatrices[j], jointWorld);
+            }
+
+            // vv  request a mesh for the deformed vertices  vv
+            const i32 vertexCount = baseMesh->vertCount / 3;
+            SfrDynamicMesh* dmesh = sfr_dmesh_request(vertexCount);
+            if (dmesh) {
+                // vv  skinning loop  vv
+                for (i32 v = 0; v < vertexCount; v += 1) {
+                    const sfrvec pos = SFR__V(baseMesh->tris[v * 3 + 0], baseMesh->tris[v * 3 + 1], baseMesh->tris[v * 3 + 2], 1.f);
+                    const sfrvec norm = SFR__V(baseMesh->normals[v * 3 + 0], baseMesh->normals[v * 3 + 1], baseMesh->normals[v * 3 + 2], 0.f);
+                    const sfrvec tan = SFR__V(baseMesh->tangents[v * 4 + 0], baseMesh->tangents[v * 4 + 1], baseMesh->tangents[v * 4 + 2], 0.f);
+                    
+                    sfrvec skinnedPos = SFR__V0;
+                    sfrvec skinnedNorm = SFR__V0;
+                    sfrvec skinnedTan = SFR__V0;
+
+                    // normalize weights
+                    const f32 weightSum = baseMesh->weights[v * 4 + 0] + baseMesh->weights[v * 4 + 1] + 
+                                          baseMesh->weights[v * 4 + 2] + baseMesh->weights[v * 4 + 3];
+                    const f32 invWeightSum = (weightSum > 0.0001f) ? (1.f / weightSum) : 1.f;
+
+                    // blend up to 4 joint matrices
+                    for (i32 k = 0; k < 4; k += 1) {
+                        const f32 weight = baseMesh->weights[v * 4 + k] * invWeightSum;
+                        if (weight > 0.0f) {
+                            const i32 jointInd = baseMesh->joints[v * 4 + k];
+                            const sfrmat jointMat = skin->jointMatrices[jointInd];
+
+                            const sfrvec p = sfr_mat_mul_vec(jointMat, pos);
+                            skinnedPos.x += p.x * weight;
+                            skinnedPos.y += p.y * weight;
+                            skinnedPos.z += p.z * weight;
+
+                            const sfrvec n = sfr_mat_mul_vec(jointMat, norm);
+                            skinnedNorm.x += n.x * weight;
+                            skinnedNorm.y += n.y * weight;
+                            skinnedNorm.z += n.z * weight;
+
+                            const sfrvec t = sfr_mat_mul_vec(jointMat, tan);
+                            skinnedTan.x += t.x * weight;
+                            skinnedTan.y += t.y * weight;
+                            skinnedTan.z += t.z * weight;
+                        }
+                    }
+
+                    // apply skinned positions
+                    dmesh->positions[v * 3 + 0] = skinnedPos.x;
+                    dmesh->positions[v * 3 + 1] = skinnedPos.y;
+                    dmesh->positions[v * 3 + 2] = skinnedPos.z;
+
+                    // normalize and apply skinned normals
+                    skinnedNorm = sfr_vec_norm(skinnedNorm);
+                    dmesh->normals[v * 3 + 0] = skinnedNorm.x;
+                    dmesh->normals[v * 3 + 1] = skinnedNorm.y;
+                    dmesh->normals[v * 3 + 2] = skinnedNorm.z;
+
+                    // normalize and apply skinned tangents (preserve bitangent sign)
+                    skinnedTan = sfr_vec_norm(skinnedTan);
+                    dmesh->tangents[v * 4 + 0] = skinnedTan.x;
+                    dmesh->tangents[v * 4 + 1] = skinnedTan.y;
+                    dmesh->tangents[v * 4 + 2] = skinnedTan.z;
+                    dmesh->tangents[v * 4 + 3] = baseMesh->tangents[v * 4 + 3];
+
+                    // copy UV channels without modification
+                    dmesh->uvs[v * 2 + 0] = baseMesh->uvs[v * 2 + 0];
+                    dmesh->uvs[v * 2 + 1] = baseMesh->uvs[v * 2 + 1];
+                    dmesh->lmUvs[v * 2 + 0] = baseMesh->lmUvs[v * 2 + 0];
+                    dmesh->lmUvs[v * 2 + 1] = baseMesh->lmUvs[v * 2 + 1];
+                }
+
+                sfr_dmesh_submit(dmesh, mat);
+            }
+        } else {
+            // static animation path
+            const sfrmat localWorld = model->transforms[model->nodes[i].transformInd].worldMatrix;
+            const sfrmat m = sfr_mat_mul(localWorld, transform);
+            sfrMatModel = sfr_mat_mul(m, savedModel);
+            sfrState.normalMatDirty = 1;
+
+            sfr_mesh(baseMesh, mat);
+        }
     }
 
     sfrMatModel = savedModel;
@@ -7851,9 +8269,20 @@ SFR_FUNC void sfr_release_model(SfrModel** model) {
         SFR__FREE(m->animations);
     }
 
+    // skin data
+    if (m->skins) {
+        for (i32 i = 0; i < m->skinCount; i += 1) {
+            SFR__FREE(m->skins[i].jointNodes);
+            SFR__FREE(m->skins[i].inverseBindMatrices);
+            SFR__FREE(m->skins[i].jointMatrices);
+        }
+        SFR__FREE(m->skins);
+    }
+
     // hierarchy
     SFR__FREE(m->transforms);
     SFR__FREE(m->nodes);
+    SFR__FREE(m->sortedNodes);
 
     SFR__FREE(m);
     *model = NULL;
@@ -7862,30 +8291,23 @@ SFR_FUNC void sfr_release_model(SfrModel** model) {
 #endif // SFR_USE_CGLTF
 
 SFR_FUNC SfrMaterial* sfr_material_request_color(u32 col) {
-    // align to 8 bytes for struct safety
-    const u64 needed = ((u64)sizeof(SfrMaterial) + 7) & ~7;
+    SfrMaterial* mat = sfr_material_request_clone(&sfrState.baseMat);
+    mat->baseColor = col;
+    return mat;
+}
 
-    // grow the arena if the requested frame data exceeds capacity
-    if (sfrDynamicArenaOffset + needed > sfrDynamicArenaCap) {
-        u64 newCap = (0 == sfrDynamicArenaCap) ? (1024 * 8) : sfrDynamicArenaCap * 2;
-        while (sfrDynamicArenaOffset + needed > newCap) {
-            newCap *= 2;
-        }
-
-        sfrPendingArenaCap = newCap;
-
-        // return the fallback material to prevent crashing the current frame
+SFR_FUNC SfrMaterial* sfr_material_request_clone(const SfrMaterial* baseMat) {
+    if (!baseMat) {
         return &sfrState.baseMat;
     }
 
-    // carve out the memory
-    SfrMaterial* mat = (SfrMaterial*)(sfrDynamicArena + sfrDynamicArenaOffset);
-    sfrDynamicArenaOffset += needed;
+    SfrMaterial* mat = (SfrMaterial*)sfr__arena_request(sizeof(SfrMaterial));
+    if (!mat) {
+        // if arena has to grow
+        return NULL;
+    }
 
-    // initialize
-    *mat = sfrState.baseMat;
-    mat->baseColor = col;
-
+    *mat = *baseMat;
     return mat;
 }
 
@@ -8172,6 +8594,9 @@ SFR_FUNC void sfr_release_mesh(SfrMesh** mesh) {
     SFR__FREE((*mesh)->lmUvs);
     SFR__FREE((*mesh)->normals);
     SFR__FREE((*mesh)->tangents);
+
+    SFR__FREE((*mesh)->joints);
+    SFR__FREE((*mesh)->weights);
 
     SFR__FREE(*mesh);
 }
@@ -8468,12 +8893,13 @@ SFR_FUNC SfrScene* sfr_load_scene(const char* filename) {
     FILE* file = fopen(filename, "rb");
     if (!file) SFR__ERR_RET(NULL, "failed to open '%s'\n", filename);
 
+    // validate format
     char magic[4];
     if (4 != fread(magic, 1, 4, file) ||
-        'S' != magic[0] || 'F' != magic[1] || 'R' != magic[2] || 'M' != magic[3]
+        'Q' != magic[0] || 'S' != magic[1] || 'F' != magic[2] || '!' != magic[3]
     ) {
         fclose(file);
-        SFR__ERR_RET(NULL, "not a valid SFRM map file ('%s')\n", filename);
+        SFR__ERR_RET(NULL, "not a valid QSF! map file ('%s')\n", filename);
     }
 
     u32 version;
@@ -8483,6 +8909,7 @@ SFR_FUNC SfrScene* sfr_load_scene(const char* filename) {
     SFR__MALLOC(scene, sizeof(SfrScene));
     sfr_memset(scene, 0, sizeof(SfrScene));
 
+    // load environment and spawn info
     fread(&scene->skyColor, 4, 1, file);
     fread(&scene->ambientLight, 4, 1, file);
     fread(&scene->hasSpawn, 1, 1, file);
@@ -8490,109 +8917,76 @@ SFR_FUNC SfrScene* sfr_load_scene(const char* filename) {
     fread(&scene->spawnPos.y, 4, 1, file);
     fread(&scene->spawnPos.z, 4, 1, file);
 
-    fread(&scene->lightCount, 4, 1, file);
-    if (scene->lightCount > 0) {
-        SFR__MALLOC(scene->lights, sizeof(SfrLight) * scene->lightCount);
-        for (i32 i = 0; i < scene->lightCount; i += 1) {
-            i32 type;
-            fread(&type, 4, 1, file);
-            fread(&scene->lights[i].x, 4, 1, file);
-            fread(&scene->lights[i].y, 4, 1, file);
-            fread(&scene->lights[i].z, 4, 1, file);
-            fread(&scene->lights[i].r, 4, 1, file);
-            fread(&scene->lights[i].g, 4, 1, file);
-            fread(&scene->lights[i].b, 4, 1, file);
-            fread(&scene->lights[i].ambient, 4, 1, file);
-            fread(&scene->lights[i].intensity, 4, 1, file);
-            fread(&scene->lights[i].attenuation, 4, 1, file);
-            scene->lights[i].type = (1 == type) ? SFR_LIGHT_POINT : SFR_LIGHT_DIRECTIONAL;
-        }
-    }
+    // skip lighting lump
+    u32 lightCount;
+    fread(&lightCount, 4, 1, file);
 
+    // load textures and mats
     fread(&scene->textureCount, 4, 1, file);
     if (scene->textureCount > 0) {
         SFR__MALLOC(scene->textures, sizeof(SfrTexture*) * scene->textureCount);
         SFR__MALLOC(scene->materials, sizeof(SfrMaterial*) * scene->textureCount);
 
         for (i32 i = 0; i < scene->textureCount; i += 1) {
-            i32 w, h;
+            u32 w, h;
             fread(&w, 4, 1, file);
             fread(&h, 4, 1, file);
 
-            SFR__MALLOC(scene->textures[i], sizeof(SfrTexture));
-            sfr_memset(scene->textures[i], 0, sizeof(SfrTexture));
-            
-            scene->textures[i]->w = w;
-            scene->textures[i]->h = h;
-            scene->textures[i]->mipLevels = 1;
-            
-            const i32 total_pixels = w * h;
-            SFR__MALLOC(scene->textures[i]->pixels, sizeof(u32) * total_pixels);
-
-            // decode RLE pixel stream
-            i32 decoded = 0;
-            while (decoded < total_pixels) {
-                u8 count, r, g, b, a;
-                fread(&count, 1, 1, file);
-                fread(&r, 1, 1, file);
-                fread(&g, 1, 1, file);
-                fread(&b, 1, 1, file);
-                fread(&a, 1, 1, file);
-
-                const u32 pixel_color = ((u32)a << 24) | ((u32)r << 16) | ((u32)g << 8) | (u32)b;
+            if (w > 0 && h > 0) {
+                u32* pixels;
+                SFR__MALLOC(pixels, sizeof(u32) * w * h);
+                fread(pixels, 4, w * h, file);
                 
-                for (i32 p = 0; p < count && decoded < total_pixels; p += 1) {
-                    scene->textures[i]->pixels[decoded++] = pixel_color;
-                }
+                scene->textures[i] = sfr_load_texture_raw(w, h, pixels);
+                SFR__FREE(pixels);
+            } else {
+                scene->textures[i] = NULL;
             }
-
-            sfr__generate_mipmaps(scene->textures[i]);
 
             SFR__MALLOC(scene->materials[i], sizeof(SfrMaterial));
             *scene->materials[i] = (SfrMaterial){
                 .albedoTex = scene->textures[i],
                 .metallicRoughnessTex = NULL,
                 .baseColor = 0xFFFFFFFF,
-                .metallicFactor = 0.2f,
+                .metallicFactor = 0.0f,
                 .roughnessFactor = 0.8f
             };
         }
     }
 
+    // load objects and BVH generation
     fread(&scene->count, 4, 1, file);
     if (scene->count > 0) {
         SFR__MALLOC(scene->objects, sizeof(SfrSceneObject) * scene->count);
 
         for (i32 i = 0; i < scene->count; i += 1) {
-            i32 texID, pbrTexID;
+            i32 texIdx;
+            u32 baseCol;
+            u32 vertCount;
             f32 metallic, roughness;
-            u32 col;
-            i32 vertCount;
-            fread(&texID, 4, 1, file);
-            fread(&pbrTexID, 4, 1, file);
+            
+            fread(&texIdx, 4, 1, file);
+            fread(&baseCol, 4, 1, file);
             fread(&metallic, 4, 1, file);
             fread(&roughness, 4, 1, file);
-            fread(&col, 4, 1, file);
-            fread(&vertCount, 4, 1, file);
+            fread(&vertCount, 4, 1, file); // vert count, not float count
 
             SfrMesh* mesh;
             SFR__MALLOC(mesh, sizeof(SfrMesh));
-            
-            mesh->vertCount = vertCount * 3; 
-            
+            mesh->vertCount = vertCount * 3;
+
             SFR__MALLOC(mesh->tris, sizeof(f32) * vertCount * 3);
             SFR__MALLOC(mesh->uvs, sizeof(f32) * vertCount * 2);
             SFR__MALLOC(mesh->lmUvs, sizeof(f32) * vertCount * 2);
             SFR__MALLOC(mesh->normals, sizeof(f32) * vertCount * 3);
-            mesh->tangents = NULL;
+            SFR__MALLOC(mesh->tangents, sizeof(f32) * vertCount * 4);
 
             if (vertCount > 0) {
-                fread(mesh->tris, sizeof(f32), vertCount * 3, file);
-                fread(mesh->uvs, sizeof(f32), vertCount * 2, file);
-                fread(mesh->lmUvs, sizeof(f32), vertCount * 2, file);
-                fread(mesh->normals, sizeof(f32), vertCount * 3, file);
-                sfr__mesh_compute_tangents(mesh);
-                sfr__mesh_ensure_channels(mesh);
+                fread(mesh->tris, 4, vertCount * 3, file);
+                fread(mesh->uvs, 4, vertCount * 2, file);
+                fread(mesh->lmUvs, 4, vertCount * 2, file);
+                fread(mesh->normals, 4, vertCount * 3, file);
+                fread(mesh->tangents, 4, vertCount * 4, file);
             }
 
             SfrSceneObject* obj = &scene->objects[i];
@@ -8601,12 +8995,12 @@ SFR_FUNC SfrScene* sfr_load_scene(const char* filename) {
             obj->rot = SFR__V(0.f, 0.f, 0.f, 1.f);
             obj->scale = SFR__V(1.f, 1.f, 1.f, 1.f);
 
-            // allocate a dedicated material for this object
+            // inherit the global properties but instance the SfrMaterial for safety
             SfrMaterial* mat;
             SFR__MALLOC(mat, sizeof(SfrMaterial));
-            mat->albedoTex = (texID >= 0 && texID < scene->textureCount) ? scene->textures[texID] : NULL;
-            mat->metallicRoughnessTex = (pbrTexID >= 0 && pbrTexID < scene->textureCount) ? scene->textures[pbrTexID] : NULL;
-            mat->baseColor = col;
+            mat->albedoTex = (texIdx >= 0 && texIdx < scene->textureCount) ? scene->textures[texIdx] : NULL;
+            mat->metallicRoughnessTex = NULL;
+            mat->baseColor = baseCol;
             mat->metallicFactor = metallic;
             mat->roughnessFactor = roughness;
             obj->mat = mat;
@@ -8615,6 +9009,7 @@ SFR_FUNC SfrScene* sfr_load_scene(const char* filename) {
             obj->_invModel = sfr_mat_identity();
             obj->_normal = sfr_mat_identity();
 
+            // reconstruct the BVH tree used for light/shadow intersections
             const i32 triCount = vertCount / 3;
             if (triCount > 0) {
                 SFR__MALLOC(obj->_bvhNodes, sizeof(struct sfrBvhNode) * (2 * triCount - 1));
@@ -8633,101 +9028,22 @@ SFR_FUNC SfrScene* sfr_load_scene(const char* filename) {
         }
     }
 
-    i32 atlasDim = 0;
-    if (1 == fread(&atlasDim, 4, 1, file) && atlasDim > 0) {
-        const i32 pixelCount = atlasDim * atlasDim;
-        
-        SFR__MALLOC(scene->globalLightmap, sizeof(SfrTexture));
-        scene->globalLightmap->w = atlasDim;
-        scene->globalLightmap->h = atlasDim;
-        scene->globalLightmap->mipLevels = 1;
-        
-        SFR__MALLOC(scene->globalLightmap->quads, sizeof(u32) * pixelCount);
+    // load lightmap atlas
+    u32 hasLm = 0;
+    if (1 == fread(&hasLm, 4, 1, file) && hasLm) {
+        u32 lmW, lmH;
+        fread(&lmW, 4, 1, file);
+        fread(&lmH, 4, 1, file);
         
         u8* rawRGB;
-        SFR__MALLOC(rawRGB, pixelCount * 3);
+        SFR__MALLOC(rawRGB, lmW * lmH * 3);
+        fread(rawRGB, 1, lmW * lmH * 3, file);
         
-        if (fread(rawRGB, 1, pixelCount * 3, file) == (u64)(pixelCount * 3)) {
-            for (i32 y = 0; y < atlasDim; y += 1) {
-                for (i32 x = 0; x < atlasDim; x += 1) {
-                    // clamp adjacent pixels to the edge of the texture
-                    const i32 x1 = (x + 1 < atlasDim) ? x + 1 : x;
-                    const i32 y1 = (y + 1 < atlasDim) ? y + 1 : y;
-                    
-                    // base inds for the 4 corners in the raw array
-                    const i32 i00 = (y * atlasDim + x) * 3;
-                    const i32 i10 = (y * atlasDim + x1) * 3;
-                    const i32 i01 = (y1 * atlasDim + x) * 3;
-                    const i32 i11 = (y1 * atlasDim + x1) * 3;
-                    
-                    const i32 outInd = y * atlasDim + x;
-
-                    // pack the channels
-                    scene->globalLightmap->quads[outInd].r = 
-                        ((u32)rawRGB[i00 + 0])       | 
-                        ((u32)rawRGB[i10 + 0] << 8)  | 
-                        ((u32)rawRGB[i01 + 0] << 16) | 
-                        ((u32)rawRGB[i11 + 0] << 24);
-                    scene->globalLightmap->quads[outInd].g = 
-                        ((u32)rawRGB[i00 + 1])       | 
-                        ((u32)rawRGB[i10 + 1] << 8)  | 
-                        ((u32)rawRGB[i01 + 1] << 16) | 
-                        ((u32)rawRGB[i11 + 1] << 24);
-                    scene->globalLightmap->quads[outInd].b = 
-                        ((u32)rawRGB[i00 + 2])       | 
-                        ((u32)rawRGB[i10 + 2] << 8)  | 
-                        ((u32)rawRGB[i01 + 2] << 16) | 
-                        ((u32)rawRGB[i11 + 2] << 24);
-                }
-            }
-        }
+        scene->globalLightmap = sfr_lightmap_create(lmW, lmH, rawRGB);
         SFR__FREE(rawRGB);
-
-        // vv load the direction map vv
-        SFR__MALLOC(scene->globalDirectionmap, sizeof(SfrTexture));
-        scene->globalDirectionmap->w = atlasDim;
-        scene->globalDirectionmap->h = atlasDim;
-        scene->globalDirectionmap->mipLevels = 1;
-        
-        SFR__MALLOC(scene->globalDirectionmap->quads, sizeof(u32) * pixelCount);
-        
-        u8* rawDirRGB;
-        SFR__MALLOC(rawDirRGB, pixelCount * 3);
-
-        if (fread(rawDirRGB, 1, pixelCount * 3, file) == (u64)(pixelCount * 3)) {
-            for (i32 y = 0; y < atlasDim; y += 1) {
-                for (i32 x = 0; x < atlasDim; x += 1) {
-                    const i32 x1 = (x + 1 < atlasDim) ? x + 1 : x;
-                    const i32 y1 = (y + 1 < atlasDim) ? y + 1 : y;
-                    const i32 i00 = (y * atlasDim + x) * 3;
-                    const i32 i10 = (y * atlasDim + x1) * 3;
-                    const i32 i01 = (y1 * atlasDim + x) * 3;
-                    const i32 i11 = (y1 * atlasDim + x1) * 3;
-                    const i32 outInd = y * atlasDim + x;
-
-                    scene->globalDirectionmap->quads[outInd].r = 
-                        ((u32)rawDirRGB[i00 + 0])       |
-                        ((u32)rawDirRGB[i10 + 0] << 8)  | 
-                        ((u32)rawDirRGB[i01 + 0] << 16) |
-                        ((u32)rawDirRGB[i11 + 0] << 24);
-                    scene->globalDirectionmap->quads[outInd].g = 
-                        ((u32)rawDirRGB[i00 + 1])       |
-                        ((u32)rawDirRGB[i10 + 1] << 8)  | 
-                        ((u32)rawDirRGB[i01 + 1] << 16) |
-                        ((u32)rawDirRGB[i11 + 1] << 24);
-                    scene->globalDirectionmap->quads[outInd].b = 
-                        ((u32)rawDirRGB[i00 + 2])       |
-                        ((u32)rawDirRGB[i10 + 2] << 8)  | 
-                        ((u32)rawDirRGB[i01 + 2] << 16) |
-                        ((u32)rawDirRGB[i11 + 2] << 24);
-                }
-            }
-        }
-        SFR__FREE(rawDirRGB);
-    } else {
-        scene->globalLightmap = NULL;
-        scene->globalDirectionmap = NULL;
     }
+
+    scene->globalDirectionmap = NULL;
 
     fclose(file);
     return scene;

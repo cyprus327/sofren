@@ -48,45 +48,33 @@ Baked lighting
 For examples and good starting points rendering to an SDL2 window or console window, see the examples folder
 
 ## Features
-- Single file with as few a 0 other headers, can be 100% standalone
-- Cross platform multithreading (Windows or pthreads)
+
+### Core & Architecture
+- Single file library (`stdio.h` and `stdlib.h` are the only strictly required headers)
+- Cross-platform multithreading (Windows API or pthreads)
+- SIMD wrappers supporting AVX/AVX2 (`immintrin.h`) and ARM NEON (`arm_neon.h`) intrinsics, with scalar fallbacks
+- Customizable math implementations (use the bundled math or your system's)
+- Left handed coordinate system using row major matrices
+### Rendering Pipeline
 - Deferred rendering with a visibility buffer
-- SIMD rasterizing and geometry pipelines (or scalar fallback if SIMD is unavailable)
-- SIMD wrappers supporting AVX/AVX2 (`immintrin.h`) and ARM NEON (`arm_neon.h`) intrinsics
+- SIMD accelerated rasterization and geometry pipelines
+- Perspective correct texture mapping with auto generated, smooth mipmaps
+- Per triangle transparency, backface culling, depth buffering, and clipping
+- Efficient static scene rendering with fast raycasting via a BVH
+- ARGB8888 color format
+### Lighting & Shadows
 - Blinn-Phong shading with point and directional lights
 - Realtime dynamic and static shadowmaps
-- Baked lighting support (if UVs are unwrapped already)
-- Smooth mipmaps auto generated and used for all loaded textures
-- Perspective correct texture mapping (currently only .bmp image support unless `optional/stb_image.h` is used)
-- Custom font format (.srft, see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
-- OBJ mesh loading (requires `stdio.h`)
-- GLB / GLTF model loading (requires `optional/cgltf.h` (with `optional/stb_image.h` for textures))
-- Customizable math implementations (system or bundled)
-- Primitive drawing (triangles, cubes, spheres, cylinders, billboards, etc.)
-- Skyboxes (cubemaps not spheremaps)
-- Efficient static scene rendering with fast raycasting via a BVH
-- ARGB8888 color format support (alpha currently unused)
-- Backface culling, depth buffering, and clipping
-- Left handed and row major
-
-## Windows Compilation (with SIMD)
-
-If you're compiling on Windows using MinGW/GCC with SIMD enabled (the default) and optimization flags
-like `-O2` or `-O3`, you must include specific compiler flags to prevent segfaults.
-
-The Windows x64 ABI mandates a 16 byte stack alignment, but GCC's AVX implementation strictly requires a
-32 byte alignment. When GCC omits the frame pointer in release mode, its internal stack offset math can
-break across function pointer boundaries, overwriting return addresses and corrupting the stack.
-Also, GCC can aggressively optimize unaligned SIMD memory stores into strict aligned instructions,
-which will instantly crash if your heap isn't 32 byte aligned.
-
-This isn't technically needed if run your program through some debugger like gdb since when Windows
-detects a debugger it will replace malloc/free with the debug heap, which adds padding around each allocation.
-
-**Required Compiler Flags for Windows Release Builds:**
-```bash
--fno-omit-frame-pointer
-```
+- Baked lighting and lightmap support (for unwrapped UVs)
+### Assets & Animation
+- GLB / GLTF model loading (requires `optional/cgltf.h` and `optional/stb_image.h`)
+- Skeletal animation via CPU skinning with hierarchical node transforms
+- Animation blending and crossfading, supporting Cubic Spline, Step, and Linear interpolation
+- OBJ mesh loading
+- Texture loading (native `.bmp` support, or universal image support via `optional/stb_image.h`)
+- Built-in primitive generation (triangles, cubes, spheres, cylinders, batched billboards, etc.)
+- Skyboxes (cubemap format)
+- Custom `.srft` font format support (see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
 
 ## Windows Memory Allocation
 
@@ -120,7 +108,6 @@ sfr_init(width, height, fov, sfr_malloc, sfr_free, sfr_realloc);
 // indicate declaration of functions, only define this in one file
 #define SFR_IMPL
 
-#define SFR_NO_STD    // don't include 'stdio' and 'stdlib.h'
 #define SFR_NO_MATH   // don't include 'math.h' and use bundled math
 #define SFR_NO_STRING // don't include 'string.h'
 #define SFR_NO_STDINT // don't include 'stdint.h'
@@ -160,11 +147,10 @@ sfr_init(width, height, fov, sfr_malloc, sfr_free, sfr_realloc);
 #define SFR_FONT_VERT_MAX  // max verts per glyph, default of 72 (12 tris)
 
 // when SFR_THREAD_COUNT isn't 1, below is applicable
-#define SFR_THREAD_COUNT       // default of 8, i.e. multithreaded
-#define SFR_TILE_WIDTH         // default of 64, in pixels
-#define SFR_TILE_HEIGHT        // default of 64, in pixels
-#define SFR_GEOMETRY_JOB_SIZE  // default of 64, number of tris per geometry job
-#define SFR_BIN_PAGE_SIZE      // default of 4096, number of tris per page for tiles
+#define SFR_THREAD_COUNT      // default of 7 worker threads
+#define SFR_TILE_WIDTH        // default of 64, in pixels
+#define SFR_TILE_HEIGHT       // default of 64, in pixels
+#define SFR_GEOMETRY_JOB_SIZE // default of 64, number of tris per geometry job
 
 // glb / gltf related
 #define SFR_USE_CGLTF      // have model loading via cgltf
@@ -209,13 +195,13 @@ sfr_scale(1.f, 3.f, 0.5f);     // scale by x y z
 sfr_rotate_y(time);            // rotate about y, radians not degrees
 sfr_rotate_x(time * 0.5f);     // rotate about x
 sfr_translate(0.f, 0.f, 2.5f); // move to x y z
-sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors, but A currently unused)
+sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors)
 ```
 
 ## TODO / Upcoming Features / Known Bugs
-- Skeletal animation / some improved animation system
 - Get normal maps working
 - Improved shadows
+- Indexed rendering rewrite (maybe)
 
 ## Gallery
 
@@ -234,10 +220,12 @@ and contain lots of noise and splotchyness that has since been fixed.
 
 <details>
   <summary>About the animation...</summary>
-  This is (for now) faked / hacked animation. I made a python script to export each frame of an animated
+  This animation is now natively possible without the hack below just by calling sfr_model_animate
+
+  However this clip is faked / hacked animation. I made a python script to export each frame of an animated
   .fbx model to many individual .glb models, where I then load each frame in an array of
   SfrModel* and render them sequentially (like a spritesheet but with full models).
-  This is obviously terrible and won't be done in the future when skinned mesh rendering is supported.
+  This is obviously terrible and as mentioned doesn't need to be done anymore.
 </details>
 
 https://github.com/user-attachments/assets/8ad46e35-616c-48bd-bc51-4779224e59b1
