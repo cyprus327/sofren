@@ -4,7 +4,7 @@
 
 ---
 
-Realtime Blinn-Phong shading
+Blinn-Phong shading
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/692a2758-875d-4657-9dd9-6c13cb042ff3"
@@ -13,12 +13,11 @@ Realtime Blinn-Phong shading
 
 ---
 
-Sponza at 720p, 73 FPS, with realtime dynamic shadows
+Realtime point light shadows demo at 720p
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/04cce14f-651a-4267-8511-58edd713559f"
-      width="800">
-</p>
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/94d075f4-d50e-463e-84c0-6cd493a7cfb8" width="100%" autoplay loop muted playsinline controls></video>
+</div>
 
 ---
 
@@ -64,7 +63,7 @@ For examples and good starting points rendering to an SDL2 window or console win
 - ARGB8888 color format
 ### Lighting & Shadows
 - Blinn-Phong shading with point and directional lights
-- Realtime dynamic and static shadowmaps
+- Realtime dynamic and static shadowmaps with point and directional lights
 - Baked lighting and lightmap support (for unwrapped UVs)
 ### Assets & Animation
 - GLB / GLTF model loading (requires `optional/cgltf.h` and `optional/stb_image.h`)
@@ -75,30 +74,6 @@ For examples and good starting points rendering to an SDL2 window or console win
 - Built-in primitive generation (triangles, cubes, spheres, cylinders, batched billboards, etc.)
 - Skyboxes (cubemap format)
 - Custom `.srft` font format support (see [sfr-fontmaker]([https://g](https://github.com/cyprus327/sfr-fontmaker)))
-
-## Windows Memory Allocation
-
-Standard `malloc` on Windows only guarantees 16 byte alignment, and since sofren uses 256 bit SIMD intrinsics
-(unless you're using an older ARM processor, in which case it will use 128 bit), passing standard malloc
-to sfr_init will cause a crash on Windows. You must provide 32 byte aligned allocators on Windows:
-
-```c
-#ifdef _WIN32
-    #include <malloc.h>
-    static void* sfr_malloc(u64 size) { return _aligned_malloc(size, 32); }
-    static void* sfr_realloc(void* ptr, u64 size) { return _aligned_realloc(ptr, size, 32); }
-    static void sfr_free(void* ptr) { _aligned_free(ptr); }
-#else
-    #include <stdlib.h>
-    static void* sfr_malloc(u64 size) { return malloc(size); }
-    static void* sfr_realloc(void* ptr, u64 size) { return realloc(ptr, size); }
-    static void sfr_free(void* ptr) { free(ptr); }
-#endif
-
-// ... later
-
-sfr_init(width, height, fov, sfr_malloc, sfr_free, sfr_realloc);
-```
 
 ## Pre Processing Configuration 
 ```c
@@ -204,6 +179,11 @@ sfr_cube(0xFFFF0000);          // draw pure red cube (ARGB colors)
 - Indexed rendering rewrite (maybe)
 
 ## Gallery
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/04cce14f-651a-4267-8511-58edd713559f"
+      width="800">
+</p>
 
 Some more baked lighting images, these are much older than the one at the top of this README,
 and contain lots of noise and splotchyness that has since been fixed.
